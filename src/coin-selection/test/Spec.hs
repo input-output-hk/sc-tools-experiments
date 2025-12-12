@@ -150,6 +150,7 @@ tests =
                 -- Test tree fails
                 (\_ -> pure ())
             )
+        , testCase "spend pingPong an output succeeds" (mockchainSucceeds $ failOnError (pingPongScriptTest Scripts.Pong))
         ]
     , testGroup
         "mockchain"
@@ -465,6 +466,53 @@ sampleScriptTest redemer = inBabbage @era $ do
 
   -- Spend!! the outputs in a single transaction
   _tx <- tryBalanceAndSubmit mempty Wallet.w1 (execBuildTx $ Scripts.spendSample redemer input) TrailingChange []
+  pure ()
+
+pingPongScriptTest
+  :: forall era m
+   . ( MonadMockchain era m
+     , MonadError (BalanceTxError era) m
+     , MonadFail m
+     , C.IsBabbageBasedEra era
+     , C.HasScriptLanguageInEra C.PlutusScriptV3 era
+     )
+  => Scripts.PingPongRedeemer
+  -> m ()
+pingPongScriptTest redemer = inBabbage @era $ do
+  let txBody =
+        execBuildTx
+          ( BuildTx.payToScriptInlineDatum
+              Defaults.networkId
+              (C.hashScript (plutusScript Scripts.pingPongValidatorScript))
+              Scripts.Pinged
+              C.NoStakeAddress
+              (C.lovelaceToValue 10_000_000)
+          )
+  -- here is the locking !!!
+  tx <- tryBalanceAndSubmit mempty Wallet.w1 txBody TrailingChange []
+  -- error $ show tx
+
+  let input = C.TxIn (C.getTxId $ C.getTxBody tx) (C.TxIx 0)
+  -- input <- C.TxBody . C.getTxId . C.getTxBody <$> tryBalanceAndSubmit mempty Wallet.w1 txBody TrailingChange [] <*> pure (C.TxIx 0)
+
+  -- Spend!! the outputs in a single transaction
+  _tx <-
+    tryBalanceAndSubmit
+      mempty
+      Wallet.w1
+      ( execBuildTx $ do
+          Scripts.spendPingPong redemer input
+          --
+          -- here we are going to payToScript
+          BuildTx.payToScriptInlineDatum
+            Defaults.networkId
+            (C.hashScript (plutusScript Scripts.pingPongValidatorScript))
+            Scripts.Ponged
+            C.NoStakeAddress
+            (C.lovelaceToValue 10_000_000) -- add to the witness the datum
+      )
+      TrailingChange
+      []
   pure ()
 
 scriptStakingCredential :: C.StakeCredential

@@ -85,6 +85,7 @@ test-suite convex-coin-selection-test
   other-modules:
     Scripts
     Scripts.MatchingIndex
+    Scripts.PingPong
     Scripts.Sample
 
   build-depends:

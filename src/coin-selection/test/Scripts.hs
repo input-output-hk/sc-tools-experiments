@@ -16,8 +16,12 @@ module Scripts (
   spendMatchingIndex,
   mintMatchingIndex,
   sampleValidatorScript,
+  pingPongValidatorScript,
   spendSample,
+  spendPingPong,
   Sample.SampleRedeemer (..),
+  PingPong.PingPongRedeemer (..),
+  PingPong.PingPongState (..),
 ) where
 
 import Cardano.Api qualified as C
@@ -32,6 +36,7 @@ import PlutusTx (BuiltinData, CompiledCode)
 import PlutusTx qualified
 import PlutusTx.Prelude (BuiltinUnit)
 import Scripts.MatchingIndex qualified as MatchingIndex
+import Scripts.PingPong qualified as PingPong
 import Scripts.Sample qualified as Sample
 
 v2SpendingScript :: C.PlutusScript C.PlutusScriptV2
@@ -49,20 +54,27 @@ matchingIndexValidatorCompiled = $$(PlutusTx.compile [||MatchingIndex.validator|
 matchingIndexMPCompiled :: CompiledCode (BuiltinData -> BuiltinUnit)
 matchingIndexMPCompiled = $$(PlutusTx.compile [||MatchingIndex.mintingPolicy||])
 
-sampleValidatorCompiled :: CompiledCode (BuiltinData -> BuiltinUnit)
-sampleValidatorCompiled = $$(PlutusTx.compile [||Sample.validator||])
-
-{- | Script that passes if the input's index (in the list of transaction inputs)
-  matches the number passed as the redeemer
--}
 matchingIndexValidatorScript :: C.PlutusScript C.PlutusScriptV3
 matchingIndexValidatorScript = compiledCodeToScript matchingIndexValidatorCompiled
+
+matchingIndexMPScript :: C.PlutusScript C.PlutusScriptV3
+matchingIndexMPScript = compiledCodeToScript matchingIndexMPCompiled
+
+sampleValidatorCompiled :: CompiledCode (BuiltinData -> BuiltinUnit)
+sampleValidatorCompiled = $$(PlutusTx.compile [||Sample.validator||])
 
 sampleValidatorScript :: C.PlutusScript C.PlutusScriptV3
 sampleValidatorScript = compiledCodeToScript sampleValidatorCompiled
 
-matchingIndexMPScript :: C.PlutusScript C.PlutusScriptV3
-matchingIndexMPScript = compiledCodeToScript matchingIndexMPCompiled
+pingPongValidatorCompiled :: CompiledCode (BuiltinData -> BuiltinUnit)
+pingPongValidatorCompiled = $$(PlutusTx.compile [||PingPong.validator||])
+
+pingPongValidatorScript :: C.PlutusScript C.PlutusScriptV3
+pingPongValidatorScript = compiledCodeToScript pingPongValidatorCompiled
+
+{- | Script that passes if the input's index (in the list of transaction inputs)
+  matches the number passed as the redeemer
+-}
 
 {- | Spend an output locked by 'matchingIndexValidatorScript', setting
 the redeemer to the index of the input in the final transaction
@@ -108,6 +120,23 @@ spendSample redeemer txi =
           BuildTx.buildScriptWitness
             sampleValidatorScript
             (C.ScriptDatumForTxIn $ Just $ toHashableScriptData ())
+            -- (fromIntegral @Int @Integer $ 9898) -- BuildTx.findIndexSpending txi txBody)
+            redeemer
+   in BuildTx.setScriptsValid >> BuildTx.addInputWithTxBody txi witness
+
+spendPingPong
+  :: forall era m
+   . (C.IsAlonzoBasedEra era, C.HasScriptLanguageInEra C.PlutusScriptV3 era)
+  => (MonadBuildTx era m)
+  => PingPong.PingPongRedeemer
+  -> C.TxIn
+  -> m ()
+spendPingPong redeemer txi =
+  let witness _ =
+        C.ScriptWitness C.ScriptWitnessForSpending $
+          BuildTx.buildScriptWitness
+            pingPongValidatorScript
+            (C.ScriptDatumForTxIn $ Nothing) -- Just $ toHashableScriptData PingPong.Pinged)
             -- (fromIntegral @Int @Integer $ 9898) -- BuildTx.findIndexSpending txi txBody)
             redeemer
    in BuildTx.setScriptsValid >> BuildTx.addInputWithTxBody txi witness
