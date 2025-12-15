@@ -2,6 +2,7 @@
 {-# LANGUAGE NumericUnderscores #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE TypeApplications #-}
+{-# LANGUAGE TypeFamilies #-}
 {-# LANGUAGE ViewPatterns #-}
 
 import Cardano.Api qualified as C
@@ -78,6 +79,10 @@ import Convex.NodeParams (
   protocolParameters,
  )
 import Convex.Query (balancePaymentCredentials)
+import Convex.TestingInterface (
+  TestingInterface (..),
+  propRunActions,
+ )
 import Convex.Utils (failOnError, inBabbage)
 import Convex.Utils.String (unsafeAssetName, unsafeTxId)
 import Convex.Utxos qualified as Utxos
@@ -98,6 +103,7 @@ import Data.Map qualified as Map
 import Data.Set qualified as Set
 import PlutusLedgerApi.V2 qualified as PV2
 import Scripts qualified
+import Scripts.PingPong qualified as PingPong
 import Test.QuickCheck.Gen qualified as Gen
 import Test.Tasty (
   TestTree,
@@ -111,6 +117,164 @@ import Test.Tasty.QuickCheck (
   testProperty,
  )
 import Test.Tasty.QuickCheck qualified as QC
+
+-- | Model state for the PingPong contract testing interface
+data PingPongModel = PingPongModel
+  { pmState :: PingPong.PingPongState
+  -- ^ Current state of the PingPong contract
+  , pmTxIn :: Maybe C.TxIn
+  -- ^ Reference to the current UTxO locked at the contract
+  , pmValue :: C.Lovelace
+  -- ^ Amount of lovelace locked in the contract
+  }
+  deriving (Show, Eq)
+
+instance TestingInterface PingPongModel where
+  data Action PingPongModel
+    = Initialize PingPong.PingPongState
+    | -- \^ Deploy the contract with an initial state
+      PlayRound PingPong.PingPongRedeemer
+    -- \^ Play a round (Ping, Pong, or Stop)
+    deriving (Show, Eq)
+
+  initialState =
+    PingPongModel
+      { pmState = PingPong.Pinged
+      , pmTxIn = Nothing
+      , pmValue = 10_000_000
+      }
+
+  arbitraryAction model =
+    case pmTxIn model of
+      Nothing ->
+        -- Contract not yet deployed, must initialize
+        pure $ Initialize (pmState model)
+      Just _ ->
+        -- Contract deployed, generate any action - precondition will filter
+        QC.elements [PlayRound PingPong.Ping, PlayRound PingPong.Pong, PlayRound PingPong.Stop]
+
+  precondition model action =
+    case action of
+      Initialize _ ->
+        -- Can only initialize if contract not yet deployed
+        pmTxIn model == Nothing
+      PlayRound redeemer ->
+        -- Can only play if contract is deployed
+        case pmTxIn model of
+          Nothing -> False
+          Just _ -> case (pmState model, redeemer) of
+            -- From Stopped, no valid actions (contract is finished)
+            (PingPong.Stopped, _) -> False
+            -- From Pinged, we can Pong or Stop
+            (PingPong.Pinged, PingPong.Pong) -> True
+            (PingPong.Pinged, PingPong.Stop) -> True
+            (PingPong.Pinged, PingPong.Ping) -> False
+            -- From Ponged, we can Ping or Stop
+            (PingPong.Ponged, PingPong.Ping) -> True
+            (PingPong.Ponged, PingPong.Stop) -> True
+            (PingPong.Ponged, PingPong.Pong) -> False
+
+  nextState model action =
+    case action of
+      Initialize _state ->
+        -- Mark contract as deployed (actual TxIn will be set during perform)
+        model{pmTxIn = Just (C.TxIn (C.TxId "dummy") (C.TxIx 0))}
+      PlayRound redeemer ->
+        let newState = case redeemer of
+              PingPong.Ping -> PingPong.Stopped
+              PingPong.Pong -> PingPong.Ponged
+              PingPong.Stop -> PingPong.Stopped
+         in model{pmState = newState}
+
+  perform model action = case action of
+    Initialize state -> do
+      liftIO $ putStrLn $ "Initializing contract with state: " ++ show state
+      -- Deploy the contract with the initial state
+      let txBody =
+            execBuildTx
+              ( BuildTx.payToScriptInlineDatum
+                  Defaults.networkId
+                  (C.hashScript (plutusScript Scripts.pingPongValidatorScript))
+                  state
+                  C.NoStakeAddress
+                  (C.lovelaceToValue $ pmValue model)
+              )
+      runExceptT (balanceAndSubmit mempty Wallet.w1 txBody TrailingChange []) >>= \case
+        Left err -> fail $ "Failed to initialize contract: " ++ show err
+        Right _ -> pure ()
+    PlayRound redeemer -> do
+      liftIO $ putStrLn $ "Playing round: " ++ show redeemer
+      -- Find the UTxO at the script address
+      let scriptHash = C.hashScript (plutusScript Scripts.pingPongValidatorScript)
+          scriptAddr = C.makeShelleyAddressInEra C.shelleyBasedEra Defaults.networkId (C.PaymentCredentialByScript scriptHash) C.NoStakeAddress
+      -- Query all UTxOs from the blockchain
+      utxoSet <- fromLedgerUTxO C.shelleyBasedEra <$> getUtxo
+      let C.UTxO utxos = utxoSet
+      -- Find UTxOs at the script address
+      let scriptUtxos = Map.filter (\(C.TxOut addr _ _ _) -> addr == scriptAddr) utxos
+      case Map.toList scriptUtxos of
+        [] -> fail "No UTxO found at script address"
+        ((txIn, C.TxOut _ txOutValue _ _) : _) -> do
+          -- Get the value from the UTxO
+          let lovelace = case txOutValue of
+                C.TxOutValueShelleyBased _ val -> C.selectLovelace (C.fromMaryValue val)
+                C.TxOutValueByron val -> val
+          -- Execute the round
+          runExceptT
+            ( balanceAndSubmit
+                mempty
+                Wallet.w1
+                (execBuildTx $ Scripts.playPingPongRound Defaults.networkId lovelace redeemer txIn)
+                TrailingChange
+                []
+            )
+            >>= \case
+              Left err -> fail $ "Failed to play round: " ++ show err
+              Right _ -> pure ()
+
+  validate model = case pmTxIn model of
+    Nothing -> pure True -- No contract deployed yet
+    Just _ -> do
+      -- Query the actual state from the blockchain
+      let scriptHash = C.hashScript (plutusScript Scripts.pingPongValidatorScript)
+          scriptAddr =
+            C.makeShelleyAddressInEra
+              C.shelleyBasedEra
+              Defaults.networkId
+              (C.PaymentCredentialByScript scriptHash)
+              C.NoStakeAddress
+      utxoSet <- fromLedgerUTxO C.shelleyBasedEra <$> getUtxo
+      let C.UTxO utxos = utxoSet
+          scriptUtxos = Map.filter (\(C.TxOut addr _ _ _) -> addr == scriptAddr) utxos
+
+      case Map.toList scriptUtxos of
+        [] ->
+          -- No UTxO found - contract must have been consumed
+          -- This is valid if model state is Stopped
+          pure (pmState model == PingPong.Stopped)
+        ((_, C.TxOut _ _ datum _) : _) -> do
+          -- Extract the actual state from the datum
+          case datum of
+            C.TxOutDatumInline _ scriptData -> do
+              case PV2.fromData @PingPong.PingPongState (C.toPlutusData $ C.getScriptData scriptData) of
+                Just actualState -> do
+                  let matches = actualState == pmState model
+                  unless matches $
+                    liftIO $
+                      putStrLn $
+                        "STATE MISMATCH! Model: " ++ show (pmState model) ++ ", Blockchain: " ++ show actualState
+                  pure matches
+                Nothing -> do
+                  liftIO $ putStrLn "Failed to decode datum as PingPongState"
+                  pure False
+            _ -> do
+              liftIO $ putStrLn "Expected inline datum but got something else"
+              pure False
+   where
+    unless True _ = pure ()
+    unless False m = m
+
+  monitoring _state _action prop = prop
 
 main :: IO ()
 main = defaultMain tests
@@ -208,6 +372,9 @@ tests =
                     -- Test tree fails
                     (\_ -> pure ())
                 )
+            , testProperty
+                "Property-based test with TestingInterface"
+                (propRunActions @PingPongModel)
             ]
         ]
     , testGroup
