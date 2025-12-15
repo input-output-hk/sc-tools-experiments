@@ -33,6 +33,7 @@ packages:
   src/mockchain
   src/node-client
   src/optics
+  src/testing-interface
   src/tx-mod
   src/wallet
 
