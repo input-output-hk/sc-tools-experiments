@@ -181,7 +181,7 @@ instance TestingInterface PingPongModel where
         model{pmTxIn = Just (C.TxIn (C.TxId "dummy") (C.TxIx 0))}
       PlayRound redeemer ->
         let newState = case redeemer of
-              PingPong.Ping -> PingPong.Stopped
+              PingPong.Ping -> PingPong.Pinged
               PingPong.Pong -> PingPong.Ponged
               PingPong.Stop -> PingPong.Stopped
          in model{pmState = newState}
