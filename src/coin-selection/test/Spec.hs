@@ -14,6 +14,7 @@ import Cardano.Ledger.Conway.PParams qualified as Ledger
 import Cardano.Ledger.Conway.Rules qualified as Rules
 import Cardano.Ledger.Shelley.API (ApplyTxError (..))
 import Cardano.Ledger.Shelley.TxCert qualified as TxCert
+import Control.Exception (catch, throwIO)
 import Control.Lens (view, (&), (.~), (^.), _3, _4)
 import Control.Monad (replicateM, void, when)
 import Control.Monad.Except (MonadError, runExceptT)
@@ -71,8 +72,13 @@ import Convex.MockChain.Defaults qualified as Defaults
 import Convex.MockChain.Gen qualified as Gen
 import Convex.MockChain.Staking (registerPool)
 import Convex.MockChain.Utils (
+  Options (coverageRef),
+  defaultOptions,
   mockchainFails,
+  mockchainFailsWithOptions,
   mockchainSucceeds,
+  mockchainSucceedsWithOptions,
+  modifyTransactionLimits,
   runMockchainProp,
   runTestableErr,
  )
@@ -82,8 +88,10 @@ import Convex.NodeParams (
  )
 import Convex.Query (balancePaymentCredentials)
 import Convex.TestingInterface (
+  RunOptions (mcOptions),
   TestingInterface (..),
-  propRunActions,
+  defaultRunOptions,
+  propRunActionsWithOptions,
  )
 import Convex.Utils (failOnError, inBabbage)
 import Convex.Utils.String (unsafeAssetName, unsafeTxId)
@@ -99,15 +107,18 @@ import Convex.Wallet.Operator (
   verificationKey,
  )
 import Data.Foldable (traverse_)
+import Data.IORef (IORef, newIORef, readIORef)
 import Data.List qualified as List
 import Data.List.NonEmpty (NonEmpty (..))
 import Data.Map qualified as Map
 import Data.Set qualified as Set
 import PlutusLedgerApi.V2 qualified as PV2
-import PlutusTx.Coverage (CoverageReport (CoverageReport))
+import PlutusTx.Coverage (CoverageData, CoverageReport (CoverageReport))
 import Prettyprinter qualified as Pretty
+import Scripts (pingPongCovIdx)
 import Scripts qualified
 import Scripts.PingPong qualified as PingPong
+import System.Exit (ExitCode)
 import Test.QuickCheck.Gen qualified as Gen
 import Test.Tasty (
   TestTree,
@@ -121,7 +132,6 @@ import Test.Tasty.QuickCheck (
   testProperty,
  )
 import Test.Tasty.QuickCheck qualified as QC
-import Text.Show.Pretty (ppShow)
 
 -- | Model state for the PingPong contract testing interface
 data PingPongModel = PingPongModel
@@ -282,10 +292,18 @@ instance TestingInterface PingPongModel where
   monitoring _state _action prop = prop
 
 main :: IO ()
-main = defaultMain tests
+main = do
+  ref <- newIORef mempty
+  defaultMain (tests ref)
+    `catch` ( \(e :: ExitCode) -> do
+                covData <- readIORef ref
+                let report = CoverageReport pingPongCovIdx covData
+                print $ Pretty.pretty report
+                throwIO e
+            )
 
-tests :: TestTree
-tests =
+tests :: IORef CoverageData -> TestTree
+tests ref =
   testGroup
     "unit tests"
     [ testGroup
@@ -323,63 +341,74 @@ tests =
             "ping-pong"
             [ testCase
                 "Ping and Pong should succeed"
-                ( mockchainSucceeds $
+                ( mockchainSucceedsWithOptions opts $
                     failOnError
                       (pingPongMultipleRounds Scripts.Pinged [Scripts.Pong])
                 )
             , testCase
                 "Pong and Ping should succeed"
-                ( mockchainSucceeds $
+                ( mockchainSucceedsWithOptions opts $
                     failOnError (pingPongMultipleRounds Scripts.Ponged [Scripts.Ping])
                 )
-            , testCase
+            , --
+              -- , testCase
+              --     "Ping and Ping should fail"
+              --     ( mockchainSucceedsWithOptions opts $
+              --         failOnError (pingPongMultipleRounds Scripts.Pinged [Scripts.Ping])
+              --     )
+              testCase
                 "Ping and Ping should fail"
-                ( mockchainFails
+                ( mockchainFailsWithOptions
+                    opts
                     (failOnError (pingPongMultipleRounds Scripts.Pinged [Scripts.Ping]))
                     -- Test tree fails
                     (\_ -> pure ())
                 )
             , testCase
                 "Pong and Pong should fail"
-                ( mockchainFails
+                ( mockchainFailsWithOptions
+                    opts
                     (failOnError (pingPongMultipleRounds Scripts.Ponged [Scripts.Pong]))
                     -- Test tree fails
                     (\_ -> pure ())
                 )
             , testCase
                 "Stop after Ping should succeed"
-                ( mockchainSucceeds $
+                ( mockchainSucceedsWithOptions opts $
                     failOnError (pingPongMultipleRounds Scripts.Ponged [Scripts.Ping, Scripts.Stop])
                 )
             , testCase
                 "Stop after Pong should succeed"
-                ( mockchainSucceeds $
+                ( mockchainSucceedsWithOptions opts $
                     failOnError (pingPongMultipleRounds Scripts.Pinged [Scripts.Pong, Scripts.Stop])
                 )
             , testCase
                 "Stop after Stop should fail"
-                ( mockchainFails
+                ( mockchainFailsWithOptions
+                    opts
                     (failOnError (pingPongMultipleRounds Scripts.Stopped [Scripts.Stop]))
                     -- Test tree fails
                     (\_ -> pure ())
                 )
             , testCase
                 "Ping after Stop should fail"
-                ( mockchainFails
+                ( mockchainFailsWithOptions
+                    opts
                     (failOnError (pingPongMultipleRounds Scripts.Stopped [Scripts.Ping]))
                     -- Test tree fails
                     (\_ -> pure ())
                 )
             , testCase
                 "Pong after Stop should fail"
-                ( mockchainFails
+                ( mockchainFailsWithOptions
+                    opts
                     (failOnError (pingPongMultipleRounds Scripts.Stopped [Scripts.Pong]))
                     -- Test tree fails
                     (\_ -> pure ())
                 )
             , testProperty
                 "Property-based test with TestingInterface"
-                (propRunActions @PingPongModel)
+                (propRunActionsWithOptions @PingPongModel runOpts)
             ]
         ]
     , testGroup
@@ -401,6 +430,9 @@ tests =
         , testCase "script withdrawl with custom redeemer" (mockchainSucceeds $ failOnError addScriptWithdrawalWithCustomRedeemerTest)
         ]
     ]
+ where
+  opts = modifyTransactionLimits (defaultOptions{coverageRef = Just ref}) 17000
+  runOpts = defaultRunOptions{mcOptions = opts}
 
 spendPublicKeyOutput :: Assertion
 spendPublicKeyOutput = mockchainSucceeds $ failOnError (Wallet.w2 `paymentTo` Wallet.w1)
