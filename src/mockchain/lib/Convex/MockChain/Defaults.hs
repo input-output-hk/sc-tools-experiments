@@ -115,7 +115,7 @@ protocolParameters =
           L.emptyPParamsIdentity @ConwayEra
             & L.hkdMaxBHSizeL .~ 1_100
             & L.hkdMaxBBSizeL .~ 90_112
-            & L.hkdMaxTxSizeL .~ 17_384
+            & L.hkdMaxTxSizeL .~ 16_384
             & L.hkdMinFeeAL .~ 44
             & L.hkdMinFeeBL .~ 155_381
             & L.hkdKeyDepositL .~ 2_000_000

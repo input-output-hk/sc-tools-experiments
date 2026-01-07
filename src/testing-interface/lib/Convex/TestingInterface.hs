@@ -2,6 +2,7 @@
 {-# LANGUAGE DataKinds #-}
 {-# LANGUAGE FlexibleInstances #-}
 {-# LANGUAGE FunctionalDependencies #-}
+{-# LANGUAGE NamedFieldPuns #-}
 {-# LANGUAGE PatternSynonyms #-}
 {-# LANGUAGE RankNTypes #-}
 {-# LANGUAGE TypeApplications #-}
@@ -36,8 +37,11 @@ import Test.QuickCheck (Arbitrary (..), Gen, Property, counterexample, elements,
 import Test.QuickCheck.Monadic (monadicIO, monitor, run)
 
 import Cardano.Api qualified as C
-import Convex.MockChain (MockchainT, runMockchain0IO)
+import Convex.MockChain (MockChainState (MockChainState, mcsCoverageData), MockchainT, runMockchain0IOWith)
+import Convex.MockChain.Utils (Options (Options, coverageRef, params), defaultOptions)
 import Convex.Wallet.MockWallet qualified as Wallet
+import Data.Foldable (traverse_)
+import Data.IORef (modifyIORef)
 
 {- | A testing interface defines the state and behavior of one or more smart contracts.
 
@@ -134,6 +138,7 @@ data RunOptions = RunOptions
   -- ^ Print actions as they are executed
   , maxActions :: Int
   -- ^ Maximum number of actions to generate
+  , mcOptions :: Options C.ConwayEra
   }
 
 defaultRunOptions :: RunOptions
@@ -141,6 +146,7 @@ defaultRunOptions =
   RunOptions
     { verbose = False
     , maxActions = 10
+    , mcOptions = defaultOptions
     }
 
 {- | Main property for testing a testing interface.
@@ -156,18 +162,20 @@ propRunActionsWithOptions
   => RunOptions
   -> Actions state
   -> Property
-propRunActionsWithOptions opts (Actions actions) = monadicIO $ do
+propRunActionsWithOptions opts@RunOptions{mcOptions = Options{coverageRef, params}} (Actions actions) = monadicIO $ do
   let initialSt = initialState @state
 
   when (verbose opts) $
     monitor (counterexample $ "Initial state: " ++ show initialSt)
 
-  result <- run $ runMockchain0IO Wallet.initialUTxOs $ do
+  result <- run $ runMockchain0IOWith Wallet.initialUTxOs params $ do
     foldM (runAction opts) initialSt actions
 
   case result of
-    (finalState, _) -> do
+    (finalState, MockChainState{mcsCoverageData = covData}) -> do
       monitor (counterexample $ "Final state: " ++ show finalState)
+      -- accumulate coverage
+      traverse_ (\ref -> liftIO $ modifyIORef ref (<> covData)) coverageRef
       return (property True)
  where
   when True m = m

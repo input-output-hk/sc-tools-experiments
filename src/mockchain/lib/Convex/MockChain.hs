@@ -424,7 +424,6 @@ constructValidated globals (UtxoEnv _ pp _) st tx =
             scriptResults = map (evaluatePlutusWithContext Verbose) sLst
             -- Extract logs and check if validation passed
             allLogs = concatMap fst scriptResults
-            _ = coverageDataFromLogMsg
             validationPassed = all (isRight . snd) scriptResults
 
             -- Format logs for display

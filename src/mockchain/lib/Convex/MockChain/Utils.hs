@@ -1,6 +1,7 @@
 {-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE NamedFieldPuns #-}
 {-# LANGUAGE TypeApplications #-}
+{-# LANGUAGE ViewPatterns #-}
 
 -- | Utility functions for using the mockchain types in @hunit@ or @QuickCheck@ tests
 module Convex.MockChain.Utils (
@@ -22,12 +23,13 @@ module Convex.MockChain.Utils (
   -- * Options for running mockchain testCase
   Options (..),
   defaultOptions,
+  modifyTransactionLimits,
 ) where
 
 import Cardano.Api (ConwayEra)
 import Cardano.Api qualified as C
 import Control.Exception (SomeException, try)
-import Control.Lens ((^.))
+import Control.Lens ((&), (.~), (^.))
 import Control.Monad.Except (ExceptT, runExceptT)
 import Control.Monad.IO.Class (liftIO)
 import Convex.Class (coverageData)
@@ -39,12 +41,16 @@ import Convex.MockChain (
   runMockchain,
   runMockchain0IOWith,
  )
+
+import Cardano.Ledger.Core qualified as L
 import Convex.MockChain.Defaults qualified as Defaults
-import Convex.NodeParams (NodeParams)
+import Convex.NodeParams (NodeParams (..))
 import Convex.Wallet.MockWallet qualified as Wallet
 import Data.Functor.Identity (Identity)
 import Data.IORef (IORef, modifyIORef)
-import PlutusTx.Coverage (CoverageData)
+import Data.Maybe (fromMaybe)
+import Data.Word (Word32)
+import PlutusTx.Coverage (CoverageData, coverageDataFromLogMsg)
 import Test.HUnit (Assertion)
 import Test.QuickCheck (
   Property,
@@ -52,6 +58,8 @@ import Test.QuickCheck (
   counterexample,
  )
 import Test.QuickCheck.Monadic (PropertyM (..), monadic, monadicIO)
+import Text.Read (readMaybe)
+import Text.Show.Pretty (ppShow)
 
 data Options era = Options
   { params :: NodeParams era
@@ -63,6 +71,14 @@ defaultOptions =
   Options
     { params = Defaults.nodeParams
     , coverageRef = Nothing
+    }
+
+-- | Modify the maximum transaction size in the protocol parameters of the given options
+modifyTransactionLimits :: Options ConwayEra -> Word32 -> Options ConwayEra
+modifyTransactionLimits opts@Options{params = Defaults.pParams -> pp} newVal =
+  -- TODO: use lenses to make this cleaner
+  opts
+    { params = (params opts){npProtocolParameters = C.LedgerProtocolParameters $ pp & L.ppMaxTxSizeL .~ newVal}
     }
 
 -- | Run the 'Mockchain' action and fail if there is an error
@@ -78,13 +94,11 @@ mockchainSucceedsWithOptions :: (C.IsShelleyBasedEra era) => Options era -> Mock
 mockchainSucceedsWithOptions Options{params, coverageRef} action =
   try @SomeException (runMockchain0IOWith Wallet.initialUTxOs params action) >>= \case
     Right (_, st) -> do
-      case coverageRef of
-        Nothing -> pure ()
-        Just ref -> do
-          let covData = st ^. coverageData
-          modifyIORef ref (<> covData)
+      appendCovData coverageRef $ st ^. coverageData
       pure ()
-    Left err -> fail (show err)
+    Left err -> do
+      appendCovData coverageRef $ tryExtractCovverageData err
+      fail (show err)
 
 {- | Run the 'Mockchain' action, fail if it succeeds, and handle the error
   appropriately.
@@ -106,13 +120,13 @@ mockchainFailsWithOptions :: (C.IsShelleyBasedEra era) => Options era -> Mockcha
 mockchainFailsWithOptions Options{params, coverageRef} action handleError =
   try @SomeException (runMockchain0IOWith Wallet.initialUTxOs params action) >>= \case
     Right (_, st) -> do
-      case coverageRef of
-        Nothing -> pure ()
-        Just ref -> do
-          let covData = st ^. coverageData
-          modifyIORef ref (<> covData)
+      let covData = st ^. coverageData
+      appendCovData coverageRef covData
       fail "mockchainFailsWithOptions: Did not fail"
-    Left err -> handleError err
+    Left err -> do
+      let covData = tryExtractCovverageData err
+      appendCovData coverageRef covData
+      handleError err
 
 {- | Run the 'Mockchain' action as a QuickCheck property, considering all 'MockchainError'
 as test failures.
@@ -145,21 +159,16 @@ runMockchainPropWithOptions
   -- ^ The mockchain action to run
   -> Property
 runMockchainPropWithOptions Options{params, coverageRef} utxos =
-  monadic runFinalPredicate
- where
-  runFinalPredicate
-    :: MockchainT era Identity Property
-    -> Property
-  runFinalPredicate m =
-    let (prop', state) = runMockchain m params iState
-     in case coverageRef of
-          Nothing -> prop'
-          Just ref -> monadicIO $ do
-            liftIO $ do
-              let covData = state ^. coverageData
-              modifyIORef ref (<> covData)
-            pure prop'
-  iState = initialStateFor params utxos
+  let iState = initialStateFor params utxos
+   in monadic $ \m ->
+        let (prop', state) = runMockchain m params iState
+         in case coverageRef of
+              Nothing -> prop'
+              Just ref -> monadicIO $ do
+                liftIO $ do
+                  let covData = state ^. coverageData
+                  modifyIORef ref (<> covData)
+                pure prop'
 
 {- | Run the 'Mockchain' action as a QuickCheck property, using the default node params
     and initial distribution, and considering all 'MockchainError's as test failures.
@@ -180,3 +189,20 @@ instance (Show e, Testable a) => Testable (TestableErr e a) where
 -}
 runTestableErr :: forall e m a. (Functor m) => ExceptT e m a -> m (TestableErr e a)
 runTestableErr = fmap TestableErr . runExceptT
+
+appendCovData :: Maybe (IORef CoverageData) -> CoverageData -> IO ()
+appendCovData Nothing _ = pure ()
+appendCovData (Just ref) cd = modifyIORef ref (<> cd)
+
+-- TODO: ugly hack, we have to somehow extract the coverage data from the Exception
+-- the problem is that BalanceError is exposed on the upper level, so we cannot pattern match on it directly
+tryExtractCovverageData :: SomeException -> CoverageData
+tryExtractCovverageData e = mconcat $ map coverageDataFromLogMsg xs
+ where
+  xs = fromErrToStringList e
+  dropO = dropWhile (/= '[')
+  dropC = dropWhile (/= ']')
+  tail' [] = []
+  tail' (_ : xs') = xs'
+  parse = reverse . dropC . tail' . dropC . reverse . dropO . tail' . dropO
+  fromErrToStringList err = fromMaybe [] (readMaybe @[String] $ parse $ show err)
