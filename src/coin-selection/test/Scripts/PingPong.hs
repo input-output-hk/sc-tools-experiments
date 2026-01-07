@@ -4,6 +4,7 @@
 {-# LANGUAGE TemplateHaskell #-}
 {-# LANGUAGE ViewPatterns #-}
 {-# LANGUAGE NoImplicitPrelude #-}
+{-# OPTIONS_GHC -g -fplugin-opt PlutusTx.Plugin:coverage-all #-}
 
 -- A plutus validator that only succeeds if the redeemer is identical to the script's input index
 module Scripts.PingPong (
@@ -55,8 +56,6 @@ instance P.Show PingPongState where
   {-# INLINEABLE show #-}
   show = showState
 
--- deriving anyclass (ToJSON, FromJSON)
-
 PlutusTx.unstableMakeIsData ''PingPongRedeemer
 PlutusTx.unstableMakeIsData ''PingPongState
 
@@ -73,11 +72,16 @@ validator
             }
         }
     ) = case (currentState, action, nextState) of
-    (Pinged, Pong, Ponged) -> BI.unitval
-    (Ponged, Ping, Pinged) -> BI.unitval
-    (Pinged, Stop, Stopped) -> BI.unitval
-    (Ponged, Stop, Stopped) -> BI.unitval
-    _ -> P.traceError P.$ "Invalid state transition: " `P.appendString` showState currentState `P.appendString` showAction action `P.appendString` showState nextState
+    (Pinged, Pong, Ponged) ->
+      BI.unitval
+    (Ponged, Ping, Pinged) ->
+      BI.unitval
+    (Pinged, Stop, Stopped) ->
+      BI.unitval
+    (Ponged, Stop, Stopped) ->
+      BI.unitval
+    _ ->
+      P.traceError P.$ "Coverage: BRANCH_INVALID state=" `P.appendString` showState currentState `P.appendString` " action=" `P.appendString` showAction action `P.appendString` " nextState=" `P.appendString` showState nextState
 
 {-# INLINEABLE getStateFromInputs #-}
 getStateFromInputs :: Map DatumHash Datum -> [TxInInfo] -> PingPongState

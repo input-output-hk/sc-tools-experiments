@@ -29,6 +29,7 @@ module Convex.Class (
   MockChainState (..),
   env,
   poolState,
+  coverageData,
   transactions,
   failedTransactions,
   datums,
@@ -163,6 +164,7 @@ import Ouroboros.Consensus.HardFork.History (
 import Ouroboros.Network.Protocol.LocalStateQuery.Type qualified as T
 import Ouroboros.Network.Protocol.LocalTxSubmission.Type (SubmitResult (..))
 import PlutusLedgerApi.V1 qualified as PV1
+import PlutusTx.Coverage (CoverageData)
 import Test.QuickCheck.Monadic (PropertyM)
 
 -- Error types
@@ -268,8 +270,9 @@ class (Monad m) => MonadBlockchain era m | m -> era where
   querySystemStart :: m SystemStart
   queryEraHistory :: m C.EraHistory
   querySlotNo :: m (C.SlotNo, SlotLength, UTCTime)
-    -- ^ returns the current slot number, slot length and begin utc time for slot.
-    -- Slot 0 is returned when at genesis.
+    {- ^ returns the current slot number, slot length and begin utc time for slot.
+    Slot 0 is returned when at genesis.
+    -}
 
   queryNetworkId :: m C.NetworkId
     -- ^ Get the network id
@@ -346,6 +349,7 @@ data MockChainState era
   , mcsDatums :: Map (C.Hash C.ScriptData) C.HashableScriptData
   , mcsTxById :: Map C.TxId (C.Tx era)
   -- ^ Index of transactions by ID
+  , mcsCoverageData :: CoverageData -- Add this field
   }
 
 makeLensesFor
@@ -355,6 +359,7 @@ makeLensesFor
   , ("mcsFailedTransactions", "failedTransactions")
   , ("mcsDatums", "datums")
   , ("mcsTxById", "txById")
+  , ("mcsCoverageData", "coverageData")
   ]
   ''MockChainState
 
@@ -412,7 +417,8 @@ setSlot s = modifySlot (const (s, ()))
 modifyUtxo
   :: forall era m a
    . (C.IsShelleyBasedEra era, MonadMockchain era m)
-  => (UTxO (C.ShelleyLedgerEra era) -> (UTxO (C.ShelleyLedgerEra era), a)) -> m a
+  => (UTxO (C.ShelleyLedgerEra era) -> (UTxO (C.ShelleyLedgerEra era), a))
+  -> m a
 modifyUtxo f =
   C.shelleyBasedEraConstraints @era C.shelleyBasedEra $
     modifyMockChainState $ \s ->
@@ -469,11 +475,12 @@ control over the capabilities they require.
   See note [MonadUtxoQuery design].
 -}
 class (Monad m) => MonadUtxoQuery m where
-  -- | Given a set of payment credentials, retrieve all UTxOs associated with
-  -- those payment credentials according to the current indexed blockchain
-  -- state. Each UTXO also possibly has the resolved datum (meaning that if we
-  -- only have the datum hash, the implementation should try and resolve it to
-  -- the actual datum).
+  {- | Given a set of payment credentials, retrieve all UTxOs associated with
+  those payment credentials according to the current indexed blockchain
+  state. Each UTXO also possibly has the resolved datum (meaning that if we
+  only have the datum hash, the implementation should try and resolve it to
+  the actual datum).
+  -}
   utxosByPaymentCredentials :: Set C.PaymentCredential -> m (UtxoSet C.CtxUTxO (Maybe C.HashableScriptData))
   default utxosByPaymentCredentials :: (MonadTrans t, m ~ t n, MonadUtxoQuery n) => Set C.PaymentCredential -> m (UtxoSet C.CtxUTxO (Maybe C.HashableScriptData))
   utxosByPaymentCredentials = lift . utxosByPaymentCredentials

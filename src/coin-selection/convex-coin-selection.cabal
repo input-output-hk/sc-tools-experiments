@@ -108,6 +108,8 @@ test-suite convex-coin-selection-test
     , plutus-ledger-api:plutus-ledger-api-testlib
     , plutus-tx
     , plutus-tx-plugin
+    , pretty-show
+    , prettyprinter
     , QuickCheck
     , tasty
     , tasty-hunit

@@ -39,6 +39,7 @@ library
   import:          lang
   exposed-modules:
     Convex.MockChain
+    Convex.MockChain.Coverage
     Convex.MockChain.Defaults
     Convex.MockChain.Gen
     Convex.MockChain.Utils
@@ -78,3 +79,8 @@ library
     , ouroboros-consensus-cardano
     , plutus-core
     , plutus-ledger-api
+    , plutus-tx
+    , pretty-show
+    , text
+
+-- from me

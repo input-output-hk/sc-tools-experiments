@@ -5,6 +5,7 @@
 -- 1.1.0.0 will be enabled in conway
 {-# OPTIONS_GHC -fobject-code -fno-ignore-interface-pragmas -fno-omit-interface-pragmas -fplugin-opt PlutusTx.Plugin:target-version=1.1.0.0 #-}
 {-# OPTIONS_GHC -fplugin-opt PlutusTx.Plugin:defer-errors #-}
+{-# OPTIONS_GHC -g -fplugin-opt PlutusTx.Plugin:coverage-all #-}
 
 -- | Scripts used for testing
 module Scripts (
@@ -19,6 +20,7 @@ module Scripts (
   pingPongValidatorScript,
   spendSample,
   playPingPongRound,
+  pingPongCovIdx,
   Sample.SampleRedeemer (..),
   PingPong.PingPongRedeemer (..),
   PingPong.PingPongState (..),
@@ -35,6 +37,8 @@ import PlutusLedgerApi.Common (SerialisedScript)
 import PlutusLedgerApi.Test.Examples (alwaysSucceedingNAryFunction)
 import PlutusTx (BuiltinData, CompiledCode)
 import PlutusTx qualified
+import PlutusTx.Code (getCovIdx)
+import PlutusTx.Coverage (CoverageIndex)
 import PlutusTx.Prelude (BuiltinUnit)
 import Scripts.MatchingIndex qualified as MatchingIndex
 import Scripts.PingPong qualified as PingPong
@@ -72,6 +76,9 @@ pingPongValidatorCompiled = $$(PlutusTx.compile [||PingPong.validator||])
 
 pingPongValidatorScript :: C.PlutusScript C.PlutusScriptV3
 pingPongValidatorScript = compiledCodeToScript pingPongValidatorCompiled
+
+pingPongCovIdx :: CoverageIndex
+pingPongCovIdx = getCovIdx $$(PlutusTx.compile [||PingPong.validator||])
 
 {- | Script that passes if the input's index (in the list of transaction inputs)
   matches the number passed as the redeemer

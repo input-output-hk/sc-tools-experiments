@@ -1,4 +1,5 @@
 {-# LANGUAGE LambdaCase #-}
+{-# LANGUAGE NamedFieldPuns #-}
 {-# LANGUAGE NumericUnderscores #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE TypeApplications #-}
@@ -37,6 +38,7 @@ import Convex.BuildTx (
 import Convex.BuildTx qualified as BuildTx
 import Convex.CardanoApi.Lenses qualified as L
 import Convex.Class (
+  MockChainState (MockChainState, mcsCoverageData),
   MonadBlockchain (..),
   MonadDatumQuery (queryDatumFromHash),
   MonadMockchain,
@@ -102,6 +104,8 @@ import Data.List.NonEmpty (NonEmpty (..))
 import Data.Map qualified as Map
 import Data.Set qualified as Set
 import PlutusLedgerApi.V2 qualified as PV2
+import PlutusTx.Coverage (CoverageReport (CoverageReport))
+import Prettyprinter qualified as Pretty
 import Scripts qualified
 import Scripts.PingPong qualified as PingPong
 import Test.QuickCheck.Gen qualified as Gen
@@ -117,6 +121,7 @@ import Test.Tasty.QuickCheck (
   testProperty,
  )
 import Test.Tasty.QuickCheck qualified as QC
+import Text.Show.Pretty (ppShow)
 
 -- | Model state for the PingPong contract testing interface
 data PingPongModel = PingPongModel
