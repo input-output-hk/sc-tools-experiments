@@ -59,7 +59,6 @@ import Test.QuickCheck (
  )
 import Test.QuickCheck.Monadic (PropertyM (..), monadic, monadicIO)
 import Text.Read (readMaybe)
-import Text.Show.Pretty (ppShow)
 
 data Options era = Options
   { params :: NodeParams era
