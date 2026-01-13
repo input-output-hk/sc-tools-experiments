@@ -39,10 +39,18 @@ common lang
 
 library
   import:          lang
-  exposed-modules: Convex.TestingInterface
+  exposed-modules:
+    Convex.TestingInterface
+    Convex.ThreatModel
+    Convex.ThreatModel.Cardano.Api
+    Convex.ThreatModel.DoubleSatisfaction
+    Convex.ThreatModel.Pretty
+    Convex.ThreatModel.TxModifier
+
   hs-source-dirs:  lib
   build-depends:
     , base              >=4.14.0
+    , bytestring
     , cardano-api
     , containers
     , convex-mockchain
@@ -50,3 +58,23 @@ library
     , mtl
     , QuickCheck
     , transformers
+
+  -- cardano dependencies for ThreatModel
+  build-depends:
+    , cardano-ledger-allegra
+    , cardano-ledger-alonzo
+    , cardano-ledger-api
+    , cardano-ledger-babbage
+    , cardano-ledger-binary
+    , cardano-ledger-conway
+    , cardano-ledger-core
+    , cardano-slotting
+    , cardano-strict-containers
+    , ouroboros-consensus
+    , ouroboros-consensus-cardano
+    , plutus-ledger-api
+    , plutus-tx
+    , pretty
+    , sop-extras
+    , text
+    , time

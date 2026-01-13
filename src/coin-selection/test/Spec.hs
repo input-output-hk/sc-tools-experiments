@@ -44,11 +44,13 @@ import Convex.Class (
   MonadDatumQuery (queryDatumFromHash),
   MonadMockchain,
   getTxById,
+  getTxs,
   getUtxo,
   setReward,
   setUtxo,
   singleUTxO,
  )
+import Convex.Class qualified
 import Convex.CoinSelection (
   BalanceTxError,
   ChangeOutputPosition (TrailingChange),
@@ -56,6 +58,7 @@ import Convex.CoinSelection (
   publicKeyCredential,
  )
 import Convex.MockChain (
+  MockchainT,
   ValidationError (..),
   evalMockchain0IO,
   failedTransactions,
@@ -72,7 +75,7 @@ import Convex.MockChain.Defaults qualified as Defaults
 import Convex.MockChain.Gen qualified as Gen
 import Convex.MockChain.Staking (registerPool)
 import Convex.MockChain.Utils (
-  Options (coverageRef),
+  Options (Options, coverageRef, params),
   defaultOptions,
   mockchainFails,
   mockchainFailsWithOptions,
@@ -88,10 +91,20 @@ import Convex.NodeParams (
  )
 import Convex.Query (balancePaymentCredentials)
 import Convex.TestingInterface (
+  Actions (Actions),
   RunOptions (mcOptions),
   TestingInterface (..),
   defaultRunOptions,
   propRunActionsWithOptions,
+ )
+import Convex.ThreatModel (
+  ThreatModel,
+  ThreatModelEnv (..),
+  counterexampleTM,
+  ensure,
+  getTxOutputs,
+  paragraph,
+  runThreatModel,
  )
 import Convex.Utils (failOnError, inBabbage)
 import Convex.Utils.String (unsafeAssetName, unsafeTxId)
@@ -120,6 +133,7 @@ import Scripts qualified
 import Scripts.PingPong qualified as PingPong
 import System.Exit (ExitCode)
 import Test.QuickCheck.Gen qualified as Gen
+import Test.QuickCheck.Monadic (monadicIO, monitor, run)
 import Test.Tasty (
   TestTree,
   defaultMain,
@@ -129,6 +143,7 @@ import Test.Tasty.HUnit (Assertion, testCase)
 import Test.Tasty.QuickCheck (
   Property,
   classify,
+  counterexample,
   testProperty,
  )
 import Test.Tasty.QuickCheck qualified as QC
@@ -291,6 +306,85 @@ instance TestingInterface PingPongModel where
 
   monitoring _state _action prop = prop
 
+{- | A simple threat model that demonstrates the integration pattern.
+
+This threat model checks basic transaction properties. It serves as an
+example of how to integrate ThreatModel with TestingInterface.
+
+NOTE: For proper threat model testing of output protection:
+1. The UTxO set should be captured at each transaction submission time
+   (not at the end of all transactions, as done here for simplicity)
+2. Only transactions with script inputs should be tested for output protection
+   (since only then does a validator run that could enforce the output)
+
+The DoubleSatisfaction threat model from the library is designed for more
+sophisticated scenarios where you need to test that scripts properly protect
+their outputs from being redirected.
+-}
+basicThreatModel :: ThreatModel ()
+basicThreatModel = do
+  -- Get transaction outputs to verify we can access transaction data
+  outputs <- getTxOutputs
+  -- Skip empty transactions (shouldn't happen, but be defensive)
+  ensure (not $ null outputs)
+  -- Log information about the transaction being tested
+  counterexampleTM $
+    paragraph
+      [ "Transaction has"
+      , show (length outputs)
+      , "outputs."
+      ]
+  -- This trivially passes - it demonstrates the integration pattern
+  -- For real threat models, you would use shouldValidate/shouldNotValidate
+  -- to check specific security properties
+  pure ()
+
+{- | Property test that runs PingPong actions and then checks a
+threat model against all submitted transactions.
+
+This demonstrates how to integrate threat models with TestingInterface.
+-}
+propPingPongWithThreatModel :: RunOptions -> Actions PingPongModel -> Property
+propPingPongWithThreatModel opts (Actions actions) = monadicIO $ do
+  let Options{params} = mcOptions opts
+
+  -- Run the mockchain and collect transactions
+  result <- run $ runMockchain0IOWith Wallet.initialUTxOs params $ do
+    -- Execute all actions
+    _ <- foldMActions (initialState @PingPongModel) actions
+    -- Collect submitted transactions
+    txs <- Convex.Class.getTxs
+    -- Get the current UTxO set
+    ledgerUtxo <- Convex.Class.getUtxo
+    pure (txs, ledgerUtxo)
+
+  case result of
+    ((txs, ledgerUtxo), _finalState) -> do
+      -- Convert ledger UTxO to cardano-api UTxO
+      let utxo = fromLedgerUTxO C.shelleyBasedEra ledgerUtxo
+          pparams' = params ^. ledgerProtocolParameters
+
+      -- Create ThreatModelEnv for each transaction
+      let envs =
+            [ ThreatModelEnv
+                { currentTx = tx
+                , currentUTxOs = utxo
+                , pparams = pparams'
+                }
+            | tx <- txs
+            ]
+
+      -- Run the basic threat model
+      -- This demonstrates the integration pattern
+      monitor (counterexample $ "Tested " ++ show (length txs) ++ " transactions")
+      pure $ runThreatModel basicThreatModel envs
+ where
+  foldMActions :: PingPongModel -> [Action PingPongModel] -> MockchainT C.ConwayEra IO PingPongModel
+  foldMActions s [] = pure s
+  foldMActions s (a : as) = do
+    perform s a
+    foldMActions (nextState s a) as
+
 main :: IO ()
 main = do
   ref <- newIORef mempty
@@ -409,6 +503,9 @@ tests ref =
             , testProperty
                 "Property-based test with TestingInterface"
                 (propRunActionsWithOptions @PingPongModel runOpts)
+            , testProperty
+                "Property-based test with ThreatModel integration"
+                (propPingPongWithThreatModel runOpts)
             ]
         ]
     , testGroup

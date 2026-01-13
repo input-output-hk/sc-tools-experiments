@@ -42,11 +42,6 @@ library
     Convex.MockChain.Coverage
     Convex.MockChain.Defaults
     Convex.MockChain.Gen
-    Convex.MockChain.ThreatModel
-    Convex.MockChain.ThreatModel.Cardano.Api
-    Convex.MockChain.ThreatModel.DoubleSatisfaction
-    Convex.MockChain.ThreatModel.Pretty
-    Convex.MockChain.ThreatModel.TxModifier
     Convex.MockChain.Utils
 
   hs-source-dirs:  lib
@@ -73,22 +68,16 @@ library
   build-depends:
     , cardano-api
     , cardano-crypto-class
-    , cardano-ledger-allegra
     , cardano-ledger-alonzo
     , cardano-ledger-api
     , cardano-ledger-babbage
-    , cardano-ledger-binary
     , cardano-ledger-conway
     , cardano-ledger-core
     , cardano-ledger-shelley
     , cardano-slotting
-    , cardano-strict-containers
     , ouroboros-consensus
     , ouroboros-consensus-cardano
     , plutus-core
     , plutus-ledger-api
     , plutus-tx
-    , pretty
     , text
-
---TODO: added by me , remove if unnecessary or reorder

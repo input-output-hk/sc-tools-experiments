@@ -1,7 +1,7 @@
 {-# LANGUAGE GADTs #-}
 {-# LANGUAGE RecordWildCards #-}
 
-module Convex.MockChain.ThreatModel.Pretty where
+module Convex.ThreatModel.Pretty where
 
 import Cardano.Api hiding (Doc, (<+>))
 
@@ -21,8 +21,8 @@ import GHC.Exts (toList)
 import Text.PrettyPrint.HughesPJClass hiding ((<>))
 import Text.Printf
 
-import Convex.MockChain.ThreatModel.Cardano.Api
-import Convex.MockChain.ThreatModel.TxModifier
+import Convex.ThreatModel.Cardano.Api
+import Convex.ThreatModel.TxModifier
 
 {- | Format a list of strings as a paragraph. The structure of the list is not considered other than
   inserting whitespace between consecutive elements. Use with

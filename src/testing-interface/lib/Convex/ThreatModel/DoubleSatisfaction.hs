@@ -1,13 +1,13 @@
 {-# LANGUAGE OverloadedStrings #-}
 
-module Convex.MockChain.ThreatModel.DoubleSatisfaction (
+module Convex.ThreatModel.DoubleSatisfaction (
   doubleSatisfaction,
 ) where
 
 import Data.ByteString (ByteString)
 import PlutusTx.Builtins (toBuiltin)
 
-import Convex.MockChain.ThreatModel
+import Convex.ThreatModel
 
 safeScript :: SimpleScript
 safeScript = RequireAllOf [] -- TODO: this is not the right script!

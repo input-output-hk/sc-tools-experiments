@@ -3,7 +3,7 @@
 {-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE TypeApplications #-}
 
-module Convex.MockChain.ThreatModel.Cardano.Api where
+module Convex.ThreatModel.Cardano.Api where
 
 import Cardano.Api
 
@@ -12,7 +12,6 @@ import Cardano.Ledger.Alonzo.Scripts qualified as Ledger
 import Cardano.Ledger.Alonzo.TxBody qualified as Ledger
 import Cardano.Ledger.Alonzo.TxWits qualified as Ledger
 import Cardano.Ledger.Api.Tx.Body qualified as Ledger
-import Cardano.Ledger.Babbage.TxBody qualified as Ledger
 import Cardano.Ledger.Conway.Scripts qualified as Conway
 import Cardano.Ledger.Conway.TxBody qualified as Conway
 import Cardano.Ledger.Keys (WitVKey (..), coerceKeyRole, hashKey)

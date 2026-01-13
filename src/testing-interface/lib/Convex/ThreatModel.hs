@@ -31,7 +31,7 @@
 
   For a more complex example see "Test.QuickCheck.ThreatModel.DoubleSatisfaction".
 -}
-module Convex.MockChain.ThreatModel (
+module Convex.ThreatModel (
   -- * Transaction modifiers
 
   -- ** Types
@@ -141,9 +141,9 @@ import Test.QuickCheck
 import Text.PrettyPrint hiding ((<>))
 import Text.Printf
 
-import Convex.MockChain.ThreatModel.Cardano.Api
-import Convex.MockChain.ThreatModel.Pretty
-import Convex.MockChain.ThreatModel.TxModifier
+import Convex.ThreatModel.Cardano.Api
+import Convex.ThreatModel.Pretty
+import Convex.ThreatModel.TxModifier
 
 {- $cardanoHelpers
 Some convenience functions making it easier to work with Cardano API.

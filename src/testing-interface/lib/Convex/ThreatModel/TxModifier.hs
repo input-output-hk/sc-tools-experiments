@@ -5,13 +5,12 @@
 {-# LANGUAGE ViewPatterns #-}
 {-# OPTIONS_GHC -Wno-incomplete-uni-patterns #-}
 
-module Convex.MockChain.ThreatModel.TxModifier where
+module Convex.ThreatModel.TxModifier where
 
 import Cardano.Api
 import Cardano.Ledger.Alonzo.TxBody qualified as Ledger
 import Cardano.Ledger.Alonzo.TxWits qualified as Ledger
 import Cardano.Ledger.Api.Era qualified as Ledger
-import Cardano.Ledger.Babbage.TxBody qualified as Ledger
 import Cardano.Ledger.Binary qualified as CBOR
 import Cardano.Ledger.Conway.Scripts qualified as Conway
 import Cardano.Ledger.Conway.TxBody qualified as Conway
@@ -24,7 +23,7 @@ import Data.Maybe.Strict
 import Data.Sequence.Strict qualified as Seq
 import Data.Set qualified as Set
 
-import Convex.MockChain.ThreatModel.Cardano.Api
+import Convex.ThreatModel.Cardano.Api
 
 -- | A transaction output paired with its index in the transaction.
 data Output = Output
