@@ -46,6 +46,7 @@ library
     Convex.ThreatModel.DoubleSatisfaction
     Convex.ThreatModel.Pretty
     Convex.ThreatModel.TxModifier
+    Convex.ThreatModel.UnprotectedScriptOutput
 
   hs-source-dirs:  lib
   build-depends:

@@ -106,6 +106,7 @@ import Convex.ThreatModel (
   paragraph,
   runThreatModel,
  )
+import Convex.ThreatModel.UnprotectedScriptOutput (unprotectedScriptOutput)
 import Convex.Utils (failOnError, inBabbage)
 import Convex.Utils.String (unsafeAssetName, unsafeTxId)
 import Convex.Utxos qualified as Utxos
@@ -385,6 +386,166 @@ propPingPongWithThreatModel opts (Actions actions) = monadicIO $ do
     perform s a
     foldMActions (nextState s a) as
 
+{- | Test that demonstrates the VULNERABLE pingPong's vulnerability to output redirection.
+
+This test runs the unprotectedScriptOutput threat model against the VULNERABLE
+pingPong validator. The threat model attempts to redirect script outputs to the
+signer's address while preserving the datum.
+
+Since the vulnerable pingPong only validates datum state transitions but doesn't
+check that outputs go back to the script address, this threat model WILL find
+a vulnerability - the modified transaction validates when it shouldn't.
+
+We use 'expectFailure' because finding the vulnerability means the
+QuickCheck property fails (which is the expected behavior for a vulnerable
+script).
+-}
+propPingPongVulnerableToOutputRedirect :: RunOptions -> Property
+propPingPongVulnerableToOutputRedirect opts = QC.expectFailure $ monadicIO $ do
+  let Options{params} = mcOptions opts
+
+  -- Run pingPong with VULNERABLE script and capture (tx, utxo-before-tx)
+  result <- run $ runMockchain0IOWith Wallet.initialUTxOs params $ runExceptT pingPongVulnerableScenario
+
+  case result of
+    (Left err, _) -> do
+      monitor (counterexample $ "Mockchain error: " ++ show err)
+      pure $ QC.property False
+    (Right (tx, utxo), _finalState) -> do
+      let pparams' = params ^. ledgerProtocolParameters
+          env =
+            ThreatModelEnv
+              { currentTx = tx
+              , currentUTxOs = utxo
+              , pparams = pparams'
+              }
+
+      -- Run the threat model - it should find the vulnerability
+      monitor (counterexample "Testing VULNERABLE pingPong for unprotected script output vulnerability")
+      pure $ runThreatModel unprotectedScriptOutput [env]
+ where
+  pingPongVulnerableScenario
+    :: ( MonadMockchain C.ConwayEra m
+       , MonadError (BalanceTxError C.ConwayEra) m
+       , MonadFail m
+       )
+    => m (C.Tx C.ConwayEra, C.UTxO C.ConwayEra)
+  pingPongVulnerableScenario = do
+    let value = 10_000_000
+        -- Use VULNERABLE script
+        scriptHash = C.hashScript (plutusScript Scripts.pingPongVulnerableScript)
+
+    -- Deploy pingPong with vulnerable script
+    deployTx <-
+      tryBalanceAndSubmit
+        mempty
+        Wallet.w1
+        ( execBuildTx
+            ( BuildTx.payToScriptInlineDatum
+                Defaults.networkId
+                scriptHash
+                Scripts.Pinged
+                C.NoStakeAddress
+                (C.lovelaceToValue value)
+            )
+        )
+        TrailingChange
+        []
+
+    -- Capture UTxO BEFORE playing a round (contains the script UTxO)
+    utxoBefore <- fromLedgerUTxO C.shelleyBasedEra <$> getUtxo
+
+    -- Play a round - this transaction IS validated by the VULNERABLE script
+    let txIn = C.TxIn (C.getTxId $ C.getTxBody deployTx) (C.TxIx 0)
+    playTx <-
+      tryBalanceAndSubmit
+        mempty
+        Wallet.w1
+        (execBuildTx $ Scripts.playPingPongVulnerableRound Defaults.networkId value Scripts.Pong txIn)
+        TrailingChange
+        []
+
+    pure (playTx, utxoBefore)
+
+{- | Test that demonstrates the SECURE pingPong is NOT vulnerable to output redirection.
+
+This test runs the unprotectedScriptOutput threat model against the SECURE
+pingPong validator. The threat model attempts to redirect script outputs to the
+signer's address while preserving the datum.
+
+Since the secure pingPong validates BOTH datum state transitions AND output
+addresses, this threat model should NOT find a vulnerability - the modified
+transaction should fail validation.
+
+NO 'expectFailure' - the threat model should NOT find a vulnerability.
+-}
+propPingPongSecureAgainstOutputRedirect :: RunOptions -> Property
+propPingPongSecureAgainstOutputRedirect opts = monadicIO $ do
+  let Options{params} = mcOptions opts
+
+  -- Run pingPong with SECURE script and capture (tx, utxo-before-tx)
+  result <- run $ runMockchain0IOWith Wallet.initialUTxOs params $ runExceptT pingPongSecureScenario
+
+  case result of
+    (Left err, _) -> do
+      monitor (counterexample $ "Mockchain error: " ++ show err)
+      pure $ QC.property False
+    (Right (tx, utxo), _finalState) -> do
+      let pparams' = params ^. ledgerProtocolParameters
+          env =
+            ThreatModelEnv
+              { currentTx = tx
+              , currentUTxOs = utxo
+              , pparams = pparams'
+              }
+
+      -- Run the threat model - it should NOT find a vulnerability
+      monitor (counterexample "Testing SECURE pingPong - should NOT be vulnerable")
+      pure $ runThreatModel unprotectedScriptOutput [env]
+ where
+  pingPongSecureScenario
+    :: ( MonadMockchain C.ConwayEra m
+       , MonadError (BalanceTxError C.ConwayEra) m
+       , MonadFail m
+       )
+    => m (C.Tx C.ConwayEra, C.UTxO C.ConwayEra)
+  pingPongSecureScenario = do
+    let value = 10_000_000
+        -- Use SECURE script
+        scriptHash = C.hashScript (plutusScript Scripts.pingPongValidatorScript)
+
+    -- Deploy pingPong with secure script
+    deployTx <-
+      tryBalanceAndSubmit
+        mempty
+        Wallet.w1
+        ( execBuildTx
+            ( BuildTx.payToScriptInlineDatum
+                Defaults.networkId
+                scriptHash
+                Scripts.Pinged
+                C.NoStakeAddress
+                (C.lovelaceToValue value)
+            )
+        )
+        TrailingChange
+        []
+
+    -- Capture UTxO BEFORE playing a round (contains the script UTxO)
+    utxoBefore <- fromLedgerUTxO C.shelleyBasedEra <$> getUtxo
+
+    -- Play a round - this transaction IS validated by the SECURE script
+    let txIn = C.TxIn (C.getTxId $ C.getTxBody deployTx) (C.TxIx 0)
+    playTx <-
+      tryBalanceAndSubmit
+        mempty
+        Wallet.w1
+        (execBuildTx $ Scripts.playPingPongRound Defaults.networkId value Scripts.Pong txIn)
+        TrailingChange
+        []
+
+    pure (playTx, utxoBefore)
+
 main :: IO ()
 main = do
   ref <- newIORef mempty
@@ -503,9 +664,17 @@ tests ref =
             , testProperty
                 "Property-based test with TestingInterface"
                 (propRunActionsWithOptions @PingPongModel runOpts)
-            , testProperty
+            , -- TODO: this in the future is going to be moved , removed or reshaped
+              -- becuase is just proving that a minimal thread model can be integrated
+              testProperty
                 "Property-based test with ThreatModel integration"
                 (propPingPongWithThreatModel runOpts)
+            , testProperty
+                "PingPong VULNERABLE to unprotected output redirect"
+                (propPingPongVulnerableToOutputRedirect threatModelOpts)
+            , testProperty
+                "PingPong SECURE against unprotected output redirect"
+                (propPingPongSecureAgainstOutputRedirect threatModelOpts)
             ]
         ]
     , testGroup
@@ -528,8 +697,10 @@ tests ref =
         ]
     ]
  where
-  opts = modifyTransactionLimits (defaultOptions{coverageRef = Just ref}) 17000
+  -- Use 25000 byte limit because the secure PingPong validator is larger
+  opts = modifyTransactionLimits (defaultOptions{coverageRef = Just ref}) 25000
   runOpts = defaultRunOptions{mcOptions = opts}
+  threatModelOpts = runOpts
 
 spendPublicKeyOutput :: Assertion
 spendPublicKeyOutput = mockchainSucceeds $ failOnError (Wallet.w2 `paymentTo` Wallet.w1)
