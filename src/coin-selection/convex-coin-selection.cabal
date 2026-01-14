@@ -84,6 +84,8 @@ test-suite convex-coin-selection-test
   main-is:        Spec.hs
   other-modules:
     Scripts
+    Scripts.Bounty
+    Scripts.Bounty.Vulnerable.DoubleSatisfaction
     Scripts.MatchingIndex
     Scripts.PingPong
     Scripts.PingPong.Vulnerable.UnprotectedScriptOutput

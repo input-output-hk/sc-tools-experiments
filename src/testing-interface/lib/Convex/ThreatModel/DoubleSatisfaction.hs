@@ -17,13 +17,16 @@ safeScript = RequireAllOf [] -- TODO: this is not the right script!
   For a transaction with a public key output to an address (the victim) other than the signer
   (the attacker),
 
-  * if you cannot redirect (the Ada from) the victim to the attacker, i.e. there is a script that
-    care about the output to the victim,
+  * if you cannot redirect the output to the attacker, i.e. there is a script that
+    cares about the output to the victim,
   * but it validates when you bundle the redirected transaction with a "safe script" that spends
     the same amount to the victim, tagging the output with a unique datum,
 
   then we have found a double satisfaction vulnerability in the script that stopped the first
   modified transaction.
+
+  NOTE: This threat model removes the victim's output entirely and redirects the value to the
+  attacker. This works for both Ada-only outputs and outputs with tokens.
 -}
 doubleSatisfaction :: ThreatModel ()
 doubleSatisfaction = do
@@ -33,14 +36,15 @@ doubleSatisfaction = do
   let validTarget t = signer /= t && isKeyAddressAny t
   output <- pickAny $ filter (validTarget . addressOf) outputs
 
-  let ada = projectAda $ valueOf output
+  let value = valueOf output
+      victimTarget = addressOf output
 
   counterexampleTM $
     paragraph $
       [ "The transaction above is signed by"
       , show $ prettyAddress signer
       , "and contains an output to"
-      , show (prettyAddress $ addressOf output) ++ "."
+      , show (prettyAddress victimTarget) ++ "."
       , "The objective is to show that there is a double satisfaction vulnerability"
       , "that allows the signer to steal this output."
       ]
@@ -51,10 +55,12 @@ doubleSatisfaction = do
       , "i.e. the script actually cares about this output."
       ]
 
+  -- Precondition: removing the victim's output and paying to the signer should FAIL
+  -- because the script enforces the payment to the victim
   threatPrecondition $
     shouldNotValidate $
-      changeValueOf output (valueOf output <> negateValue ada)
-        <> addOutput signer ada TxOutDatumNone ReferenceScriptNone
+      removeOutput output
+        <> addOutput signer value TxOutDatumNone ReferenceScriptNone
 
   counterexampleTM $
     paragraph
@@ -62,13 +68,11 @@ doubleSatisfaction = do
       , "that pays out to the victim and uses a unique datum to identify the payment."
       ]
 
-  -- add safe script input with protected output, redirect original output to signer
+  -- Attack: add safe script input with protected output, redirect original output to signer
   let uniqueDatum = txOutDatum $ toScriptData (toBuiltin ("SuchSecure" :: ByteString))
 
-      victimTarget = addressOf output
-
   shouldNotValidate $
-    addSimpleScriptInput safeScript ada ReferenceScriptNone
-      <> addOutput victimTarget ada uniqueDatum ReferenceScriptNone
-      <> changeValueOf output (valueOf output <> negateValue ada)
-      <> addOutput signer ada TxOutDatumNone ReferenceScriptNone
+    addSimpleScriptInput safeScript value ReferenceScriptNone
+      <> addOutput victimTarget value uniqueDatum ReferenceScriptNone
+      <> removeOutput output
+      <> addOutput signer value TxOutDatumNone ReferenceScriptNone
