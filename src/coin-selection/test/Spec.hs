@@ -309,6 +309,8 @@ instance TestingInterface PingPongModel where
 
   monitoring _state _action prop = prop
 
+  threatModels = [unprotectedScriptOutput]
+
 {- | A simple threat model that demonstrates the integration pattern.
 
 This threat model checks basic transaction properties. It serves as an
@@ -533,9 +535,6 @@ propPingPongSecureAgainstOutputRedirect opts = monadicIO $ do
         TrailingChange
         []
 
-    -- Capture UTxO BEFORE playing a round (contains the script UTxO)
-    utxoBefore <- fromLedgerUTxO C.shelleyBasedEra <$> getUtxo
-
     -- Play a round - this transaction IS validated by the SECURE script
     let txIn = C.TxIn (C.getTxId $ C.getTxBody deployTx) (C.TxIx 0)
     playTx <-
@@ -545,8 +544,17 @@ propPingPongSecureAgainstOutputRedirect opts = monadicIO $ do
         (execBuildTx $ Scripts.playPingPongRound Defaults.networkId value Scripts.Pong txIn)
         TrailingChange
         []
+    utxoBefore <- fromLedgerUTxO C.shelleyBasedEra <$> getUtxo
+    let txIn2 = C.TxIn (C.getTxId $ C.getTxBody playTx) (C.TxIx 0)
+    playTx2 <-
+      tryBalanceAndSubmit
+        mempty
+        Wallet.w1
+        (execBuildTx $ Scripts.playPingPongRound Defaults.networkId value Scripts.Ping txIn2)
+        TrailingChange
+        []
 
-    pure (playTx, utxoBefore)
+    pure (playTx2, utxoBefore)
 
 {- | Test that demonstrates the VULNERABLE bounty's vulnerability to double satisfaction.
 

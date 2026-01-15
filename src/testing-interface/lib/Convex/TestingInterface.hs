@@ -33,15 +33,20 @@ module Convex.TestingInterface (
 
 import Control.Monad (foldM)
 import Control.Monad.IO.Class (liftIO)
-import Test.QuickCheck (Arbitrary (..), Gen, Property, counterexample, elements, frequency, oneof, property)
+import Test.QuickCheck (Arbitrary (..), Gen, Property, conjoin, counterexample, elements, frequency, oneof, property)
 import Test.QuickCheck.Monadic (monadicIO, monitor, run)
 
 import Cardano.Api qualified as C
-import Convex.MockChain (MockChainState (MockChainState, mcsCoverageData), MockchainT, runMockchain0IOWith)
+import Convex.Class (getTxs, getUtxo)
+import Convex.MockChain (MockChainState (MockChainState, mcsCoverageData), MockchainT, fromLedgerUTxO, runMockchain0IOWith)
 import Convex.MockChain.Utils (Options (Options, coverageRef, params), defaultOptions)
 import Convex.Wallet.MockWallet qualified as Wallet
 import Data.Foldable (traverse_)
 import Data.IORef (modifyIORef)
+
+import Control.Lens ((^.))
+import Convex.NodeParams (ledgerProtocolParameters)
+import Convex.ThreatModel (ThreatModel, ThreatModelEnv (..), runThreatModel)
 
 {- | A testing interface defines the state and behavior of one or more smart contracts.
 
@@ -94,6 +99,14 @@ class (Show state, Eq state) => TestingInterface state where
   -}
   monitoring :: state -> Action state -> Property -> Property
   monitoring _ _ = id
+
+  {- | Threat models to run against the last transaction.
+  Each threat model will be evaluated against the final transaction
+  with the UTxO state captured before that transaction executed.
+  Default: no threat models.
+  -}
+  threatModels :: [ThreatModel ()]
+  threatModels = []
 
 -- | Opaque wrapper for model state
 newtype ModelState state = ModelState {unModelState :: state}
@@ -169,14 +182,33 @@ propRunActionsWithOptions opts@RunOptions{mcOptions = Options{coverageRef, param
     monitor (counterexample $ "Initial state: " ++ show initialSt)
 
   result <- run $ runMockchain0IOWith Wallet.initialUTxOs params $ do
-    foldM (runAction opts) initialSt actions
+    (finalState, lastUtxoBefore) <-
+      foldM
+        ( \(state, _) action -> do
+            utxoBefore <- fromLedgerUTxO C.shelleyBasedEra <$> getUtxo
+            newState <- runAction opts state action
+            pure (newState, Just utxoBefore)
+        )
+        (initialSt, Nothing)
+        actions
+    -- Get the last transaction
+    allTxs <- getTxs
+    let lastTx = if null allTxs then Nothing else Just (head allTxs)
+    pure (finalState, lastUtxoBefore, lastTx)
 
   case result of
-    (finalState, MockChainState{mcsCoverageData = covData}) -> do
+    ((finalState, lastUtxoBefore, lastTx), MockChainState{mcsCoverageData = covData}) -> do
       monitor (counterexample $ "Final state: " ++ show finalState)
       -- accumulate coverage
       traverse_ (\ref -> liftIO $ modifyIORef ref (<> covData)) coverageRef
-      return (property True)
+
+      -- Run threat models if we have a transaction and UTxO
+      case (lastTx, lastUtxoBefore) of
+        (Just tx, Just utxo) -> do
+          let pparams' = params ^. ledgerProtocolParameters
+              env = ThreatModelEnv tx utxo pparams'
+          pure $ conjoin [runThreatModel tm [env] | tm <- threatModels @state]
+        _ -> pure (property True)
  where
   when True m = m
   when False _ = return ()
