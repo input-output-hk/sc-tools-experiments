@@ -37,3 +37,5 @@ graph.dot
 .vim
 CLAUDE.md
 AGENTS.md
+.opencode/
+todo.md

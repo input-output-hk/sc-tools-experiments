@@ -46,7 +46,7 @@ import Data.IORef (modifyIORef)
 
 import Control.Lens ((^.))
 import Convex.NodeParams (ledgerProtocolParameters)
-import Convex.ThreatModel (ThreatModel, ThreatModelEnv (..), runThreatModel)
+import Convex.ThreatModel (ThreatModel, ThreatModelEnv (..), runThreatModelM)
 
 {- | A testing interface defines the state and behavior of one or more smart contracts.
 
@@ -194,21 +194,25 @@ propRunActionsWithOptions opts@RunOptions{mcOptions = Options{coverageRef, param
     -- Get the last transaction
     allTxs <- getTxs
     let lastTx = if null allTxs then Nothing else Just (head allTxs)
-    pure (finalState, lastUtxoBefore, lastTx)
+
+    -- Run threat models INSIDE MockchainT with full Phase 1 + Phase 2 validation
+    threatModelResult <- case (lastTx, lastUtxoBefore) of
+      (Just tx, Just utxo) -> do
+        let pparams' = params ^. ledgerProtocolParameters
+            env = ThreatModelEnv tx utxo pparams'
+        -- Use runThreatModelM with Wallet.w1 for re-balancing and re-signing
+        -- TODO: now signs with w1; in future we may want to vary this
+        conjoin <$> mapM (\tm -> runThreatModelM Wallet.w1 tm [env]) (threatModels @state)
+      _ -> pure (property True)
+
+    pure (finalState, threatModelResult)
 
   case result of
-    ((finalState, lastUtxoBefore, lastTx), MockChainState{mcsCoverageData = covData}) -> do
+    ((finalState, threatModelProp), MockChainState{mcsCoverageData = covData}) -> do
       monitor (counterexample $ "Final state: " ++ show finalState)
       -- accumulate coverage
       traverse_ (\ref -> liftIO $ modifyIORef ref (<> covData)) coverageRef
-
-      -- Run threat models if we have a transaction and UTxO
-      case (lastTx, lastUtxoBefore) of
-        (Just tx, Just utxo) -> do
-          let pparams' = params ^. ledgerProtocolParameters
-              env = ThreatModelEnv tx utxo pparams'
-          pure $ conjoin [runThreatModel tm [env] | tm <- threatModels @state]
-        _ -> pure (property True)
+      pure threatModelProp
  where
   when True m = m
   when False _ = return ()

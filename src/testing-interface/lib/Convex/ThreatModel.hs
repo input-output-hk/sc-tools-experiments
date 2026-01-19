@@ -63,6 +63,7 @@ module Convex.ThreatModel (
   ThreatModel,
   ThreatModelEnv (..),
   runThreatModel,
+  runThreatModelM,
   assertThreatModel,
 
   -- ** Preconditions
@@ -133,17 +134,21 @@ module Convex.ThreatModel (
 import Cardano.Api as X
 
 import Control.Monad
+import Control.Monad.IO.Class (MonadIO (..))
 
 import Data.Map qualified as Map
 
 import Test.QuickCheck
+import Test.QuickCheck qualified as QC
 
 import Text.PrettyPrint hiding ((<>))
 import Text.Printf
 
+import Convex.Class (MonadMockchain (..))
 import Convex.ThreatModel.Cardano.Api
 import Convex.ThreatModel.Pretty
 import Convex.ThreatModel.TxModifier
+import Convex.Wallet (Wallet)
 
 {- $cardanoHelpers
 Some convenience functions making it easier to work with Cardano API.
@@ -247,8 +252,8 @@ runThreatModel = go False
       Validate mods k ->
         interp mon $
           k $
-            uncurry (validateTx $ pparams env) $
-              applyTxModifier (currentTx env) (currentUTxOs env) mods
+            let (modifiedTx, modifiedUtxo) = applyTxModifier (currentTx env) (currentUTxOs env) mods
+             in validateTx (pparams env) modifiedTx modifiedUtxo
       Generate gen shr k ->
         forAllShrinkBlind gen shr $
           interp mon . k
@@ -268,12 +273,75 @@ assertThreatModel
   -> LedgerProtocolParameters Era
   -> [(Tx Era, UTxO Era)]
   -> Property
-assertThreatModel m params txs = runThreatModel m envs
+assertThreatModel m pparams' txs = runThreatModel m envs
  where
   envs =
-    [ ThreatModelEnv tx utxo params
+    [ ThreatModelEnv tx utxo pparams'
     | (tx, utxo) <- txs
     ]
+
+{- | Run threat model inside MockchainT with full Phase 1 + Phase 2 validation.
+
+Unlike 'runThreatModel' which only validates Phase 2 (script execution),
+this version uses re-balancing and re-signing for modified transactions,
+then performs full Phase 1 + Phase 2 validation via 'applyTransaction'.
+
+This catches vulnerabilities that would be masked by signature/fee failures
+in the simpler Phase 2-only validation.
+
+Usage:
+@
+result <- runMockchain0IOWith utxos params $ do
+  -- ... run your actions to get a transaction ...
+  runThreatModelM Wallet.w1 unprotectedScriptOutput [env]
+@
+-}
+runThreatModelM
+  :: (MonadMockchain Era m, MonadFail m, MonadIO m)
+  => Wallet
+  -> ThreatModel a
+  -> [ThreatModelEnv]
+  -> m Property
+runThreatModelM wallet = go False
+ where
+  go b model [] = pure $ b ==> property True
+  go b model (env : envs) = interpM (counterexample $ show info) model
+   where
+    info =
+      vcat
+        [ ""
+        , block
+            "Original UTxO set"
+            [ prettyUTxO $
+                restrictUTxO (currentTx env) $
+                  currentUTxOs env
+            ]
+        , ""
+        , block "Original transaction" [prettyTx $ currentTx env]
+        , ""
+        ]
+
+    interpM mon = \case
+      Validate mods k -> do
+        let (modifiedTx, modifiedUtxo) = applyTxModifier (currentTx env) (currentUTxOs env) mods
+        -- Re-balance and re-sign the modified transaction
+        params <- askNodeParams
+        rebalancedTx <- rebalanceAndSign wallet modifiedTx modifiedUtxo
+        -- Validate with full Phase 1 + Phase 2
+        report <- validateTxM params rebalancedTx modifiedUtxo
+        interpM mon (k report)
+      Generate gen _shr k -> do
+        -- Use QuickCheck's generate in IO
+        a <- liftIO $ QC.generate gen
+        interpM mon (k a)
+      GetCtx k ->
+        interpM mon (k env)
+      Skip -> go b model envs
+      InPrecondition k -> interpM mon (k False)
+      Fail err -> pure $ mon $ counterexample err False
+      Monitor m k -> m <$> interpM mon k
+      MonitorLocal m k -> interpM (mon . m) k
+      Done{} -> go True model envs
 
 {- | Check a precondition. If the argument threat model fails, the evaluation of the current
   transaction is skipped. If all transactions in an evaluation of `runThreatModel` are skipped

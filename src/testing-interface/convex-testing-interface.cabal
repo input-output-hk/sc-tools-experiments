@@ -54,7 +54,9 @@ library
     , bytestring
     , cardano-api
     , containers
+    , convex-base
     , convex-mockchain
+    , convex-optics
     , convex-wallet
     , lens
     , mtl
@@ -72,7 +74,6 @@ library
     , cardano-ledger-core
     , cardano-slotting
     , cardano-strict-containers
-    , convex-base
     , ouroboros-consensus
     , ouroboros-consensus-cardano
     , plutus-ledger-api

@@ -2,6 +2,7 @@
 {-# LANGUAGE GADTs #-}
 {-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE TypeApplications #-}
+{-# LANGUAGE ViewPatterns #-}
 
 module Convex.ThreatModel.Cardano.Api where
 
@@ -11,23 +12,42 @@ import Cardano.Ledger.Allegra.Scripts (ValidityInterval (..))
 import Cardano.Ledger.Alonzo.Scripts qualified as Ledger
 import Cardano.Ledger.Alonzo.TxBody qualified as Ledger
 import Cardano.Ledger.Alonzo.TxWits qualified as Ledger
+import Cardano.Ledger.Api.Era qualified as Ledger (eraProtVerLow)
 import Cardano.Ledger.Api.Tx.Body qualified as Ledger
+import Cardano.Ledger.Binary qualified as CBOR
 import Cardano.Ledger.Conway.Scripts qualified as Conway
 import Cardano.Ledger.Conway.TxBody qualified as Conway
 import Cardano.Ledger.Keys (WitVKey (..), coerceKeyRole, hashKey)
+import Cardano.Slotting.Slot ()
 import Cardano.Slotting.Time (SlotLength, mkSlotLength)
-import Data.SOP.NonEmpty (NonEmpty (NonEmptyOne))
-import Ouroboros.Consensus.Cardano.Block (CardanoEras, StandardCrypto)
-import Ouroboros.Consensus.HardFork.History
-import PlutusTx (ToData, toData)
-
-import Data.Either
+import Control.Lens ((&), (.~), _1)
+import Control.Monad (when)
+import Convex.CardanoApi.Lenses qualified as L
+import Convex.Class (
+  MockChainState,
+  MonadBlockchain (..),
+  MonadMockchain (..),
+  env,
+  getSlot,
+  poolState,
+ )
+import Convex.MockChain (applyTransaction, initialState)
+import Convex.NodeParams (NodeParams)
+import Convex.Wallet (Wallet)
+import Convex.Wallet qualified as Wallet
+import Data.Either (isRight)
 import Data.Map qualified as Map
+import Data.Maybe (listToMaybe)
 import Data.Maybe.Strict
+import Data.SOP.NonEmpty (NonEmpty (NonEmptyOne))
+import Data.Sequence.Strict qualified as Seq
 import Data.Time.Clock.POSIX (posixSecondsToUTCTime)
 import Data.Word
 import GHC.Exts (toList)
 import Ouroboros.Consensus.Block (GenesisWindow (..))
+import Ouroboros.Consensus.Cardano.Block (CardanoEras, StandardCrypto)
+import Ouroboros.Consensus.HardFork.History qualified as History
+import PlutusTx (ToData, toData)
 
 type Era = ConwayEra
 type LedgerEra = ShelleyLedgerEra Era
@@ -198,10 +218,6 @@ leqValue v v' = all ((<= 0) . snd) (toList $ v <> negateValue v')
 projectAda :: Value -> Value
 projectAda = lovelaceToValue . selectLovelace
 
--- TODO: transactions can fail for different reasons. Sometimes they fail with
--- a "translation error". Translation errors should probably be treated as test
--- failures not as validation failing - it's after all not validation failing!
-
 {- | The result of validating a transaction. In case of failure, it includes a list
   of reasons.
 -}
@@ -211,15 +227,15 @@ data ValidityReport = ValidityReport
   }
   deriving stock (Ord, Eq, Show)
 
--- NOTE: this function ignores the execution units associated with
--- the scripts in the Tx. That way we don't have to care about computing
--- the right values in the threat model (as this is not our main concern here).
---
--- This also means that if we were to want to deal with execution units in the threat
--- modelling framework we would need to be a bit careful and figure out some abstractions
--- that make it make sense (and check the budgets here).
---
--- Stolen from Hydra
+{- | Validate a transaction using Phase 2 (script execution) validation only.
+
+This uses evaluateTransactionExecutionUnits to check if Plutus scripts would
+accept or reject the transaction. It does NOT validate Phase 1 ledger rules
+(fees, signatures, value preservation, etc.) because threat model modifications
+alter the transaction body, invalidating signatures and fee calculations.
+
+The purpose of threat models is to test script logic, not transaction construction.
+-}
 validateTx :: LedgerProtocolParameters Era -> Tx Era -> UTxO Era -> ValidityReport
 validateTx pparams tx utxos =
   ValidityReport
@@ -234,21 +250,22 @@ validateTx pparams tx utxos =
       pparams
       utxos
       (getTxBody tx)
-  eraHistory :: EraHistory
-  eraHistory = EraHistory (mkInterpreter summary)
 
-  summary :: Summary (CardanoEras StandardCrypto)
+  eraHistory :: EraHistory
+  eraHistory = EraHistory (History.mkInterpreter summary)
+
+  summary :: History.Summary (CardanoEras StandardCrypto)
   summary =
-    Summary . NonEmptyOne $
-      EraSummary
-        { eraStart = initBound
-        , eraEnd = EraUnbounded
-        , eraParams =
-            EraParams
-              { eraEpochSize = epochSize
-              , eraSlotLength = slotLength
-              , eraSafeZone = UnsafeIndefiniteSafeZone
-              , eraGenesisWin = genesisWindow
+    History.Summary . NonEmptyOne $
+      History.EraSummary
+        { History.eraStart = History.initBound
+        , History.eraEnd = History.EraUnbounded
+        , History.eraParams =
+            History.EraParams
+              { History.eraEpochSize = epochSize
+              , History.eraSlotLength = slotLength
+              , History.eraSafeZone = History.UnsafeIndefiniteSafeZone
+              , History.eraGenesisWin = genesisWindow
               }
         }
 
@@ -291,3 +308,158 @@ convValidityInterval (lowerBound, upperBound) =
         TxValidityUpperBound _ Nothing -> SNothing
         TxValidityUpperBound _ (Just s) -> SJust s
     }
+
+-- | Build a MockChainState from NodeParams, slot, and UTxO for validation
+buildMockState
+  :: NodeParams Era
+  -> SlotNo
+  -> UTxO Era
+  -> MockChainState Era
+buildMockState params slot utxo =
+  initialState params
+    & env . L.slot .~ slot
+    & poolState . L.utxoState . L._UTxOState . _1 .~ toLedgerUTxO shelleyBasedEra utxo
+
+{- | Validate a transaction with full Phase 1 + Phase 2 validation inside MockchainT.
+
+This uses 'applyTransaction' which performs complete ledger validation including:
+- Fee adequacy
+- Signature verification
+- UTxO existence
+- Value preservation
+- Validity intervals
+- Collateral requirements
+- Script execution (Phase 2)
+-}
+validateTxM
+  :: (MonadMockchain Era m)
+  => NodeParams Era
+  -> Tx Era
+  -> UTxO Era
+  -> m ValidityReport
+validateTxM params tx utxo = do
+  slot <- getSlot
+  let mockState = buildMockState params slot utxo
+  pure $ case applyTransaction params mockState tx of
+    Left err -> ValidityReport False [show err]
+    Right _ -> ValidityReport True []
+
+{- | Re-balance fees and re-sign a modified transaction.
+
+After applying TxModifier operations, the transaction body changes which:
+1. Invalidates the original signatures (body hash changed)
+2. May require different fees (outputs changed)
+
+This function:
+1. Calculates the new required fee
+2. Adjusts the change output (last output to wallet address) to compensate
+3. Re-signs the transaction with the wallet's key
+
+Note: This works at the ledger level to preserve the transaction structure
+created by TxModifier operations.
+-}
+rebalanceAndSign
+  :: (MonadMockchain Era m, MonadFail m)
+  => Wallet
+  -> Tx Era
+  -> UTxO Era
+  -> m (Tx Era)
+rebalanceAndSign wallet tx utxo = do
+  pparams <- Convex.Class.queryProtocolParameters
+  networkId <- Convex.Class.queryNetworkId
+  let walletAddr = Wallet.addressInEra networkId wallet
+
+  -- Get the current fee from the transaction (from the ledger body)
+  let currentFee = getTxFeeCoin tx
+
+  -- Create a temp tx with max fee to calculate the actual required fee
+  let maxFee = Coin (2 ^ (32 :: Integer) - 1)
+      tempTx = setTxFeeCoin maxFee tx
+      Tx tempBody _ = tempTx
+      newFee =
+        calculateMinTxFee
+          shelleyBasedEra
+          (unLedgerProtocolParameters pparams)
+          utxo
+          tempBody
+          1
+
+  -- Calculate fee difference
+  let feeDiff = newFee - currentFee -- positive = fee increased
+
+  -- Adjust the change output and set the new fee
+  let currentOuts = txOutputs tx
+  adjustedOutputs <- adjustChangeOutput walletAddr feeDiff currentOuts
+
+  -- Apply the changes: new fee and adjusted outputs
+  let finalTx = setTxOutputsList adjustedOutputs $ setTxFeeCoin newFee tx
+
+  -- Re-sign (strip old signatures and add new one)
+  let Tx finalBody _ = finalTx
+      unsignedTx = makeSignedTransaction [] finalBody
+  pure $ Wallet.signTx wallet unsignedTx
+
+-- | Get the fee from a transaction
+getTxFeeCoin :: Tx Era -> Coin
+getTxFeeCoin (Tx (ShelleyTxBody _ body _ _ _ _) _) = Conway.ctbTxfee body
+
+-- | Set the fee in a transaction
+setTxFeeCoin :: Coin -> Tx Era -> Tx Era
+setTxFeeCoin fee (Tx (ShelleyTxBody era body scripts scriptData auxData validity) wits) =
+  Tx (ShelleyTxBody era body{Conway.ctbTxfee = fee} scripts scriptData auxData validity) wits
+
+-- | Set transaction outputs (helper that works at the Tx level)
+setTxOutputsList :: [TxOut CtxTx Era] -> Tx Era -> Tx Era
+setTxOutputsList newOuts (Tx (ShelleyTxBody era body scripts scriptData auxData validity) wits) =
+  let newOutsSeq =
+        Seq.fromList
+          [ CBOR.mkSized
+              (Ledger.eraProtVerLow @LedgerEra)
+              (toShelleyTxOut shelleyBasedEra (toCtxUTxOTxOut out))
+          | out <- newOuts
+          ]
+      body' = body{Conway.ctbOutputs = newOutsSeq}
+   in Tx (ShelleyTxBody era body' scripts scriptData auxData validity) wits
+
+{- | Adjust the last output going to wallet address by fee difference.
+
+If fee increased, we subtract from the change output.
+If fee decreased, we add to the change output.
+-}
+adjustChangeOutput
+  :: (MonadFail m)
+  => AddressInEra Era
+  -- ^ Wallet address to find change output
+  -> Coin
+  -- ^ Fee difference (positive = fee increased)
+  -> [TxOut CtxTx Era]
+  -- ^ Transaction outputs
+  -> m [TxOut CtxTx Era]
+adjustChangeOutput walletAddr (Coin feeDiff) outputs = do
+  -- Find last output to wallet address
+  let indexed = zip [0 ..] outputs
+      walletOutputs =
+        [ (i, o)
+        | (i, o@(TxOut addr _ _ _)) <- indexed
+        , addr == walletAddr
+        ]
+  case listToMaybe (reverse walletOutputs) of
+    Nothing -> fail "No change output found to wallet address"
+    Just (idx, TxOut addr val datum refScript) -> do
+      let Coin oldAda = txOutValueToLovelace val
+          newAda = oldAda - feeDiff -- subtract fee increase (or add fee decrease)
+      when (newAda < 0) $
+        fail "Change output cannot cover fee increase"
+      let newLovelace = Coin newAda
+          -- Preserve non-Ada assets in the value
+          oldValue = txOutValueToValue val
+          newValue = oldValue <> negateValue (lovelaceToValue (Coin oldAda)) <> lovelaceToValue newLovelace
+          newVal = TxOutValueShelleyBased shelleyBasedEra (toMaryValue newValue)
+          newOutput = TxOut addr newVal datum refScript
+      pure $ replaceAt idx newOutput outputs
+
+-- | Replace element at index in a list
+replaceAt :: Int -> a -> [a] -> [a]
+replaceAt _ _ [] = []
+replaceAt 0 x (_ : xs) = x : xs
+replaceAt n x (y : ys) = y : replaceAt (n - 1) x ys
