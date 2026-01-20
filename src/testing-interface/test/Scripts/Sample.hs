@@ -13,18 +13,12 @@ module Scripts.Sample (
 ) where
 
 import PlutusLedgerApi.V1.Scripts (Redeemer (..))
-import PlutusLedgerApi.V1.Value (flattenValue)
 import PlutusLedgerApi.V3.Contexts (
   ScriptContext (..),
-  ScriptInfo (..),
-  -- TxInInfo (..),
-  TxInfo (..),
  )
-import PlutusLedgerApi.V3.MintValue (mintValueMinted)
 import PlutusTx (unstableMakeIsData)
 import PlutusTx.Builtins.Internal qualified as BI
 import PlutusTx.IsData.Class (UnsafeFromData (unsafeFromBuiltinData))
-import PlutusTx.List qualified as P
 import PlutusTx.Prelude (BuiltinData, BuiltinUnit)
 import PlutusTx.Prelude qualified as P
 import Prelude qualified as Haskell

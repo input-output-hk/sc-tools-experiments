@@ -92,7 +92,7 @@ validator
         { scriptContextScriptInfo = SpendingScript ownTxOutRef _
         , scriptContextRedeemer = (unsafeFromBuiltinData P.. getRedeemer -> action :: PingPongRedeemer)
         , scriptContextTxInfo =
-          txInfo@TxInfo
+          TxInfo
             { txInfoInputs
             , txInfoOutputs
             , txInfoData = datumMap

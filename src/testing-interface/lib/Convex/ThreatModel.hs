@@ -134,7 +134,6 @@ module Convex.ThreatModel (
 import Cardano.Api as X
 
 import Control.Monad
-import Control.Monad.IO.Class (MonadIO (..))
 
 import Data.Map qualified as Map
 

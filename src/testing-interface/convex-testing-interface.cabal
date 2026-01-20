@@ -59,16 +59,13 @@ library
     , convex-optics
     , convex-wallet
     , lens
-    , mtl
     , QuickCheck
-    , transformers
 
   -- cardano dependencies for ThreatModel
   build-depends:
     , cardano-ledger-allegra
     , cardano-ledger-alonzo
     , cardano-ledger-api
-    , cardano-ledger-babbage
     , cardano-ledger-binary
     , cardano-ledger-conway
     , cardano-ledger-core
@@ -76,9 +73,53 @@ library
     , cardano-strict-containers
     , ouroboros-consensus
     , ouroboros-consensus-cardano
-    , plutus-ledger-api
     , plutus-tx
     , pretty
     , sop-extras
-    , text
     , time
+
+test-suite convex-testing-interface-test
+  import:         lang
+  type:           exitcode-stdio-1.0
+  hs-source-dirs: test
+  ghc-options:
+    -fobject-code -fno-ignore-interface-pragmas
+    -fno-omit-interface-pragmas -fno-specialise -Wno-unused-packages
+
+  main-is:        Spec.hs
+  other-modules:
+    BountySpec
+    PingPongSpec
+    SampleSpec
+    Scripts
+    Scripts.Bounty
+    Scripts.Bounty.Vulnerable.DoubleSatisfaction
+    Scripts.PingPong
+    Scripts.PingPong.Vulnerable.UnprotectedScriptOutput
+    Scripts.Sample
+
+  build-depends:
+    , base                      >=4.14.0
+    , cardano-api
+    , cardano-ledger-api
+    , cardano-ledger-conway
+    , cardano-ledger-core
+    , cardano-ledger-shelley
+    , containers
+    , convex-base
+    , convex-coin-selection
+    , convex-mockchain
+    , convex-optics
+    , convex-testing-interface
+    , convex-wallet
+    , lens
+    , mtl
+    , plutus-ledger-api
+    , plutus-tx
+    , plutus-tx-plugin
+    , pretty-show
+    , prettyprinter
+    , QuickCheck
+    , tasty
+    , tasty-hunit
+    , tasty-quickcheck
