@@ -25,22 +25,21 @@ test-show-details: direct
 tests: True
 
 packages:
+  src/base
+  src/blockfrost
+  src/maestro
+  src/coin-selection
+  src/devnet
+  src/mockchain
+  src/node-client
+  src/optics
   src/testing-interface
+  src/tx-mod
+  src/use-cases
+  src/wallet
 
 source-repository-package
   type: git
-  location: https://github.com/input-output-hk/sc-tools-experiments.git
-  tag: 80896c1bd7b2494b173a3213ab1d9ca4d740b938
-  subdir:
-    src/base
-    src/coin-selection
-    src/mockchain
-    src/node-client
-    src/optics
-    src/wallet
-
---source-repository-package
---  type: git
---  location: https://github.com/maestro-org/maestro-cardano-haskell-sdk
---  --sha256: sha256-O9WSVdqZfKYHt5IBCF3+nknswNl/VH8/FTmTW/iAgb8=
---  tag: v1.7.6
+  location: https://github.com/maestro-org/maestro-cardano-haskell-sdk
+  --sha256: sha256-O9WSVdqZfKYHt5IBCF3+nknswNl/VH8/FTmTW/iAgb8=
+  tag: v1.7.6
