@@ -16,10 +16,13 @@ module PingPongSpec (
   -- * Property tests
   propPingPongWithThreatModel,
   propPingPongVulnerableToOutputRedirect,
-  propPingPongSecureAgainstOutputRedirect,
+  propPingPongVulnerableToLargeData,
 
   -- * Basic threat model example
   basicThreatModel,
+
+  -- * Test tree
+  pingPongTests,
 ) where
 
 import Cardano.Api qualified as C
@@ -47,12 +50,15 @@ import Convex.MockChain.CoinSelection (
 import Convex.MockChain.Defaults qualified as Defaults
 import Convex.MockChain.Utils (
   Options (Options, params),
+  mockchainFailsWithOptions,
+  mockchainSucceedsWithOptions,
  )
 import Convex.NodeParams (ledgerProtocolParameters)
 import Convex.TestingInterface (
   Actions (Actions),
   RunOptions (mcOptions),
   TestingInterface (..),
+  propRunActionsWithOptions,
  )
 import Convex.ThreatModel (
   ThreatModel,
@@ -64,16 +70,24 @@ import Convex.ThreatModel (
   runThreatModel,
   runThreatModelM,
  )
+import Convex.ThreatModel.Cardano.Api (dummyTxId)
+import Convex.ThreatModel.LargeData (largeDataAttackWith)
 import Convex.ThreatModel.UnprotectedScriptOutput (unprotectedScriptOutput)
+import Convex.Utils (failOnError)
 import Convex.Wallet.MockWallet qualified as Wallet
 import Data.Map qualified as Map
-import PlutusLedgerApi.V2 qualified as PV2
+import PlutusTx.Builtins (dataToBuiltinData)
+import PlutusTx.IsData.Class (UnsafeFromData (unsafeFromBuiltinData))
 import Scripts qualified
 import Scripts.PingPong qualified as PingPong
+import Scripts.PingPong.Vulnerable qualified as VulnerablePingPong
 import Test.QuickCheck.Monadic (monadicIO, monitor, run)
+import Test.Tasty (TestTree, testGroup)
+import Test.Tasty.HUnit (testCase)
 import Test.Tasty.QuickCheck (
   Property,
   counterexample,
+  testProperty,
  )
 import Test.Tasty.QuickCheck qualified as QC
 
@@ -137,7 +151,7 @@ instance TestingInterface PingPongModel where
     case action of
       Initialize _state ->
         -- Mark contract as deployed (actual TxIn will be set during perform)
-        model{pmTxIn = Just (C.TxIn (C.TxId "dummy") (C.TxIx 0))}
+        model{pmTxIn = Just (C.TxIn dummyTxId (C.TxIx 0))}
       PlayRound redeemer ->
         let newState = case redeemer of
               PingPong.Ping -> PingPong.Pinged
@@ -213,17 +227,13 @@ instance TestingInterface PingPongModel where
           -- Extract the actual state from the datum
           case datum of
             C.TxOutDatumInline _ scriptData -> do
-              case PV2.fromData @PingPong.PingPongState (C.toPlutusData $ C.getScriptData scriptData) of
-                Just actualState -> do
-                  let matches = actualState == pmState model
-                  unless matches $
-                    liftIO $
-                      putStrLn $
-                        "STATE MISMATCH! Model: " ++ show (pmState model) ++ ", Blockchain: " ++ show actualState
-                  pure matches
-                Nothing -> do
-                  liftIO $ putStrLn "Failed to decode datum as PingPongState"
-                  pure False
+              let actualState = unsafeFromBuiltinData @PingPong.PingPongState (dataToBuiltinData $ C.toPlutusData $ C.getScriptData scriptData)
+                  matches = actualState == pmState model
+              unless matches $
+                liftIO $
+                  putStrLn $
+                    "STATE MISMATCH! Model: " ++ show (pmState model) ++ ", Blockchain: " ++ show actualState
+              pure matches
             _ -> do
               liftIO $ putStrLn "Expected inline datum but got something else"
               pure False
@@ -233,7 +243,7 @@ instance TestingInterface PingPongModel where
 
   monitoring _state _action prop = prop
 
-  threatModels = [unprotectedScriptOutput]
+  threatModels = [basicThreatModel, unprotectedScriptOutput, largeDataAttackWith 10]
 
 plutusScript :: (C.IsPlutusScriptLanguage lang) => C.PlutusScript lang -> C.Script lang
 plutusScript = C.PlutusScript C.plutusScriptVersion
@@ -340,7 +350,7 @@ propPingPongVulnerableToOutputRedirect opts = QC.expectFailure $ monadicIO $ do
 
   -- Run the scenario AND the threat model INSIDE MockchainT
   result <- run $ runMockchain0IOWith Wallet.initialUTxOs params $ runExceptT $ do
-    (tx, utxo) <- pingPongVulnerableScenario
+    (tx, utxo) <- vulnerablePingPongScenario
 
     let pparams' = params ^. ledgerProtocolParameters
         env =
@@ -361,16 +371,16 @@ propPingPongVulnerableToOutputRedirect opts = QC.expectFailure $ monadicIO $ do
       monitor (counterexample "Testing VULNERABLE pingPong for unprotected script output vulnerability")
       pure prop
  where
-  pingPongVulnerableScenario
+  vulnerablePingPongScenario
     :: ( MonadMockchain C.ConwayEra m
        , MonadError (BalanceTxError C.ConwayEra) m
        , MonadFail m
        )
     => m (C.Tx C.ConwayEra, C.UTxO C.ConwayEra)
-  pingPongVulnerableScenario = do
+  vulnerablePingPongScenario = do
     let value = 10_000_000
         -- Use VULNERABLE script
-        scriptHash = C.hashScript (plutusScript Scripts.pingPongVulnerableScript)
+        scriptHash = C.hashScript (plutusScript Scripts.vulnerablePingPongScript)
 
     -- Deploy pingPong with vulnerable script
     deployTx <-
@@ -398,102 +408,11 @@ propPingPongVulnerableToOutputRedirect opts = QC.expectFailure $ monadicIO $ do
       tryBalanceAndSubmit
         mempty
         Wallet.w1
-        (execBuildTx $ Scripts.playPingPongVulnerableRound Defaults.networkId value Scripts.Pong txIn)
+        (execBuildTx $ Scripts.playVulnerablePingPongRound Defaults.networkId value VulnerablePingPong.Pong txIn)
         TrailingChange
         []
 
     pure (playTx, utxoBefore)
-
-{- | Test that demonstrates the SECURE pingPong is NOT vulnerable to output redirection.
-
-This test runs the unprotectedScriptOutput threat model against the SECURE
-pingPong validator. The threat model attempts to redirect script outputs to the
-signer's address while preserving the datum.
-
-Since the secure pingPong validates BOTH datum state transitions AND output
-addresses, this threat model should NOT find a vulnerability - the modified
-transaction should fail validation.
-
-NO 'expectFailure' - the threat model should NOT find a vulnerability.
-
-NOTE: This test uses runThreatModelM which runs INSIDE MockchainT for full
-Phase 1 + Phase 2 validation with re-balancing and re-signing.
--}
-propPingPongSecureAgainstOutputRedirect :: RunOptions -> Property
-propPingPongSecureAgainstOutputRedirect opts = monadicIO $ do
-  let Options{params} = mcOptions opts
-
-  -- Run the scenario AND the threat model INSIDE MockchainT
-  result <- run $ runMockchain0IOWith Wallet.initialUTxOs params $ runExceptT $ do
-    (tx, utxo) <- pingPongSecureScenario
-
-    let pparams' = params ^. ledgerProtocolParameters
-        env =
-          ThreatModelEnv
-            { currentTx = tx
-            , currentUTxOs = utxo
-            , pparams = pparams'
-            }
-
-    -- Run the threat model INSIDE MockchainT with full Phase 1 + Phase 2 validation
-    lift $ runThreatModelM Wallet.w1 unprotectedScriptOutput [env]
-
-  case result of
-    (Left err, _) -> do
-      monitor (counterexample $ "Mockchain error: " ++ show err)
-      pure $ QC.property False
-    (Right prop, _finalState) -> do
-      monitor (counterexample "Testing SECURE pingPong - should NOT be vulnerable")
-      pure prop
- where
-  pingPongSecureScenario
-    :: ( MonadMockchain C.ConwayEra m
-       , MonadError (BalanceTxError C.ConwayEra) m
-       , MonadFail m
-       )
-    => m (C.Tx C.ConwayEra, C.UTxO C.ConwayEra)
-  pingPongSecureScenario = do
-    let value = 10_000_000
-        -- Use SECURE script
-        scriptHash = C.hashScript (plutusScript Scripts.pingPongValidatorScript)
-
-    -- Deploy pingPong with secure script
-    deployTx <-
-      tryBalanceAndSubmit
-        mempty
-        Wallet.w1
-        ( execBuildTx
-            ( BuildTx.payToScriptInlineDatum
-                Defaults.networkId
-                scriptHash
-                Scripts.Pinged
-                C.NoStakeAddress
-                (C.lovelaceToValue value)
-            )
-        )
-        TrailingChange
-        []
-
-    -- Play a round - this transaction IS validated by the SECURE script
-    let txIn = C.TxIn (C.getTxId $ C.getTxBody deployTx) (C.TxIx 0)
-    playTx <-
-      tryBalanceAndSubmit
-        mempty
-        Wallet.w1
-        (execBuildTx $ Scripts.playPingPongRound Defaults.networkId value Scripts.Pong txIn)
-        TrailingChange
-        []
-    utxoBefore <- fromLedgerUTxO C.shelleyBasedEra <$> getUtxo
-    let txIn2 = C.TxIn (C.getTxId $ C.getTxBody playTx) (C.TxIx 0)
-    playTx2 <-
-      tryBalanceAndSubmit
-        mempty
-        Wallet.w1
-        (execBuildTx $ Scripts.playPingPongRound Defaults.networkId value Scripts.Ping txIn2)
-        TrailingChange
-        []
-
-    pure (playTx2, utxoBefore)
 
 pingPongMultipleRounds
   :: forall era m
@@ -537,3 +456,152 @@ pingPongMultipleRounds fstState redeemers = do
     play value newTx xs
 
   getTxIn tx = C.TxIn (C.getTxId $ C.getTxBody tx) (C.TxIx 0)
+
+{- | Test that demonstrates the vulnerable PingPong script IS vulnerable to
+large data attacks. The 'largeDataAttackWith' threat model should find that
+bloated datums are accepted by the script.
+
+This test is expected to "fail" from QuickCheck's perspective - which means
+the threat model successfully found the vulnerability.
+-}
+propPingPongVulnerableToLargeData :: RunOptions -> Property
+propPingPongVulnerableToLargeData opts = QC.expectFailure $ monadicIO $ do
+  let Options{params} = mcOptions opts
+
+  -- Run the scenario AND the threat model INSIDE MockchainT
+  result <- run $ runMockchain0IOWith Wallet.initialUTxOs params $ runExceptT $ do
+    (tx, utxo) <- vulnerablePingPongLargeDataScenario
+
+    let pparams' = params ^. ledgerProtocolParameters
+        env =
+          ThreatModelEnv
+            { currentTx = tx
+            , currentUTxOs = utxo
+            , pparams = pparams'
+            }
+
+    -- Run threat model inside MockchainT
+    lift $ runThreatModelM Wallet.w1 (largeDataAttackWith 10) [env]
+
+  case result of
+    (Left err, _) -> do
+      monitor (counterexample $ "Mockchain error: " ++ show err)
+      pure $ QC.property False
+    (Right prop, _finalState) -> do
+      monitor (counterexample "Testing VULNERABLE pingPong for large data attack vulnerability")
+      pure prop
+ where
+  vulnerablePingPongLargeDataScenario
+    :: ( MonadMockchain C.ConwayEra m
+       , MonadError (BalanceTxError C.ConwayEra) m
+       , MonadFail m
+       )
+    => m (C.Tx C.ConwayEra, C.UTxO C.ConwayEra)
+  vulnerablePingPongLargeDataScenario = do
+    let value = 10_000_000
+        -- Use VULNERABLE script (uses unstableMakeIsData - permissive parsing)
+        scriptHash = C.hashScript (plutusScript Scripts.vulnerablePingPongScript)
+
+    -- Deploy pingPong with vulnerable script
+    deployTx <-
+      tryBalanceAndSubmit
+        mempty
+        Wallet.w1
+        ( execBuildTx
+            ( BuildTx.payToScriptInlineDatum
+                Defaults.networkId
+                scriptHash
+                Scripts.Pinged
+                C.NoStakeAddress
+                (C.lovelaceToValue value)
+            )
+        )
+        TrailingChange
+        []
+
+    -- Capture UTxO BEFORE playing a round (contains the script UTxO as input)
+    utxoBefore <- fromLedgerUTxO C.shelleyBasedEra <$> getUtxo
+
+    -- Play a round to create a transaction with script output
+    let txIn = C.TxIn (C.getTxId $ C.getTxBody deployTx) (C.TxIx 0)
+    playTx <-
+      tryBalanceAndSubmit
+        mempty
+        Wallet.w1
+        (execBuildTx $ Scripts.playVulnerablePingPongRound Defaults.networkId value VulnerablePingPong.Pong txIn)
+        TrailingChange
+        []
+
+    pure (playTx, utxoBefore)
+
+-- | All PingPong tests grouped together
+pingPongTests :: Options C.ConwayEra -> RunOptions -> TestTree
+pingPongTests opts runOpts =
+  testGroup
+    "ping-pong"
+    [ testCase
+        "Ping and Pong should succeed"
+        ( mockchainSucceedsWithOptions opts $
+            failOnError
+              (pingPongMultipleRounds Scripts.Pinged [Scripts.Pong])
+        )
+    , testCase
+        "Pong and Ping should succeed"
+        ( mockchainSucceedsWithOptions opts $
+            failOnError (pingPongMultipleRounds Scripts.Ponged [Scripts.Ping])
+        )
+    , testCase
+        "Ping and Ping should fail"
+        ( mockchainFailsWithOptions
+            opts
+            (failOnError (pingPongMultipleRounds Scripts.Pinged [Scripts.Ping]))
+            (\_ -> pure ())
+        )
+    , testCase
+        "Pong and Pong should fail"
+        ( mockchainFailsWithOptions
+            opts
+            (failOnError (pingPongMultipleRounds Scripts.Ponged [Scripts.Pong]))
+            (\_ -> pure ())
+        )
+    , testCase
+        "Stop after Ping should succeed"
+        ( mockchainSucceedsWithOptions opts $
+            failOnError (pingPongMultipleRounds Scripts.Ponged [Scripts.Ping, Scripts.Stop])
+        )
+    , testCase
+        "Stop after Pong should succeed"
+        ( mockchainSucceedsWithOptions opts $
+            failOnError (pingPongMultipleRounds Scripts.Pinged [Scripts.Pong, Scripts.Stop])
+        )
+    , testCase
+        "Stop after Stop should fail"
+        ( mockchainFailsWithOptions
+            opts
+            (failOnError (pingPongMultipleRounds Scripts.Stopped [Scripts.Stop]))
+            (\_ -> pure ())
+        )
+    , testCase
+        "Ping after Stop should fail"
+        ( mockchainFailsWithOptions
+            opts
+            (failOnError (pingPongMultipleRounds Scripts.Stopped [Scripts.Ping]))
+            (\_ -> pure ())
+        )
+    , testCase
+        "Pong after Stop should fail"
+        ( mockchainFailsWithOptions
+            opts
+            (failOnError (pingPongMultipleRounds Scripts.Stopped [Scripts.Pong]))
+            (\_ -> pure ())
+        )
+    , testProperty
+        "Property-based test with TestingInterface"
+        (propRunActionsWithOptions @PingPongModel runOpts)
+    , testProperty
+        "PingPong VULNERABLE to unprotected output redirect"
+        (propPingPongVulnerableToOutputRedirect runOpts)
+    , testProperty
+        "PingPong VULNERABLE to large data attack"
+        (propPingPongVulnerableToLargeData runOpts)
+    ]

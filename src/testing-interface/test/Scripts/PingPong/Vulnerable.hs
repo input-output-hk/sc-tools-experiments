@@ -1,26 +1,35 @@
+{-# LANGUAGE DerivingStrategies #-}
 {-# LANGUAGE NamedFieldPuns #-}
 {-# LANGUAGE OverloadedStrings #-}
+{-# LANGUAGE TemplateHaskell #-}
 {-# LANGUAGE ViewPatterns #-}
 {-# LANGUAGE NoImplicitPrelude #-}
 {-# OPTIONS_GHC -g -fplugin-opt PlutusTx.Plugin:coverage-all #-}
 
 {- | Vulnerable PingPong validator for threat model demonstration.
 
-This validator is INTENTIONALLY VULNERABLE to the "Unprotected Script Output"
-attack pattern. It validates datum state transitions but does NOT check that
-outputs go to the correct script address.
+This validator is INTENTIONALLY VULNERABLE to demonstrate multiple attack patterns:
 
-VULNERABILITY: An attacker can redirect the continuation output to their own
-address while satisfying the datum requirements, effectively stealing funds.
+1. __Unprotected Script Output Attack__: The validator checks datum state transitions
+   but does NOT verify that outputs go to the correct script address. An attacker
+   can redirect the continuation output to their own address while satisfying
+   the datum requirements, effectively stealing funds.
 
-Use this module to demonstrate how the UnprotectedScriptOutput threat model
-detects this vulnerability class.
+2. __Large Data Attack__: Uses 'unstableMakeIsData' which generates parsers
+   that ignore extra fields in Constr data. An attacker can create datums with
+   arbitrary extra data that the validator accepts. This can:
+
+   - Increase execution costs for anyone spending the UTxO
+   - __Permanently lock funds__ if the bloated datum causes the UTxO to exceed
+     execution limits or transaction size constraints, making it unspendable
+
+Use this module to demonstrate how threat models detect these vulnerability classes.
 
 See 'Scripts.PingPong' for the secure version.
 -}
-module Scripts.PingPong.Vulnerable.UnprotectedScriptOutput (
+module Scripts.PingPong.Vulnerable (
   validator,
-  -- Re-export types from secure version for compatibility
+  -- Local vulnerable types with permissive parsing
   PingPongState (..),
   PingPongRedeemer (..),
 ) where
@@ -33,14 +42,41 @@ import PlutusLedgerApi.V3.Contexts (
   TxInInfo (TxInInfo, txInInfoResolved),
   TxInfo (..),
  )
+import PlutusTx (unstableMakeIsData)
 import PlutusTx.AssocMap (Map, lookup)
 import PlutusTx.Builtins.Internal qualified as BI
 import PlutusTx.IsData.Class (UnsafeFromData (unsafeFromBuiltinData))
 import PlutusTx.Prelude (BuiltinData, BuiltinUnit)
 import PlutusTx.Prelude qualified as P
+import Prelude qualified as Haskell
 
--- Re-use types and helpers from the secure version
-import Scripts.PingPong (PingPongRedeemer (..), PingPongState (..), showAction, showState)
+-- | The state of the ping pong contract
+data PingPongState = Pinged | Ponged | Stopped
+  deriving stock (Haskell.Eq, Haskell.Show)
+
+-- | Redeemer for the ping pong contract
+data PingPongRedeemer = Ping | Pong | Stop
+  deriving stock (Haskell.Eq, Haskell.Show)
+
+-- | Show a state in Plutus
+{-# INLINEABLE showState #-}
+showState :: PingPongState -> P.BuiltinString
+showState Pinged = "Pinged"
+showState Ponged = "Ponged"
+showState Stopped = "Stopped"
+
+-- | Show an action in Plutus
+{-# INLINEABLE showAction #-}
+showAction :: PingPongRedeemer -> P.BuiltinString
+showAction Ping = "Ping"
+showAction Pong = "Pong"
+showAction Stop = "Stop"
+
+-- VULNERABLE: Using unstableMakeIsData generates permissive parsers
+-- that ignore extra fields in Constr data, making this vulnerable
+-- to Large Data Attacks
+PlutusTx.unstableMakeIsData ''PingPongRedeemer
+PlutusTx.unstableMakeIsData ''PingPongState
 
 {- | VULNERABLE VALIDATOR
 

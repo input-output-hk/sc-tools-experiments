@@ -6,6 +6,9 @@
 {-# LANGUAGE ViewPatterns #-}
 
 module BountySpec (
+  -- * Test tree
+  bountyTests,
+
   -- * Property tests
   propBountyVulnerableToDoubleSatisfaction,
   propBountySecureAgainstDoubleSatisfaction,
@@ -47,14 +50,29 @@ import Convex.Wallet (addressInEra, verificationKeyHash)
 import Convex.Wallet.MockWallet qualified as Wallet
 import Scripts qualified
 import Test.QuickCheck.Monadic (monadicIO, monitor, run)
+import Test.Tasty (TestTree, testGroup)
 import Test.Tasty.QuickCheck (
   Property,
   counterexample,
+  testProperty,
  )
 import Test.Tasty.QuickCheck qualified as QC
 
 plutusScript :: (C.IsPlutusScriptLanguage lang) => C.PlutusScript lang -> C.Script lang
 plutusScript = C.PlutusScript C.plutusScriptVersion
+
+-- | All Bounty tests grouped together
+bountyTests :: RunOptions -> TestTree
+bountyTests opts =
+  testGroup
+    "bounty (double satisfaction)"
+    [ testProperty
+        "Bounty VULNERABLE to double satisfaction"
+        (propBountyVulnerableToDoubleSatisfaction opts)
+    , testProperty
+        "Bounty SECURE against double satisfaction"
+        (propBountySecureAgainstDoubleSatisfaction opts)
+    ]
 
 {- | Test that demonstrates the VULNERABLE bounty's vulnerability to double satisfaction.
 

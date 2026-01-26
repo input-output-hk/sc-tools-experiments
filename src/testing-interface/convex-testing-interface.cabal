@@ -44,6 +44,7 @@ library
     Convex.ThreatModel
     Convex.ThreatModel.Cardano.Api
     Convex.ThreatModel.DoubleSatisfaction
+    Convex.ThreatModel.LargeData
     Convex.ThreatModel.Pretty
     Convex.ThreatModel.TxModifier
     Convex.ThreatModel.UnprotectedScriptOutput
@@ -95,7 +96,7 @@ test-suite convex-testing-interface-test
     Scripts.Bounty
     Scripts.Bounty.Vulnerable.DoubleSatisfaction
     Scripts.PingPong
-    Scripts.PingPong.Vulnerable.UnprotectedScriptOutput
+    Scripts.PingPong.Vulnerable
     Scripts.Sample
 
   build-depends:

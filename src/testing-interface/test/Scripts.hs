@@ -22,8 +22,8 @@ module Scripts (
   PingPong.PingPongState (..),
 
   -- * PingPong Vulnerable (for threat model demonstration)
-  pingPongVulnerableScript,
-  playPingPongVulnerableRound,
+  vulnerablePingPongScript,
+  playVulnerablePingPongRound,
 
   -- * Bounty (Secure version - resists double satisfaction)
   bountyValidatorScript,
@@ -53,7 +53,7 @@ import PlutusTx.Prelude (BuiltinUnit)
 import Scripts.Bounty qualified as Bounty
 import Scripts.Bounty.Vulnerable.DoubleSatisfaction qualified as BountyVulnerable
 import Scripts.PingPong qualified as PingPong
-import Scripts.PingPong.Vulnerable.UnprotectedScriptOutput qualified as PingPongVulnerable
+import Scripts.PingPong.Vulnerable qualified as VulnerablePingPong
 import Scripts.Sample qualified as Sample
 
 sampleValidatorCompiled :: CompiledCode (BuiltinData -> BuiltinUnit)
@@ -72,11 +72,11 @@ pingPongCovIdx :: CoverageIndex
 pingPongCovIdx = getCovIdx $$(PlutusTx.compile [||PingPong.validator||])
 
 -- | Vulnerable PingPong validator (for threat model demonstration)
-pingPongVulnerableCompiled :: CompiledCode (BuiltinData -> BuiltinUnit)
-pingPongVulnerableCompiled = $$(PlutusTx.compile [||PingPongVulnerable.validator||])
+vulnerablePingPongCompiled :: CompiledCode (BuiltinData -> BuiltinUnit)
+vulnerablePingPongCompiled = $$(PlutusTx.compile [||VulnerablePingPong.validator||])
 
-pingPongVulnerableScript :: C.PlutusScript C.PlutusScriptV3
-pingPongVulnerableScript = compiledCodeToScript pingPongVulnerableCompiled
+vulnerablePingPongScript :: C.PlutusScript C.PlutusScriptV3
+vulnerablePingPongScript = compiledCodeToScript vulnerablePingPongCompiled
 
 spendSample
   :: forall era m
@@ -136,7 +136,7 @@ playPingPongRound networkId value redeemer txi = do
     (C.lovelaceToValue value)
 
 -- | Play a round using the VULNERABLE PingPong validator (for threat model demo)
-playPingPongVulnerableRound
+playVulnerablePingPongRound
   :: forall era m
    . ( C.IsBabbageBasedEra era
      , C.HasScriptLanguageInEra C.PlutusScriptV3 era
@@ -144,24 +144,24 @@ playPingPongVulnerableRound
   => (MonadBuildTx era m)
   => NetworkId
   -> C.Lovelace
-  -> PingPongVulnerable.PingPongRedeemer
+  -> VulnerablePingPong.PingPongRedeemer
   -> C.TxIn
   -> m ()
-playPingPongVulnerableRound networkId value redeemer txi = do
+playVulnerablePingPongRound networkId value redeemer txi = do
   let witness _ =
         C.ScriptWitness C.ScriptWitnessForSpending $
           BuildTx.buildScriptWitness
-            pingPongVulnerableScript
+            vulnerablePingPongScript
             (C.ScriptDatumForTxIn $ Nothing)
             redeemer
   BuildTx.setScriptsValid >> BuildTx.addInputWithTxBody txi witness
   BuildTx.payToScriptInlineDatum
     networkId
-    (C.hashScript (plutusScript pingPongVulnerableScript))
+    (C.hashScript (plutusScript vulnerablePingPongScript))
     ( case redeemer of
-        PingPongVulnerable.Ping -> PingPongVulnerable.Pinged
-        PingPongVulnerable.Pong -> PingPongVulnerable.Ponged
-        PingPongVulnerable.Stop -> PingPongVulnerable.Stopped
+        VulnerablePingPong.Ping -> VulnerablePingPong.Pinged
+        VulnerablePingPong.Pong -> VulnerablePingPong.Ponged
+        VulnerablePingPong.Stop -> VulnerablePingPong.Stopped
     )
     C.NoStakeAddress
     (C.lovelaceToValue value)

@@ -4,6 +4,14 @@
 {-# LANGUAGE TemplateHaskell #-}
 {-# LANGUAGE ViewPatterns #-}
 {-# LANGUAGE NoImplicitPrelude #-}
+{-# OPTIONS_GHC -fno-full-laziness #-}
+{-# OPTIONS_GHC -fno-ignore-interface-pragmas #-}
+{-# OPTIONS_GHC -fno-omit-interface-pragmas #-}
+{-# OPTIONS_GHC -fno-spec-constr #-}
+{-# OPTIONS_GHC -fno-specialise #-}
+{-# OPTIONS_GHC -fno-strictness #-}
+{-# OPTIONS_GHC -fno-unbox-small-strict-fields #-}
+{-# OPTIONS_GHC -fno-unbox-strict-fields #-}
 {-# OPTIONS_GHC -g -fplugin-opt PlutusTx.Plugin:coverage-all #-}
 
 {- | Secure PingPong validator.
@@ -12,11 +20,19 @@ This validator properly validates:
 1. Datum state transitions (Pinged -> Ponged, etc.)
 2. Output address - continuation output MUST go to the same script address
 
-This prevents the "Unprotected Script Output" vulnerability where an attacker
-could redirect funds while satisfying datum requirements.
+== Security Measures ==
 
-See 'Scripts.PingPong.Vulnerable.UnprotectedScriptOutput' for the vulnerable version
-used to demonstrate the threat model.
+This validator is SECURE against:
+
+1. __Unprotected Script Output Attack__: The 'findContinuationOutput' function
+   ensures continuation outputs go to the SAME script address, preventing attackers
+   from redirecting funds while satisfying datum requirements.
+
+2. __Large Data Attack__: Uses strict manual 'UnsafeFromData' instances that
+   reject datums with extra fields. TH-generated instances (via 'unstableMakeIsData')
+   ignore extra fields, allowing attackers to pad datums with arbitrary data.
+
+See 'Scripts.PingPong.Vulnerable' for the vulnerable version.
 -}
 module Scripts.PingPong (
   validator,
@@ -39,8 +55,9 @@ import PlutusLedgerApi.V3.Contexts (
 import PlutusLedgerApi.V3.Tx (TxOutRef)
 import PlutusTx (unstableMakeIsData)
 import PlutusTx.AssocMap (Map, lookup)
+import PlutusTx.Builtins (mkConstr, unsafeDataAsConstr)
 import PlutusTx.Builtins.Internal qualified as BI
-import PlutusTx.IsData.Class (UnsafeFromData (unsafeFromBuiltinData))
+import PlutusTx.IsData.Class (ToData (..), UnsafeFromData (..))
 import PlutusTx.Prelude (BuiltinData, BuiltinUnit)
 import PlutusTx.Prelude qualified as P
 import PlutusTx.Show qualified as P
@@ -72,8 +89,55 @@ instance P.Show PingPongState where
   {-# INLINEABLE show #-}
   show = showState
 
+{- | Strict ToData/UnsafeFromData instances for PingPongState.
+
+== Large Data Attack Mitigation ==
+
+These instances are written manually instead of using 'unstableMakeIsData' because
+TH-generated instances silently ignore extra fields in the datum:
+
+1. Attacker creates datum: @Constr 0 [junk1, junk2, ...]@
+2. TH-generated FromData parses this as valid (Pinged), ignoring extra fields
+3. The bloated UTxO may become __permanently unspendable__:
+
+   - Deserialization exceeds execution unit limits
+   - Transaction to spend it exceeds protocol size limits
+   - Funds are locked forever with no recovery possible
+
+Our strict instances check that the field list is EMPTY for nullary constructors,
+rejecting any datum with unexpected extra fields before it reaches the chain.
+-}
+
+-- | Strict ToData instance for PingPongState
+instance ToData PingPongState where
+  {-# INLINEABLE toBuiltinData #-}
+  toBuiltinData Pinged = mkConstr 0 []
+  toBuiltinData Ponged = mkConstr 1 []
+  toBuiltinData Stopped = mkConstr 2 []
+
+-- | Strict UnsafeFromData instance - errors on datums with extra fields
+instance UnsafeFromData PingPongState where
+  {-# INLINEABLE unsafeFromBuiltinData #-}
+  unsafeFromBuiltinData d =
+    let (idx, fields) = unsafeDataAsConstr d
+     in if isEmptyList fields
+          then
+            if idx P.== 0
+              then Pinged
+              else
+                if idx P.== 1
+                  then Ponged
+                  else
+                    if idx P.== 2
+                      then Stopped
+                      else P.traceError "PingPongState: invalid index"
+          else P.traceError "PingPongState: unexpected extra fields"
+   where
+    isEmptyList :: [a] -> P.Bool
+    isEmptyList [] = P.True
+    isEmptyList _ = P.False
+
 PlutusTx.unstableMakeIsData ''PingPongRedeemer
-PlutusTx.unstableMakeIsData ''PingPongState
 
 {- | SECURE VALIDATOR
 
