@@ -17,6 +17,7 @@ module PingPongSpec (
   propPingPongWithThreatModel,
   propPingPongVulnerableToOutputRedirect,
   propPingPongVulnerableToLargeData,
+  propPingPongVulnerableToLargeValue,
 
   -- * Basic threat model example
   basicThreatModel,
@@ -72,6 +73,7 @@ import Convex.ThreatModel (
  )
 import Convex.ThreatModel.Cardano.Api (dummyTxId)
 import Convex.ThreatModel.LargeData (largeDataAttackWith)
+import Convex.ThreatModel.LargeValue (largeValueAttackWith)
 import Convex.ThreatModel.UnprotectedScriptOutput (unprotectedScriptOutput)
 import Convex.Utils (failOnError)
 import Convex.Wallet.MockWallet qualified as Wallet
@@ -243,7 +245,7 @@ instance TestingInterface PingPongModel where
 
   monitoring _state _action prop = prop
 
-  threatModels = [basicThreatModel, unprotectedScriptOutput, largeDataAttackWith 10]
+  threatModels = [basicThreatModel, unprotectedScriptOutput, largeDataAttackWith 10, largeValueAttackWith 10]
 
 plutusScript :: (C.IsPlutusScriptLanguage lang) => C.PlutusScript lang -> C.Script lang
 plutusScript = C.PlutusScript C.plutusScriptVersion
@@ -534,6 +536,87 @@ propPingPongVulnerableToLargeData opts = QC.expectFailure $ monadicIO $ do
 
     pure (playTx, utxoBefore)
 
+{- | Test that demonstrates the vulnerable PingPong script IS vulnerable to
+large value attacks. The 'largeValueAttackWith' threat model should find that
+extra tokens can be added to the script output's value.
+
+This test is expected to "fail" from QuickCheck's perspective - which means
+the threat model successfully found the vulnerability.
+
+The vulnerable PingPong script only validates datum state transitions but doesn't
+check the Value structure of outputs, making it susceptible to having junk tokens
+added to its UTxOs.
+-}
+propPingPongVulnerableToLargeValue :: RunOptions -> Property
+propPingPongVulnerableToLargeValue opts = QC.expectFailure $ monadicIO $ do
+  let Options{params} = mcOptions opts
+
+  -- Run the scenario AND the threat model INSIDE MockchainT
+  result <- run $ runMockchain0IOWith Wallet.initialUTxOs params $ runExceptT $ do
+    (tx, utxo) <- vulnerablePingPongLargeValueScenario
+
+    let pparams' = params ^. ledgerProtocolParameters
+        env =
+          ThreatModelEnv
+            { currentTx = tx
+            , currentUTxOs = utxo
+            , pparams = pparams'
+            }
+
+    -- Run threat model inside MockchainT
+    lift $ runThreatModelM Wallet.w1 (largeValueAttackWith 10) [env]
+
+  case result of
+    (Left err, _) -> do
+      monitor (counterexample $ "Mockchain error: " ++ show err)
+      pure $ QC.property False
+    (Right prop, _finalState) -> do
+      monitor (counterexample "Testing VULNERABLE pingPong for large value attack vulnerability")
+      pure prop
+ where
+  vulnerablePingPongLargeValueScenario
+    :: ( MonadMockchain C.ConwayEra m
+       , MonadError (BalanceTxError C.ConwayEra) m
+       , MonadFail m
+       )
+    => m (C.Tx C.ConwayEra, C.UTxO C.ConwayEra)
+  vulnerablePingPongLargeValueScenario = do
+    let value = 10_000_000
+        -- Use VULNERABLE script (doesn't validate Value structure)
+        scriptHash = C.hashScript (plutusScript Scripts.vulnerablePingPongScript)
+
+    -- Deploy pingPong with vulnerable script
+    deployTx <-
+      tryBalanceAndSubmit
+        mempty
+        Wallet.w1
+        ( execBuildTx
+            ( BuildTx.payToScriptInlineDatum
+                Defaults.networkId
+                scriptHash
+                Scripts.Pinged
+                C.NoStakeAddress
+                (C.lovelaceToValue value)
+            )
+        )
+        TrailingChange
+        []
+
+    -- Capture UTxO BEFORE playing a round (contains the script UTxO as input)
+    utxoBefore <- fromLedgerUTxO C.shelleyBasedEra <$> getUtxo
+
+    -- Play a round to create a transaction with script output
+    let txIn = C.TxIn (C.getTxId $ C.getTxBody deployTx) (C.TxIx 0)
+    playTx <-
+      tryBalanceAndSubmit
+        mempty
+        Wallet.w1
+        (execBuildTx $ Scripts.playVulnerablePingPongRound Defaults.networkId value VulnerablePingPong.Pong txIn)
+        TrailingChange
+        []
+
+    pure (playTx, utxoBefore)
+
 -- | All PingPong tests grouped together
 pingPongTests :: Options C.ConwayEra -> RunOptions -> TestTree
 pingPongTests opts runOpts =
@@ -604,4 +687,7 @@ pingPongTests opts runOpts =
     , testProperty
         "PingPong VULNERABLE to large data attack"
         (propPingPongVulnerableToLargeData runOpts)
+    , testProperty
+        "PingPong VULNERABLE to large value attack"
+        (propPingPongVulnerableToLargeValue runOpts)
     ]

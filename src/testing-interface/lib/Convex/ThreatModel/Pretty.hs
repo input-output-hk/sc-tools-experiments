@@ -310,6 +310,14 @@ prettyTxModifier (TxModifier txmod) = vcat [prettyMod m | m <- txmod]
       [ maybeBlock (text "changeValidityLowerBound") empty prettyLowerBound mlo
       , maybeBlock (text "changeValidityUpperBound") empty prettyUpperBound mhi
       ]
+  prettyMod (AddPlutusScriptMint script assetName quantity redeemer) =
+    fblock
+      (text "addPlutusScriptMint")
+      [ prettyPlutusV2Script script
+      , text (show assetName)
+      , text (show quantity)
+      , prettyScriptData redeemer
+      ]
   prettyMod (ReplaceTx tx utxos) =
     fblock
       (text "replaceTx")

@@ -1,5 +1,4 @@
 {-# LANGUAGE NumericUnderscores #-}
-{-# LANGUAGE TypeApplications #-}
 
 import Control.Exception (catch, throwIO)
 import Data.IORef (IORef, newIORef, readIORef)
@@ -58,6 +57,6 @@ tests ref =
         ]
     ]
  where
-  -- Use 25000 byte limit because the secure PingPong validator is larger
-  opts = modifyTransactionLimits (defaultOptions{coverageRef = Just ref}) 25000
+  -- Use 30000 byte limit because the secure PingPong validator is larger
+  opts = modifyTransactionLimits (defaultOptions{coverageRef = Just ref}) 30_000
   runOpts = defaultRunOptions{mcOptions = opts}

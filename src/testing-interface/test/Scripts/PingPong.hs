@@ -19,6 +19,7 @@
 This validator properly validates:
 1. Datum state transitions (Pinged -> Ponged, etc.)
 2. Output address - continuation output MUST go to the same script address
+3. Output value - continuation output value MUST equal input value
 
 == Security Measures ==
 
@@ -31,6 +32,12 @@ This validator is SECURE against:
 2. __Large Data Attack__: Uses strict manual 'UnsafeFromData' instances that
    reject datums with extra fields. TH-generated instances (via 'unstableMakeIsData')
    ignore extra fields, allowing attackers to pad datums with arbitrary data.
+
+3. __Large Value Attack__: Validates that output Value equals input Value,
+   preventing attackers from adding junk tokens to script outputs. Without this
+   check, attackers could mint worthless tokens and attach them to the UTxO,
+   increasing min-UTxO requirements and potentially locking funds permanently
+   if the bloated Value exceeds transaction size limits.
 
 See 'Scripts.PingPong.Vulnerable' for the vulnerable version.
 -}
@@ -45,7 +52,7 @@ module Scripts.PingPong (
 
 import PlutusLedgerApi.V1.Address (Address (..))
 import PlutusLedgerApi.V1.Scripts (Datum (getDatum), DatumHash, Redeemer (..))
-import PlutusLedgerApi.V2.Tx (OutputDatum (NoOutputDatum, OutputDatum, OutputDatumHash), TxOut (..))
+import PlutusLedgerApi.V2.Tx (OutputDatum (NoOutputDatum, OutputDatum, OutputDatumHash), TxOut (TxOut, txOutAddress, txOutDatum, txOutValue))
 import PlutusLedgerApi.V3.Contexts (
   ScriptContext (..),
   ScriptInfo (SpendingScript),
@@ -175,20 +182,27 @@ validator
       -- This is the key fix - we don't just take any output with valid datum
       continuationOutput = findContinuationOutput ownAddress txInfoOutputs
 
+      -- SECURITY: Verify output value equals input value (prevent Large Value Attack)
+      -- An attacker could add junk tokens which increases min-UTxO and may lock funds
+      inputValue = txOutValue (txInInfoResolved ownInput)
+      outputValue = txOutValue continuationOutput
+
       -- Get next state from the continuation output at our address
       nextState = getStateFromTxOut datumMap "output" continuationOutput
      in
-      case (currentState, action, nextState) of
-        (Pinged, Pong, Ponged) ->
-          BI.unitval
-        (Ponged, Ping, Pinged) ->
-          BI.unitval
-        (Pinged, Stop, Stopped) ->
-          BI.unitval
-        (Ponged, Stop, Stopped) ->
-          BI.unitval
-        _ ->
-          P.traceError P.$ "Coverage: BRANCH_INVALID state=" `P.appendString` showState currentState `P.appendString` " action=" `P.appendString` showAction action `P.appendString` " nextState=" `P.appendString` showState nextState
+      if inputValue P./= outputValue
+        then P.traceError "Value mismatch: output value must equal input value"
+        else case (currentState, action, nextState) of
+          (Pinged, Pong, Ponged) ->
+            BI.unitval
+          (Ponged, Ping, Pinged) ->
+            BI.unitval
+          (Pinged, Stop, Stopped) ->
+            BI.unitval
+          (Ponged, Stop, Stopped) ->
+            BI.unitval
+          _ ->
+            P.traceError P.$ "Coverage: BRANCH_INVALID state=" `P.appendString` showState currentState `P.appendString` " action=" `P.appendString` showAction action `P.appendString` " nextState=" `P.appendString` showState nextState
 validator _ = P.traceError "Invalid script purpose - expected SpendingScript"
 
 -- | Find our own input by matching the TxOutRef from SpendingScript

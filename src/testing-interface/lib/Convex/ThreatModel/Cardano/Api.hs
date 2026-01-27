@@ -20,6 +20,7 @@ import Cardano.Ledger.Binary qualified as CBOR
 import Cardano.Ledger.Conway.Scripts qualified as Conway
 import Cardano.Ledger.Conway.TxBody qualified as Conway
 import Cardano.Ledger.Keys (WitVKey (..), coerceKeyRole, hashKey)
+import Cardano.Ledger.Mary.Value qualified as Mary
 import Cardano.Ledger.Plutus.Language qualified as Plutus
 import Cardano.Slotting.Slot ()
 import Cardano.Slotting.Time (SlotLength, mkSlotLength)
@@ -38,6 +39,7 @@ import Convex.MockChain (applyTransaction, initialState)
 import Convex.NodeParams (NodeParams)
 import Convex.Wallet (Wallet)
 import Convex.Wallet qualified as Wallet
+import Data.ByteString.Short qualified as SBS
 import Data.Either (isRight)
 import Data.Map qualified as Map
 import Data.Maybe (listToMaybe)
@@ -142,6 +144,42 @@ addScriptData ix dat rdmr (TxBodyScriptData era (Ledger.TxDats dats) (Ledger.Red
     era
     (Ledger.TxDats $ Map.insert (Ledger.hashData dat) dat dats)
     (Ledger.Redeemers $ Map.insert (Conway.ConwaySpending (Ledger.AsIx ix)) rdmr rdmrs)
+
+-- | Add a minting redeemer to the script data (no datum needed for minting)
+addMintingRedeemer
+  :: Word32
+  -> (Ledger.Data (ShelleyLedgerEra Era), Ledger.ExUnits)
+  -> TxBodyScriptData Era
+  -> TxBodyScriptData Era
+addMintingRedeemer _ _ TxBodyNoScriptData = addMintingRedeemer 0 (error "no redeemer", Ledger.ExUnits 0 0) emptyTxBodyScriptData
+addMintingRedeemer ix rdmr (TxBodyScriptData era dats (Ledger.Redeemers rdmrs)) =
+  TxBodyScriptData
+    era
+    dats
+    (Ledger.Redeemers $ Map.insert (Conway.ConwayMinting (Ledger.AsIx ix)) rdmr rdmrs)
+
+-- | Like recomputeScriptData but only updates minting redeemer indices
+recomputeScriptDataForMint
+  :: Maybe Word32 -- Index to remove
+  -> (Word32 -> Word32)
+  -> TxBodyScriptData Era
+  -> TxBodyScriptData Era
+recomputeScriptDataForMint _ _ TxBodyNoScriptData = TxBodyNoScriptData
+recomputeScriptDataForMint i f (TxBodyScriptData era dats (Ledger.Redeemers rdmrs)) =
+  TxBodyScriptData
+    era
+    dats
+    (Ledger.Redeemers $ Map.mapKeys updatePtr $ Map.filterWithKey idxFilter rdmrs)
+ where
+  updatePtr = \case
+    Conway.ConwayMinting (Ledger.AsIx ix) -> Conway.ConwayMinting (Ledger.AsIx (f ix))
+    other -> other -- Don't modify non-minting redeemers
+  idxFilter (Conway.ConwayMinting (Ledger.AsIx idx)) _ = Just idx /= i
+  idxFilter _ _ = True -- Keep all non-minting redeemers
+
+-- | Convert cardano-api AssetName to ledger Mary.AssetName
+toMaryAssetName :: AssetName -> Mary.AssetName
+toMaryAssetName an = Mary.AssetName $ SBS.toShort $ serialiseToRawBytes an
 
 addDatum
   :: Ledger.Data (ShelleyLedgerEra Era)

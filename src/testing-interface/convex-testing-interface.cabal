@@ -45,6 +45,7 @@ library
     Convex.ThreatModel.Cardano.Api
     Convex.ThreatModel.DoubleSatisfaction
     Convex.ThreatModel.LargeData
+    Convex.ThreatModel.LargeValue
     Convex.ThreatModel.Pretty
     Convex.ThreatModel.TxModifier
     Convex.ThreatModel.UnprotectedScriptOutput
@@ -70,10 +71,12 @@ library
     , cardano-ledger-binary
     , cardano-ledger-conway
     , cardano-ledger-core
+    , cardano-ledger-mary
     , cardano-slotting
     , cardano-strict-containers
     , ouroboros-consensus
     , ouroboros-consensus-cardano
+    , plutus-ledger-api:plutus-ledger-api-testlib
     , plutus-tx
     , pretty
     , sop-extras

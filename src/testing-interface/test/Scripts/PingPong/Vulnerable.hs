@@ -23,6 +23,16 @@ This validator is INTENTIONALLY VULNERABLE to demonstrate multiple attack patter
    - __Permanently lock funds__ if the bloated datum causes the UTxO to exceed
      execution limits or transaction size constraints, making it unspendable
 
+3. __Large Value Attack__: The validator does NOT verify that the output Value
+   equals the input Value. An attacker can mint junk tokens and add them to the
+   script output. This can:
+
+   - Increase min-UTxO requirements (more ADA locked up)
+   - Add serialization/deserialization costs
+   - __Permanently lock funds__ if the bloated Value causes the UTxO to exceed
+     transaction size limits, making it unspendable
+   - Force legitimate users to handle/dispose of unwanted tokens
+
 Use this module to demonstrate how threat models detect these vulnerability classes.
 
 See 'Scripts.PingPong' for the secure version.
@@ -80,8 +90,9 @@ PlutusTx.unstableMakeIsData ''PingPongState
 
 {- | VULNERABLE VALIDATOR
 
-This validator only checks datum state transitions but does NOT verify
-that outputs go to the same script address.
+This validator only checks datum state transitions but does NOT verify:
+- That outputs go to the same script address (Unprotected Output Attack)
+- That output Value equals input Value (Large Value Attack)
 
 An attacker can:
 1. Spend a script UTxO
@@ -89,6 +100,9 @@ An attacker can:
 3. The validator passes because it only checks the datum, not the address
 
 The attacker effectively steals the funds by redirecting them to their wallet.
+
+For Large Value Attack, an attacker can mint junk tokens and add them to the
+script output, potentially bloating it to the point of being unspendable.
 -}
 {-# INLINEABLE validator #-}
 validator :: BuiltinData -> BuiltinUnit

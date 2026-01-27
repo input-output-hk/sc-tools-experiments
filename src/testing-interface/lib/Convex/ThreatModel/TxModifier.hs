@@ -14,6 +14,7 @@ import Cardano.Ledger.Api.Era qualified as Ledger
 import Cardano.Ledger.Binary qualified as CBOR
 import Cardano.Ledger.Conway.Scripts qualified as Conway
 import Cardano.Ledger.Conway.TxBody qualified as Conway
+import Cardano.Ledger.Mary.Value qualified as Mary
 import Data.Coerce
 
 import Cardano.Ledger.Alonzo.Scripts qualified as Ledger
@@ -22,6 +23,7 @@ import Data.Maybe
 import Data.Maybe.Strict
 import Data.Sequence.Strict qualified as Seq
 import Data.Set qualified as Set
+import PlutusLedgerApi.Test.Examples (alwaysSucceedingNAryFunction)
 
 import Convex.ThreatModel.Cardano.Api
 
@@ -179,6 +181,13 @@ data TxMod where
     -- TODO: -> Datum ??
     -> ReferenceScript Era
     -> Bool -- isReferenceInput
+    -> TxMod
+  -- | Mint tokens using a Plutus script
+  AddPlutusScriptMint
+    :: PlutusScript PlutusScriptV2 -- The minting policy script
+    -> AssetName -- Name of asset to mint
+    -> Quantity -- Amount (positive = mint, negative = burn)
+    -> ScriptData -- Redeemer for the minting policy
     -> TxMod
   ReplaceTx :: Tx Era -> UTxO Era -> TxMod
   deriving stock (Show)
@@ -538,6 +547,58 @@ applyTxMod tx utxos (ChangeScriptInput txIn mvalue mdatum mredeemer mrscript) =
       adatum
       (maybe redeemer (toAlonzoData . unsafeHashableScriptData) mredeemer, exunits)
       scriptData
+applyTxMod tx utxos (AddPlutusScriptMint script assetName quantity redeemer) =
+  ( Tx (ShelleyTxBody era body{Conway.ctbMint = mint'} scripts' scriptData' auxData validity) wits
+  , utxos
+  )
+ where
+  Tx (ShelleyTxBody era body@Conway.ConwayTxBody{..} scripts scriptData auxData validity) wits = tx
+
+  -- Convert cardano-api types to ledger types
+  scriptHash = hashScript $ PlutusScript PlutusScriptV2 script
+  ledgerPolicyId = Mary.PolicyID (toShelleyScriptHash scriptHash)
+  ledgerAssetName = toMaryAssetName assetName
+  Quantity qty = quantity
+
+  -- Add the asset to the mint field
+  newMintAsset = Mary.MultiAsset $ Map.singleton ledgerPolicyId (Map.singleton ledgerAssetName qty)
+  mint' = ctbMint <> newMintAsset
+
+  -- Calculate the mint index (sorted position of PolicyId in mint map keys)
+  Mary.MultiAsset mintMap = mint'
+  mintIdx = case Map.lookupIndex ledgerPolicyId mintMap of
+    Just idx' -> fromIntegral idx'
+    Nothing -> error "The impossible happened: PolicyId not in mint map after insertion"
+
+  -- Check if we need to update existing minting redeemer indices
+  -- (if our new PolicyId sorted before some existing ones)
+  Mary.MultiAsset oldMintMap = ctbMint
+  oldMintKeys = Map.keys oldMintMap
+  -- For each existing policy, check if its new index changed
+  idxUpdate oldIdx
+    | any
+        ( \p ->
+            Map.lookupIndex p mintMap == Just (fromIntegral oldIdx + 1)
+              && Map.lookupIndex p oldMintMap == Just (fromIntegral oldIdx)
+        )
+        oldMintKeys =
+        oldIdx + 1
+    | otherwise = oldIdx
+
+  -- Add the script to the scripts list
+  scriptInEra =
+    ScriptInEra
+      PlutusScriptV2InConway
+      (PlutusScript PlutusScriptV2 script)
+  newScript = toShelleyScript @Era scriptInEra
+  scripts' = scripts ++ [newScript]
+
+  -- Add the minting redeemer with the correct index
+  scriptData' =
+    addMintingRedeemer
+      mintIdx
+      (toAlonzoData $ unsafeHashableScriptData redeemer, toAlonzoExUnits $ ExecutionUnits 0 0)
+      $ recomputeScriptDataForMint Nothing idxUpdate scriptData
 applyTxMod _ _ (ReplaceTx tx utxos) = (tx, utxos)
 
 -- | Add a new output of any type (public key or script)
@@ -579,6 +640,23 @@ addSimpleScriptInput script value rscript = txMod $ AddSimpleScriptInput script 
 -- | Add a simple script reference input.
 addSimpleScriptReferenceInput :: SimpleScript -> Value -> ReferenceScript Era -> TxModifier
 addSimpleScriptReferenceInput script value rscript = txMod $ AddSimpleScriptInput script value rscript True
+
+-- | Smart constructor for minting with a Plutus script
+addPlutusScriptMint
+  :: PlutusScript PlutusScriptV2
+  -> AssetName
+  -> Quantity
+  -> ScriptData -- Redeemer
+  -> TxModifier
+addPlutusScriptMint script name qty redeemer =
+  txMod $ AddPlutusScriptMint script name qty redeemer
+
+{- | Always-succeeds minting policy for testing
+Takes 2 arguments: redeemer and script context
+-}
+alwaysSucceedsMintingPolicy :: PlutusScript PlutusScriptV2
+alwaysSucceedsMintingPolicy =
+  PlutusScriptSerialised $ alwaysSucceedingNAryFunction 2
 
 -- | Change the redeemer of a script input.
 changeRedeemerOf :: Input -> Redeemer -> TxModifier

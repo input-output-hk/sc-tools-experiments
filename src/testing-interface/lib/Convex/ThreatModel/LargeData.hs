@@ -17,7 +17,6 @@ validator's interpretation.
 
    - Deserializing the datum may exceed execution unit limits
    - The transaction required to spend the UTxO may exceed protocol size limits
-   - Min-UTxO requirements increase with datum size
 
    In these cases, the UTxO becomes __permanently unspendable__ and funds
    are locked forever with no possibility of recovery.
