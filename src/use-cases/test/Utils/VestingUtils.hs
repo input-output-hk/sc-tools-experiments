@@ -1,17 +1,26 @@
 {-# LANGUAGE GADTs #-}
 {-# LANGUAGE TypeApplications #-}
+{-# OPTIONS_GHC -Wno-unrecognised-pragmas #-}
+
+{-# HLINT ignore "Replace case with fromMaybe" #-}
 
 module Utils.VestingUtils (
+  -- * Unit Testing Functions
   lockVestingTest,
   lockTwiceVestingTest,
   retrieveFundsTest,
   retrieveFundsInSteps,
   lockTwiceAndRetrieveFundsTest,
-  vestingScriptTest,
+
+  -- * Property-Based Testing Functions
+  lockVestingPBT,
+  retrieveFundsPBT,
+
+  -- * Types
   VestingState (..),
 ) where
 
-import Control.Monad (forM_, void)
+import Control.Monad (forM_, void, when)
 import Control.Monad.Except (MonadError)
 import Convex.BuildTx (
   TxBuilder,
@@ -22,6 +31,7 @@ import Convex.BuildTx (
 
 import Cardano.Api (SlotNo)
 import Cardano.Api qualified as C
+import Cardano.Api.UTxO qualified as C.UTxO
 import Cardano.Ledger.Shelley.API (Credential (ScriptHashObj))
 import Contracts.Vesting qualified as Vesting
 import Convex.BuildTx qualified as BuildTx
@@ -31,40 +41,142 @@ import Convex.Class (
   setSlot,
  )
 import Convex.CoinSelection (BalanceTxError, ChangeOutputPosition (TrailingChange))
+import Convex.MockChain (utxoSet)
 import Convex.MockChain.CoinSelection (tryBalanceAndSubmit)
 import Convex.MockChain.Defaults qualified as Defaults
 import Convex.PlutusLedger.V1 (transPubKeyHash)
 import Convex.Utils (inBabbage, slotToUtcTime, utcTimeToPosixTime)
+import Convex.Utxos (toApiUtxo)
 import Convex.Wallet (Wallet, verificationKeyHash)
 import Convex.Wallet.MockWallet qualified as MockWallet
 import PlutusLedgerApi.V1 (POSIXTime, lovelaceValue)
 import Scripts.VestingScript qualified as Script
 
 -------------------------------------------------------------------------------
--- Auxiliary functions and definitions for the tests
+-- Types
 -------------------------------------------------------------------------------
 
--------------------------------------------------------------------------------
--- Vesting State
--------------------------------------------------------------------------------
-
+-- | State tracking UTxOs locked in vesting contract
 data VestingState = VestingState
   { vsInputs :: [C.TxIn]
+  -- ^ UTxOs to spend
   , vsLocked :: C.Lovelace
+  -- ^ Total amount locked
   }
+  deriving (Show, Eq)
+
+-- | Configuration for creating vesting contracts
+data VestingConfig = VestingConfig
+  { vcOwner :: C.Hash C.PaymentKey
+  -- ^ Beneficiary who can withdraw
+  , vcTranche1Slot :: C.SlotNo
+  -- ^ When first tranche unlocks
+  , vcTranche1Amount :: C.Lovelace
+  -- ^ Amount in first tranche
+  , vcTranche2Slot :: C.SlotNo
+  -- ^ When second tranche unlocks
+  , vcTranche2Amount :: C.Lovelace
+  -- ^ Amount in second tranche
+  }
+  deriving (Show, Eq)
 
 -------------------------------------------------------------------------------
--- Helper functions to build and submit transactions
+-- Core Building Blocks
 -------------------------------------------------------------------------------
 
--- submitAndGetTxIn
---   :: forall era m
---    . (MonadMockchain era m, MonadError (BalanceTxError era) m, MonadFail m, C.IsBabbageBasedEra era)
---   => Wallet -> Word -> TxBuilder era -> m C.TxIn
--- submitAndGetTxIn w idx builder = do
---   txId <- C.getTxId . C.getTxBody <$> tryBalanceAndSubmit mempty w builder TrailingChange []
---   pure $ C.TxIn txId (C.TxIx idx)
+-- | Convert SlotNo to POSIXTime (common operation extracted).
+slotToPosixTime
+  :: (MonadMockchain era m, MonadFail m)
+  => C.SlotNo
+  -> m POSIXTime
+slotToPosixTime slot = do
+  eraHist <- queryEraHistory
+  sysStart <- querySystemStart
+  utcTime <- either fail pure $ slotToUtcTime eraHist sysStart slot
+  pure $ utcTimeToPosixTime utcTime
 
+-- | Create VestingParams
+mkVestingParams
+  :: C.Hash C.PaymentKey
+  -> POSIXTime
+  -> Integer
+  -> POSIXTime
+  -> Integer
+  -> Vesting.VestingParams
+mkVestingParams pkh dl1 val1 dl2 val2 =
+  Vesting.VestingParams
+    (transPubKeyHash pkh)
+    (Vesting.Vesting dl1 (lovelaceValue (fromIntegral val1)))
+    (Vesting.Vesting dl2 (lovelaceValue (fromIntegral val2)))
+
+-- | Get script hash from vesting parameters.
+mkScriptHash :: Vesting.VestingParams -> C.ScriptHash
+mkScriptHash params =
+  let validator = C.PlutusScript C.plutusScriptVersion (Script.vestingValidatorScript params)
+   in C.hashScript validator
+
+-------------------------------------------------------------------------------
+-- Transaction Building Blocks
+-------------------------------------------------------------------------------
+
+-- | Build transaction to lock funds in vesting script.
+lockVesting
+  :: forall era
+   . (C.IsBabbageBasedEra era)
+  => C.ScriptHash -> C.Lovelace -> TxBuilder era
+lockVesting scriptHash lovelace =
+  execBuildTx $
+    BuildTx.payToScriptInlineDatum
+      Defaults.networkId
+      scriptHash
+      ()
+      C.NoStakeAddress
+      (C.lovelaceToValue lovelace)
+
+-- | Build transaction to withdraw from vesting script.
+withdrawVesting
+  :: forall era
+   . (C.IsBabbageBasedEra era, C.HasScriptLanguageInEra C.PlutusScriptV3 era)
+  => C.SlotNo
+  -- ^ Lower validity bound
+  -> C.SlotNo
+  -- ^ Upper validity bound
+  -> C.Hash C.PaymentKey
+  -- ^ Owner signature
+  -> Vesting.VestingParams
+  -- ^ Vesting parameters
+  -> VestingState
+  -- ^ Current state
+  -> C.Lovelace
+  -- ^ Amount to withdraw
+  -> TxBuilder era
+withdrawVesting lower upper pkh vestingParams vtState amt =
+  execBuildTx $ do
+    -- Here is where we set the validity range for the transaction
+    -- It needs to be within the vesting schedule, i.e., the lower validity should be after the deadlines
+    -- For each transaction, we update the lower validity to be after the previous one, considering the current slot
+    addValidityRangeSlots lower upper
+    addRequiredSignature pkh
+
+    -- Consume ALL script UTXO
+    forM_ (vsInputs vtState) $ \txIn ->
+      BuildTx.spendPlutusInlineDatum txIn (Script.vestingValidatorScript vestingParams) ()
+    -- Pay withdrawal amount to owner
+    BuildTx.payToPublicKey Defaults.networkId pkh (C.lovelaceToValue amt)
+    -- Return remaining to the script
+    let remaining = vsLocked vtState - amt
+    BuildTx.payToScriptInlineDatum
+      Defaults.networkId
+      (mkScriptHash vestingParams)
+      ()
+      C.NoStakeAddress
+      (C.lovelaceToValue remaining)
+
+-------------------------------------------------------------------------------
+-- Blockchain Interaction Helpers
+-------------------------------------------------------------------------------
+
+-- | Submit transaction and extract the script output TxIn.
 submitAndGetScriptTxIn
   :: forall era m
    . ( MonadMockchain era m
@@ -79,73 +191,47 @@ submitAndGetScriptTxIn
 submitAndGetScriptTxIn wallet scriptHash txBuilder = do
   -- Balance, sign and submit the transaction.
   tx <- tryBalanceAndSubmit mempty wallet txBuilder TrailingChange []
-  let
-    txBody = C.getTxBody tx
-    txId = C.getTxId txBody
-    -- Enumerate transaction outputs and assign TxIx values
-    outputs =
-      zip [C.TxIx 0 ..] $
-        C.txOuts (C.getTxBodyContent txBody)
-    -- Select outputs whose address is locked by the given script hash
-    scriptOutputs =
-      [ C.TxIn txId ix
-      | (ix, C.TxOut addr _ _ _) <- outputs
-      , isScriptAddress addr
-      ]
+  let txBody = C.getTxBody tx
+      txId = C.getTxId txBody
+      -- Enumerate transaction outputs and assign TxIx values
+      outputs =
+        zip [C.TxIx 0 ..] $
+          C.txOuts (C.getTxBodyContent txBody)
+      -- Select outputs whose address is locked by the given script hash
+      scriptOutputs =
+        [ C.TxIn txId ix
+        | (ix, C.TxOut addr _ _ _) <- outputs
+        , isScriptAddress addr
+        ]
   -- We expect exactly one script output
   case scriptOutputs of
     [txIn] -> pure txIn
     [] -> fail "submitAndGetScriptTxIn: no script output found"
     _ -> fail "submitAndGetScriptTxIn: multiple script outputs found"
  where
-  isScriptAddress :: C.AddressInEra era -> Bool
-  isScriptAddress (C.AddressInEra _ addr) =
-    case addr of
-      C.ShelleyAddress _ payment _ ->
-        case payment of
-          ScriptHashObj h ->
-            h == C.toShelleyScriptHash scriptHash
-          _ -> False
-      _ -> False
+  isScriptAddress (C.AddressInEra _ (C.ShelleyAddress _ (ScriptHashObj h) _)) =
+    h == C.toShelleyScriptHash scriptHash
+  isScriptAddress _ = False
 
-lockVesting
-  :: forall era
-   . (C.IsBabbageBasedEra era)
-  => C.ScriptHash -> C.Lovelace -> TxBuilder era
-lockVesting scriptHash lovelace =
-  execBuildTx $
-    BuildTx.payToScriptInlineDatum
-      Defaults.networkId
-      scriptHash
-      ()
-      C.NoStakeAddress
-      (C.lovelaceToValue lovelace)
+-- | Query blockchain for all UTxOs locked in a vesting script.
+findVestingUtxos
+  :: forall era m
+   . (MonadMockchain era m, MonadFail m, C.IsBabbageBasedEra era)
+  => C.ScriptHash -> m [(C.TxIn, C.TxOut C.CtxUTxO era)]
+findVestingUtxos scriptHash = do
+  utxos <- utxoSet
+  let scriptUtxos =
+        [ (txIn, txOut)
+        | (txIn, txOut@(C.TxOut addr _ _ _)) <- C.UTxO.toList (toApiUtxo utxos)
+        , isScriptAddress addr
+        ]
+  pure scriptUtxos
+ where
+  isScriptAddress (C.AddressInEra _ (C.ShelleyAddress _ (ScriptHashObj h) _)) =
+    h == C.toShelleyScriptHash scriptHash
+  isScriptAddress _ = False
 
-withdrawVesting
-  :: forall era
-   . (C.IsBabbageBasedEra era, C.HasScriptLanguageInEra C.PlutusScriptV3 era)
-  => C.SlotNo -> C.SlotNo -> C.Hash C.PaymentKey -> Vesting.VestingParams -> VestingState -> C.Lovelace -> TxBuilder era
-withdrawVesting lower upper pkh vestingParams vtState lovelace =
-  execBuildTx $ do
-    -- Here is where we set the validity range for the transaction
-    -- It needs to be within the vesting schedule, i.e., the lower validity should be after the deadlines
-    -- For each transaction, we update the lower validity to be after the previous one, considering the current slot
-    addValidityRangeSlots lower upper
-    addRequiredSignature pkh
-    -- Consume ALL script UTXO
-    forM_ (vsInputs vtState) $ \txIn ->
-      BuildTx.spendPlutusInlineDatum txIn (Script.vestingValidatorScript vestingParams) ()
-    -- Pay to owner's public key
-    BuildTx.payToPublicKey Defaults.networkId pkh (C.lovelaceToValue lovelace)
-    -- Return remaining to the script
-    let remainingLovelace = vsLocked vtState - lovelace
-    BuildTx.payToScriptInlineDatum
-      Defaults.networkId
-      (mkScriptHash vestingParams)
-      ()
-      C.NoStakeAddress
-      (C.lovelaceToValue remainingLovelace)
-
+-- | Execute a withdrawal step and return updated state.
 withdrawStep
   :: forall era m
    . (MonadMockchain era m, MonadError (BalanceTxError era) m, MonadFail m, C.IsBabbageBasedEra era, C.HasScriptLanguageInEra C.PlutusScriptV3 era)
@@ -171,90 +257,143 @@ withdrawStep w lower upper pkh vestingParams vtState lovelace = do
       }
 
 -------------------------------------------------------------------------------
--- Helper functions
--------------------------------------------------------------------------------
-mkVestingParams
-  :: C.Hash C.PaymentKey
-  -> POSIXTime
-  -> Integer
-  -> POSIXTime
-  -> Integer
-  -> Vesting.VestingParams
-mkVestingParams pkh dl1 val1 dl2 val2 =
-  Vesting.VestingParams
-    (transPubKeyHash pkh)
-    (Vesting.Vesting dl1 (lovelaceValue (fromIntegral val1)))
-    (Vesting.Vesting dl2 (lovelaceValue (fromIntegral val2)))
-
-mkScriptHash :: Vesting.VestingParams -> C.ScriptHash
-mkScriptHash vestingParams =
-  let validator = C.PlutusScript C.plutusScriptVersion (Script.vestingValidatorScript vestingParams)
-   in C.hashScript validator
-
--------------------------------------------------------------------------------
--- Test functions
+-- Property-Based Testing Functions
 -------------------------------------------------------------------------------
 
+-- | Lock funds in vesting contract for property-based testing.
+lockVestingPBT
+  :: forall era m
+   . (MonadMockchain era m, MonadError (BalanceTxError era) m, MonadFail m, C.IsBabbageBasedEra era)
+  => C.SlotNo
+  -- ^ Deadline for first tranche
+  -> Wallet
+  -- ^ Wallet funding the vesting (not necessarily the owner)
+  -> C.Lovelace
+  -- ^ Amount to lock
+  -> m ()
+lockVestingPBT dl w amt = inBabbage @era $ do
+  deadline <- slotToPosixTime dl
+  -- Owner is always w1 in our tests
+  let ownerPKH = verificationKeyHash MockWallet.w1
+      params = mkVestingParams ownerPKH deadline 20_000_000 (deadline + 10_000) 40_000_000
+
+  void $
+    submitAndGetScriptTxIn w (mkScriptHash params) $
+      lockVesting (mkScriptHash params) amt
+
+-- | Retrieve funds from vesting contract for property-based testing.
+retrieveFundsPBT
+  :: forall era m
+   . (MonadMockchain era m, MonadError (BalanceTxError era) m, MonadFail m, C.IsBabbageBasedEra era, C.HasScriptLanguageInEra C.PlutusScriptV3 era)
+  => Vesting.VestingParams
+  -- ^ Vesting parameters
+  -> C.SlotNo
+  -- ^ Lower validity bound
+  -> C.SlotNo
+  -- ^ Upper validity bound
+  -> C.SlotNo
+  -- ^ Current slot (set chain to this)
+  -> C.Lovelace
+  -- ^ Amount to withdraw
+  -> m ()
+retrieveFundsPBT params lowerSlot upperSlot curSlot amt = inBabbage @era $ do
+  let scriptHash = mkScriptHash params
+      ownerPKH = verificationKeyHash MockWallet.w1
+
+  -- Set blockchain time
+  setSlot curSlot
+
+  -- Query blockchain for vesting UTxOs
+  utxos <- findVestingUtxos scriptHash
+
+  when (null utxos) $ fail "No vesting UTxOs found on chain"
+
+  -- Calculate total locked amount from UTxOs
+  let txIns = map fst utxos
+      totalLocked =
+        sum
+          [ C.txOutValueToLovelace val
+          | (_, C.TxOut _ val _ _) <- utxos
+          ]
+
+  let vestingState =
+        VestingState
+          { vsInputs = txIns
+          , vsLocked = totalLocked
+          }
+
+  void $ withdrawStep MockWallet.w1 lowerSlot upperSlot ownerPKH params vestingState amt
+
+-------------------------------------------------------------------------------
+-- Unit Testing Functions
+-------------------------------------------------------------------------------
+
+-- | Test: Lock 60 ADA in vesting script.
 lockVestingTest
   :: forall era m
    . (MonadMockchain era m, MonadError (BalanceTxError era) m, MonadFail m, C.IsBabbageBasedEra era)
-  => C.SlotNo -- deadline
+  => C.SlotNo
+  -- ^ Deadline
   -> m ()
 lockVestingTest dl = inBabbage @era $ do
-  dlInUtc <- slotToUtcTime <$> queryEraHistory <*> querySystemStart <*> pure dl >>= either fail pure
-  let deadline = utcTimeToPosixTime dlInUtc
-      ownerPKH = verificationKeyHash MockWallet.w1
-      vestingParams = mkVestingParams ownerPKH deadline 20_000_000 (deadline + 10_000) 40_000_000
+  deadline <- slotToPosixTime dl
+  let ownerPKH = verificationKeyHash MockWallet.w1
+      params = mkVestingParams ownerPKH deadline 20_000_000 (deadline + 10_000) 40_000_000
   ------------------------------------------------------------------
   -- Tx1: lock 60 ADA in the vesting script
   ------------------------------------------------------------------
   void $
-    submitAndGetScriptTxIn MockWallet.w1 (mkScriptHash vestingParams) $
-      lockVesting (mkScriptHash vestingParams) 60_000_000
+    submitAndGetScriptTxIn MockWallet.w1 (mkScriptHash params) $
+      lockVesting (mkScriptHash params) 60_000_000
 
+-- | Test: Lock 60 ADA twice.
 lockTwiceVestingTest
   :: forall era m
    . (MonadMockchain era m, MonadError (BalanceTxError era) m, MonadFail m, C.IsBabbageBasedEra era)
   => C.SlotNo -- deadline
   -> m ()
 lockTwiceVestingTest dl = inBabbage @era $ do
-  dlInUtc <- slotToUtcTime <$> queryEraHistory <*> querySystemStart <*> pure dl >>= either fail pure
-  let deadline = utcTimeToPosixTime dlInUtc
-      ownerPKH = verificationKeyHash MockWallet.w1
-      vestingParams = mkVestingParams ownerPKH deadline 20_000_000 (deadline + 10_000) 40_000_000
+  deadline <- slotToPosixTime dl
+  let ownerPKH = verificationKeyHash MockWallet.w1
+      params = mkVestingParams ownerPKH deadline 20_000_000 (deadline + 10_000) 40_000_000
   ------------------------------------------------------------------
   -- Tx1: lock 60 ADA in the vesting script
   ------------------------------------------------------------------
   void $
-    submitAndGetScriptTxIn MockWallet.w1 (mkScriptHash vestingParams) $
-      lockVesting (mkScriptHash vestingParams) 60_000_000
+    submitAndGetScriptTxIn MockWallet.w1 (mkScriptHash params) $
+      lockVesting (mkScriptHash params) 60_000_000
   ------------------------------------------------------------------
   -- Tx2: lock another 40 ADA in the vesting script
   ------------------------------------------------------------------
   void $
-    submitAndGetScriptTxIn MockWallet.w1 (mkScriptHash vestingParams) $
-      lockVesting (mkScriptHash vestingParams) 40_000_000
+    submitAndGetScriptTxIn MockWallet.w1 (mkScriptHash params) $
+      lockVesting (mkScriptHash params) 40_000_000
 
+-- | Test: Lock 60 ADA and retrieve some.
 retrieveFundsTest
   :: forall era m
    . (MonadMockchain era m, MonadError (BalanceTxError era) m, MonadFail m, C.IsBabbageBasedEra era, C.HasScriptLanguageInEra C.PlutusScriptV3 era)
-  => SlotNo -- deadline
-  -> C.SlotNo -- lower validity
-  -> C.SlotNo -- upper validity
-  -> C.SlotNo -- advance chain to slot
-  -> C.Lovelace -- value to withdraw
+  => SlotNo
+  -- ^ Deadline
+  -> C.SlotNo
+  -- ^ Lower validity
+  -> C.SlotNo
+  -- ^ Upper validity
+  -> C.SlotNo
+  -- ^ Advance chain to slot
+  -> C.Lovelace
+  -- ^ Value to withdraw
   -> m ()
 retrieveFundsTest dl lowerSlot upperSlot startTime value = inBabbage @era $ do
-  dlInUtc <- slotToUtcTime <$> queryEraHistory <*> querySystemStart <*> pure dl >>= either fail pure
-  let deadline = utcTimeToPosixTime dlInUtc
-      ownerPKH = verificationKeyHash MockWallet.w1
-      vestingParams = mkVestingParams ownerPKH deadline 20_000_000 (deadline + 5_000) 40_000_000
+  deadline <- slotToPosixTime dl
+  let ownerPKH = verificationKeyHash MockWallet.w1
+      params = mkVestingParams ownerPKH deadline 20_000_000 (deadline + 5_000) 40_000_000
   ------------------------------------------------------------------
   -- Tx1: lock 60 ADA in the vesting script
   ------------------------------------------------------------------
   txIn <-
-    submitAndGetScriptTxIn MockWallet.w1 (mkScriptHash vestingParams) $
-      lockVesting (mkScriptHash vestingParams) 60_000_000
+    submitAndGetScriptTxIn MockWallet.w1 (mkScriptHash params) $
+      lockVesting (mkScriptHash params) 60_000_000
 
   let vs0 =
         VestingState
@@ -268,8 +407,9 @@ retrieveFundsTest dl lowerSlot upperSlot startTime value = inBabbage @era $ do
   ------------------------------------------------------------------
   -- Tx2: withdraw some ADA
   ------------------------------------------------------------------
-  void $ withdrawStep MockWallet.w1 lowerSlot upperSlot ownerPKH vestingParams vs0 value
+  void $ withdrawStep MockWallet.w1 lowerSlot upperSlot ownerPKH params vs0 value
 
+-- | Test: Lock once and retrieve in two steps.
 retrieveFundsInSteps
   :: forall era m
    . (MonadMockchain era m, MonadError (BalanceTxError era) m, MonadFail m, C.IsBabbageBasedEra era, C.HasScriptLanguageInEra C.PlutusScriptV3 era)
@@ -277,18 +417,16 @@ retrieveFundsInSteps
   -> C.SlotNo -- deadline second tranche
   -> m ()
 retrieveFundsInSteps dl1 dl2 = inBabbage @era $ do
-  dlInUtc1 <- slotToUtcTime <$> queryEraHistory <*> querySystemStart <*> pure dl1 >>= either fail pure
-  dlInUtc2 <- slotToUtcTime <$> queryEraHistory <*> querySystemStart <*> pure dl2 >>= either fail pure
-  let deadline1 = utcTimeToPosixTime dlInUtc1
-      deadline2 = utcTimeToPosixTime dlInUtc2
-      ownerPKH = verificationKeyHash MockWallet.w1
-      vestingParams = mkVestingParams ownerPKH deadline1 20_000_000 deadline2 40_000_000
+  deadline1 <- slotToPosixTime dl1
+  deadline2 <- slotToPosixTime dl2
+  let ownerPKH = verificationKeyHash MockWallet.w1
+      params = mkVestingParams ownerPKH deadline1 20_000_000 deadline2 40_000_000
   ------------------------------------------------------------------
   -- Tx1: lock 60 ADA in the vesting script
   ------------------------------------------------------------------
   txIn <-
-    submitAndGetScriptTxIn MockWallet.w1 (mkScriptHash vestingParams) $
-      lockVesting (mkScriptHash vestingParams) 60_000_000
+    submitAndGetScriptTxIn MockWallet.w1 (mkScriptHash params) $
+      lockVesting (mkScriptHash params) 60_000_000
 
   let vs0 =
         VestingState
@@ -302,7 +440,7 @@ retrieveFundsInSteps dl1 dl2 = inBabbage @era $ do
   ------------------------------------------------------------------
   -- Tx2: withdraw only 20 ADA
   ------------------------------------------------------------------
-  vs1 <- withdrawStep MockWallet.w1 dl1 (dl1 + 100) ownerPKH vestingParams vs0 20_000_000
+  vs1 <- withdrawStep MockWallet.w1 dl1 (dl1 + 100) ownerPKH params vs0 20_000_000
   ------------------------------------------------------------------
   -- Advance time to after the first tranche deadline
   ------------------------------------------------------------------
@@ -310,34 +448,39 @@ retrieveFundsInSteps dl1 dl2 = inBabbage @era $ do
   ------------------------------------------------------------------
   -- Tx3: withdraw remaining 40 ADA - fee
   ------------------------------------------------------------------
-  void $ withdrawStep MockWallet.w1 dl2 (dl2 + 100) ownerPKH vestingParams vs1 38_775_000
+  void $ withdrawStep MockWallet.w1 dl2 (dl2 + 100) ownerPKH params vs1 38_775_000
 
+-- | Test: Lock twice and retrieve.
 lockTwiceAndRetrieveFundsTest
   :: forall era m
    . (MonadMockchain era m, MonadError (BalanceTxError era) m, MonadFail m, C.IsBabbageBasedEra era, C.HasScriptLanguageInEra C.PlutusScriptV3 era)
-  => C.SlotNo -- deadline
-  -> C.SlotNo -- lower validity
-  -> C.SlotNo -- upper validity
-  -> C.SlotNo -- advance chain to slot
-  -> C.Lovelace -- value to withdraw
+  => C.SlotNo
+  -- ^ Deadline
+  -> C.SlotNo
+  -- ^ Lower validity
+  -> C.SlotNo
+  -- ^ Upper validity
+  -> C.SlotNo
+  -- ^ Advance chain to slot
+  -> C.Lovelace
+  -- ^ Value to withdraw
   -> m ()
 lockTwiceAndRetrieveFundsTest dl _ upperSlot startTime value = inBabbage @era $ do
-  dlInUtc <- slotToUtcTime <$> queryEraHistory <*> querySystemStart <*> pure dl >>= either fail pure
-  let deadline = utcTimeToPosixTime dlInUtc
-      ownerPKH = verificationKeyHash MockWallet.w1
-      vestingParams = mkVestingParams ownerPKH deadline 20_000_000 (deadline + 5_000) 40_000_000
+  deadline <- slotToPosixTime dl
+  let ownerPKH = verificationKeyHash MockWallet.w1
+      params = mkVestingParams ownerPKH deadline 20_000_000 (deadline + 5_000) 40_000_000
   ------------------------------------------------------------------
   -- Tx1: lock 60 ADA in the vesting script
   ------------------------------------------------------------------
   txIn1 <-
-    submitAndGetScriptTxIn MockWallet.w1 (mkScriptHash vestingParams) $
-      lockVesting (mkScriptHash vestingParams) 60_000_000
+    submitAndGetScriptTxIn MockWallet.w1 (mkScriptHash params) $
+      lockVesting (mkScriptHash params) 60_000_000
   ------------------------------------------------------------------
   -- Tx2: lock another 40 ADA in the vesting script
   ------------------------------------------------------------------
   txIn2 <-
-    submitAndGetScriptTxIn MockWallet.w1 (mkScriptHash vestingParams) $
-      lockVesting (mkScriptHash vestingParams) 60_000_000
+    submitAndGetScriptTxIn MockWallet.w1 (mkScriptHash params) $
+      lockVesting (mkScriptHash params) 60_000_000
   ------------------------------------------------------------------
   -- Update state considering both locked UTXOs
   ------------------------------------------------------------------
@@ -353,58 +496,4 @@ lockTwiceAndRetrieveFundsTest dl _ upperSlot startTime value = inBabbage @era $ 
   ------------------------------------------------------------------
   -- Tx3: withdraw some ADA
   ------------------------------------------------------------------
-  void $ withdrawStep MockWallet.w1 startTime upperSlot ownerPKH vestingParams vs0 value
-
-vestingScriptTest
-  :: forall era m
-   . (MonadMockchain era m, MonadError (BalanceTxError era) m, MonadFail m, C.IsBabbageBasedEra era, C.HasScriptLanguageInEra C.PlutusScriptV3 era)
-  => C.SlotNo -- deadline
-  -> C.SlotNo -- lower validity
-  -> C.SlotNo -- upper validity
-  -> C.SlotNo -- advance chain to slot
-  -> C.Lovelace -- value to withdraw
-  -> m ()
-vestingScriptTest dl lowerSlot upperSlot wSlot value = inBabbage @era $ do
-  dlInUtc1 <- slotToUtcTime <$> queryEraHistory <*> querySystemStart <*> pure dl >>= either fail pure
-  dlInUtc2 <- slotToUtcTime <$> queryEraHistory <*> querySystemStart <*> pure (dl + 5) >>= either fail pure
-  let deadline1 = utcTimeToPosixTime dlInUtc1
-      deadline2 = utcTimeToPosixTime dlInUtc2
-      ownerPKH = verificationKeyHash MockWallet.w1
-      vestingParams =
-        Vesting.VestingParams
-          (transPubKeyHash ownerPKH)
-          (Vesting.Vesting deadline1 (lovelaceValue 20_000_000))
-          (Vesting.Vesting deadline2 (lovelaceValue 40_000_000))
-      validator = C.PlutusScript C.plutusScriptVersion (Script.vestingValidatorScript vestingParams)
-      scriptHash = C.hashScript validator
-  ------------------------------------------------------------------
-  -- Tx1: lock 60 ADA in the vesting script
-  ------------------------------------------------------------------
-  txIn <-
-    submitAndGetScriptTxIn MockWallet.w1 scriptHash $
-      lockVesting scriptHash 60_000_000
-
-  let vs0 =
-        VestingState
-          { vsInputs = [txIn]
-          , vsLocked = 60_000_000
-          }
-  ------------------------------------------------------------------
-  -- Advance time to the beggining of the contract validity
-  ------------------------------------------------------------------
-  setSlot wSlot
-  ------------------------------------------------------------------
-  -- Tx2: withdraw only 20 ADA
-  ------------------------------------------------------------------
-  void $ withdrawStep MockWallet.w1 lowerSlot upperSlot ownerPKH vestingParams vs0 value
-
--- vts1 <- withdrawStep MockWallet.w1 1 lowerSlot upperSlot (verificationKeyHash MockWallet.w2) scriptHash datum vts0 20_000_000
-------------------------------------------------------------------
--- Advance time to after the first tranche deadline
-------------------------------------------------------------------
--- waitNSlots 10
-------------------------------------------------------------------
--- Tx3: withdraw remaining 40 ADA - fee
-------------------------------------------------------------------
--- void $ withdrawStep Defaults.networkId MockWallet.w1 2 lowerSlot upperSlot ownerPKH scriptHash datum vts1 30_000_000 --38_775_000
--- void $ withdrawStep Defaults.networkId MockWallet.w1 2 lowerSlot upperSlot (verificationKeyHash MockWallet.w2) scriptHash datum vts1 30_000_000 --38_775_000
+  void $ withdrawStep MockWallet.w1 startTime upperSlot ownerPKH params vs0 value

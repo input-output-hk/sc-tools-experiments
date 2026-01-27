@@ -1,4 +1,3 @@
-{-# LANGUAGE InstanceSigs #-}
 {-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE TypeApplications #-}
 {-# LANGUAGE TypeFamilies #-}
@@ -25,34 +24,6 @@ import Utils.VestingUtils qualified as Utils
 -------------------------------------------------------------------------------
 -- Vesting Testing Interface
 -------------------------------------------------------------------------------
-
-{- | The scenario used in the property tests. It sets up a vesting scheme for a
-  total of 60 ada over 20 blocks (20 ada can be taken out before
-  that, at 10 blocks).
--}
-mkVestingParams :: C.SlotNo -> Vesting.VestingParams
-mkVestingParams startTime =
-  -- error "mkVestingParams not implemented"
-  let dt1 = case slotToUtcTime Defaults.eraHistory Defaults.systemStart (startTime + 10) of
-        Left err -> error $ "mkVestingParams: cannot convert slot to utc time: " ++ show err
-        Right t -> t
-      dt2 = case slotToUtcTime Defaults.eraHistory Defaults.systemStart (startTime + 20) of
-        Left err -> error $ "mkVestingParams: cannot convert slot to utc time: " ++ show err
-        Right t -> t
-   in Vesting.VestingParams
-        { Vesting.vpOwner = transPubKeyHash $ verificationKeyHash MockWallet.w1
-        , Vesting.vpTranche1 =
-            Vesting.Vesting
-              { Vesting.vDate = utcTimeToPosixTime dt1
-              , Vesting.vAmount = lovelaceValue 20_000_000
-              }
-        , Vesting.vpTranche2 =
-            Vesting.Vesting
-              { Vesting.vDate = utcTimeToPosixTime dt2
-              , Vesting.vAmount = lovelaceValue 40_000_000
-              }
-        }
-
 data VestingModel = VestingModel
   { _vestedAmount :: C.Lovelace
   -- ^ How much value is in the contract
@@ -66,21 +37,31 @@ data VestingModel = VestingModel
   -- ^ The size of the first tranche
   , _t2Amount :: C.Lovelace
   -- ^ The size of the second tranche
+  , _curSlot :: C.SlotNo
+  -- ^ The current slot
+  , _owner :: Wallet
+  -- ^ The beneficiary of this contract
   }
   deriving (Show, Eq, Generic)
 
--- vmDeadlineUpperBound :: Integer
--- vmDeadlineUpperBound = 1000
-
--- arbitraryTime :: Gen C.SlotNo
--- arbitraryTime = fromInteger <$> Gen.chooseInteger (0, vmDeadlineUpperBound)
-
 instance TestingInterface VestingModel where
   data Action VestingModel
-    = Vest Wallet
-    | Retrieve Wallet C.Lovelace
+    = Vest Wallet C.Lovelace
+    | -- \^ Lock funds in a vesting contract
+      Retrieve C.Lovelace
+    | -- \^ Owner attempts to withdraw specified amount
+      WaitSlots C.SlotNo
+    -- \^ Advance blockchain time
     deriving (Show, Eq)
 
+  -- \| Initial state vesting scenario.
+  --
+  --    Configuration:
+  --    - Two tranches: 20 ADA @ slot 10, 40 ADA @ slot 20
+  --    - Total: 60 ADA per vesting contract
+  --    - Owner: MockWallet.w1 (the beneficiary)
+  --    - Start time: slot 0
+  --
   initialState =
     VestingModel
       { _vestedAmount = mempty
@@ -89,56 +70,102 @@ instance TestingInterface VestingModel where
       , _t2Slot = 20
       , _t1Amount = 20_000_000
       , _t2Amount = 40_000_000
+      , _curSlot = 0
+      , _owner = MockWallet.w1
       }
 
-  arbitraryAction _vm =
-    QC.oneof
-      [ Vest <$> QC.elements MockWallet.mockWallets
-      , Retrieve <$> QC.elements MockWallet.mockWallets <*> (fromInteger <$> Gen.chooseInteger (1_000_000, 60_000_000))
+  -- \| Generate random actions weighted by likelihood and current state.
+  arbitraryAction vm =
+    QC.frequency
+      [ (vestWeight, genVest)
+      , (withdrawWeight, genWithdraw)
+      , (waitWeight, genWait)
       ]
+   where
+    -- Weights adjust based on state
+    vestWeight = if _vestedAmount vm == 0 then 5 else 2
+    withdrawWeight = if _vestedAmount vm > 0 then 5 else 1
+    waitWeight = 3
 
-  precondition :: VestingModel -> Action VestingModel -> Bool
-  precondition vm (Vest w) =
-    -- error "precondition (Vest) not implemented"
-    w `notElem` _vested vm -- After a wallet has vested the contract shuts down
-      && transPubKeyHash (verificationKeyHash w) /= Vesting.vpOwner (mkVestingParams 0) -- The vesting owner shouldn't vest
-      -- && slot < _t1Slot vm
-  precondition vm (Retrieve w amt) =
-    -- error "precondition (Retrieve) not implemented"
-    enoughValueLeft (_t2Slot vm) vm amt -- @TODO: adjust slots
-      && transPubKeyHash (verificationKeyHash w) == Vesting.vpOwner (mkVestingParams 0) -- Only the owner can retrieve funds
+    genVest = do
+      wallet <- QC.elements wallets
+      -- Vest the full amount (both tranches)
+      pure $ Vest wallet (_t1Amount vm + _t2Amount vm)
 
+    genWithdraw = do
+      -- Generate withdrawal amounts from 1 ADA to total locked amount
+      let maxWithdraw = max 1_000_000 (C.unCoin $ _vestedAmount vm)
+      amt <- Gen.chooseInteger (1_000_000, maxWithdraw)
+      pure $ Retrieve (C.Coin amt)
+
+    genWait = do
+      -- Advance 1-15 slots
+      slots <- C.SlotNo <$> Gen.chooseWord64 (1, 15)
+      pure $ WaitSlots slots
+
+  -- \| Preconditions determine which actions are valid in the current state.
+  -- Anyone can vest at any time, except the owner
+  precondition vm (Vest w _) =
+    w /= _owner vm -- Don't let the owner vest (they're the beneficiary, not the grantor)
+    -- Withdrawals have complex preconditions based on time and amounts
+  precondition vm (Retrieve amt) =
+    _vestedAmount vm > 0
+      && amt >= 1_000_000 -- Must have funds locked
+      && amt <= _vestedAmount vm -- Must withdraw at least 1 ADA
+      && enoughValueLeft vm amt -- Must not withdraw more than what's locked
+      && _curSlot vm >= _t1Slot vm -- Must leave enough to satisfy remaining tranches
+      && validChangeOutput vm amt -- Only test withdrawals after first tranche is available
+      -- added to avoid changes with less than 1 ADA
+      -- Time can always advance
+  precondition _ (WaitSlots _) = True
+
+  -- \| nextState updates the model based on actions.
   -- Vest the sum of the two tranches
-  nextState vm (Vest w) =
+  nextState vm (Vest w amt) =
     vm
-      { _vestedAmount = _vestedAmount vm + _t1Amount vm + _t2Amount vm
+      { _vestedAmount = _vestedAmount vm + amt
       , _vested = w : _vested vm
+      , _curSlot = _curSlot vm + 1 -- advancing time in 1 slot
       }
   -- Retrieve `v` value as long as that leaves enough value to satisfy
   -- the tranche requirements
-  nextState vm (Retrieve _ amt) =
+  nextState vm (Retrieve amt) =
     vm
       { _vestedAmount = _vestedAmount vm - amt
+      , _curSlot = _curSlot vm + 1 -- advancing time in 1 slot
+      }
+  nextState vm (WaitSlots slots) =
+    vm
+      { _curSlot = _curSlot vm + slots
       }
 
-  perform vm (Vest _w) =
+  -- \| perform executes actions on the actual blockchain.
+  perform vm (Vest w amt) =
     do
-      -- error "perform (Vest) not implemented"
-      C.liftIO $ putStrLn $ "Locking some funds with the Vesting script: " ++ show vm
+      C.liftIO $ putStrLn $ ">>> Vesting " ++ show amt ++ " lovelace from " ++ show w
       runExceptT $
-        Utils.lockVestingTest @C.ConwayEra (_t1Slot vm)
+        Utils.lockVestingPBT @C.ConwayEra (_t1Slot vm) w amt
       >>= \case
-        Left err -> fail $ "Locking funds script test failed: " <> show err
+        Left err -> fail $ "Vest failed: " <> show err
         Right _txId -> pure ()
-  perform vm (Retrieve _w amt) =
+  perform vm (Retrieve amt) =
     do
-      -- error "perform (Retrieve) not implemented"
-      C.liftIO $ putStrLn $ "Retrieving " ++ show amt ++ " lovelace from the Vesting script: " ++ show vm
+      C.liftIO $ putStrLn $ ">>> Withdrawing " ++ show amt ++ " lovelace at slot " ++ show (_curSlot vm)
+      let vestingParams = mkVestingParams vm
       runExceptT $
-        Utils.retrieveFundsTest @C.ConwayEra (_t1Slot vm) (_t1Slot vm) (_t2Slot vm) (_t1Slot vm + 5) amt -- @TODO: adjust slots
+        Utils.retrieveFundsPBT @C.ConwayEra
+          vestingParams
+          (_curSlot vm) -- lowerSlot: current time
+          (_curSlot vm + 100) -- upperSlot: give some validity range
+          (_curSlot vm) -- set chain to current slot
+          amt
       >>= \case
-        Left err -> fail $ "Retrieving funds script test failed: " <> show err
+        Left err -> fail $ "Withdraw failed: " <> show err
         Right _txId -> pure ()
+  perform vm (WaitSlots slots) =
+    do
+      C.liftIO $ putStrLn $ ">>> Waiting " ++ show slots ++ " slots (now at " ++ show (_curSlot vm + slots) ++ ")"
+      pure () -- do nothing
 
   validate _vm = pure True
 
@@ -148,12 +175,47 @@ instance TestingInterface VestingModel where
 -- Helper functions for the VestingModel
 -------------------------------------------------------------------------------
 
-enoughValueLeft :: C.SlotNo -> VestingModel -> C.Lovelace -> Bool
-enoughValueLeft slot vm amt =
-  let tranche1Released = if slot >= _t1Slot vm then _t1Amount vm else 0
-      tranche2Released = if slot >= _t2Slot vm then _t2Amount vm else 0
-      totalReleased = tranche1Released + tranche2Released
-      totalValue = _t1Amount vm + _t2Amount vm
-      remainingValue = totalValue - totalReleased
-      valueAfterRetrieval = _vestedAmount vm - amt
-   in valueAfterRetrieval >= remainingValue
+wallets :: [Wallet]
+wallets = [MockWallet.w1, MockWallet.w2, MockWallet.w3]
+
+-- | Create VestingParams matching the model state.
+mkVestingParams :: VestingModel -> Vesting.VestingParams
+mkVestingParams vm =
+  let dt1 = case slotToUtcTime Defaults.eraHistory Defaults.systemStart (_t1Slot vm) of
+        Left err -> error $ "mkVestingParams: cannot convert slot to utc time: " ++ show err
+        Right t -> t
+      dt2 = case slotToUtcTime Defaults.eraHistory Defaults.systemStart (_t2Slot vm) of
+        Left err -> error $ "mkVestingParams: cannot convert slot to utc time: " ++ show err
+        Right t -> t
+   in Vesting.VestingParams
+        { Vesting.vpOwner = transPubKeyHash $ verificationKeyHash (_owner vm)
+        , Vesting.vpTranche1 =
+            Vesting.Vesting
+              { Vesting.vDate = utcTimeToPosixTime dt1
+              , Vesting.vAmount = lovelaceValue (fromIntegral $ C.unCoin $ _t1Amount vm)
+              }
+        , Vesting.vpTranche2 =
+            Vesting.Vesting
+              { Vesting.vDate = utcTimeToPosixTime dt2
+              , Vesting.vAmount = lovelaceValue (fromIntegral $ C.unCoin $ _t2Amount vm)
+              }
+        }
+
+-- | Check if a withdrawal leaves enough value for remaining tranches.
+enoughValueLeft :: VestingModel -> C.Lovelace -> Bool
+enoughValueLeft vm amt =
+  let currentSlot = _curSlot vm
+      -- How much is still locked (not yet released by time)
+      tranche1Remaining = if currentSlot >= _t1Slot vm then 0 else _t1Amount vm
+      tranche2Remaining = if currentSlot >= _t2Slot vm then 0 else _t2Amount vm
+      totalRemaining = tranche1Remaining + tranche2Remaining
+      -- How much will be left in contract after withdrawal
+      valueAfterWithdraw = _vestedAmount vm - amt
+   in valueAfterWithdraw >= totalRemaining
+
+validChangeOutput :: VestingModel -> C.Lovelace -> Bool
+validChangeOutput vm withdrawAmount =
+  let remaining = _vestedAmount vm - withdrawAmount
+      minUtxo = 1_000_000 -- 1 ADA
+   in remaining == 0 -- OK: retrieves everything
+        || remaining >= minUtxo -- OK: leaves at least 1 ADA
