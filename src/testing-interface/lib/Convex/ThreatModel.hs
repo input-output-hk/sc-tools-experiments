@@ -143,7 +143,8 @@ import Test.QuickCheck qualified as QC
 import Text.PrettyPrint hiding ((<>))
 import Text.Printf
 
-import Convex.Class (MonadMockchain (..))
+import Control.Lens ((%~), (&))
+import Convex.Class (MonadMockchain (..), coverageData)
 import Convex.ThreatModel.Cardano.Api
 import Convex.ThreatModel.Pretty
 import Convex.ThreatModel.TxModifier
@@ -327,7 +328,9 @@ runThreatModelM wallet = go False
         params <- askNodeParams
         rebalancedTx <- rebalanceAndSign wallet modifiedTx modifiedUtxo
         -- Validate with full Phase 1 + Phase 2
-        report <- validateTxM params rebalancedTx modifiedUtxo
+        (report, covData) <- validateTxM params rebalancedTx modifiedUtxo
+        -- Accumulate coverage into the running MockChainState
+        modifyMockChainState $ \s -> ((), s & coverageData %~ (<> covData))
         interpM mon (k report)
       Generate gen _shr k -> do
         -- Use QuickCheck's generate in IO

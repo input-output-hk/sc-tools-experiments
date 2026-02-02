@@ -24,6 +24,9 @@ module Convex.MockChain.Utils (
   Options (..),
   defaultOptions,
   modifyTransactionLimits,
+
+  -- * Coverage extraction
+  tryExtractCoverageData,
 ) where
 
 import Cardano.Api (ConwayEra)
@@ -96,7 +99,7 @@ mockchainSucceedsWithOptions Options{params, coverageRef} action =
       appendCovData coverageRef $ st ^. coverageData
       pure ()
     Left err -> do
-      appendCovData coverageRef $ tryExtractCovverageData err
+      appendCovData coverageRef $ tryExtractCoverageData err
       fail (show err)
 
 {- | Run the 'Mockchain' action, fail if it succeeds, and handle the error
@@ -123,7 +126,7 @@ mockchainFailsWithOptions Options{params, coverageRef} action handleError =
       appendCovData coverageRef covData
       fail "mockchainFailsWithOptions: Did not fail"
     Left err -> do
-      let covData = tryExtractCovverageData err
+      let covData = tryExtractCoverageData err
       appendCovData coverageRef covData
       handleError err
 
@@ -195,8 +198,8 @@ appendCovData (Just ref) cd = modifyIORef ref (<> cd)
 
 -- TODO: ugly hack, we have to somehow extract the coverage data from the Exception
 -- the problem is that BalanceError is exposed on the upper level, so we cannot pattern match on it directly
-tryExtractCovverageData :: SomeException -> CoverageData
-tryExtractCovverageData e = mconcat $ map coverageDataFromLogMsg xs
+tryExtractCoverageData :: SomeException -> CoverageData
+tryExtractCoverageData e = mconcat $ map coverageDataFromLogMsg xs
  where
   xs = fromErrToStringList e
   dropO = dropWhile (/= '[')

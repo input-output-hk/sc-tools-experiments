@@ -1,4 +1,5 @@
 {-# LANGUAGE DerivingStrategies #-}
+{-# LANGUAGE ImportQualifiedPost #-}
 {-# LANGUAGE NamedFieldPuns #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE TemplateHaskell #-}
@@ -205,7 +206,14 @@ validator
             P.traceError P.$ "Coverage: BRANCH_INVALID state=" `P.appendString` showState currentState `P.appendString` " action=" `P.appendString` showAction action `P.appendString` " nextState=" `P.appendString` showState nextState
 validator _ = P.traceError "Invalid script purpose - expected SpendingScript"
 
--- | Find our own input by matching the TxOutRef from SpendingScript
+{- | Find our own input by matching the TxOutRef from SpendingScript
+
+NOTE: The empty list case is defensive code that cannot be triggered via
+normal transaction submission. The Cardano ledger guarantees that the
+ownTxOutRef from SpendingScript is always present in txInfoInputs.
+This case exists only as a guard against impossible states and will
+appear as "uncovered" in coverage reports.
+-}
 {-# INLINEABLE findOwnInput #-}
 findOwnInput :: TxOutRef -> [TxInInfo] -> TxInInfo
 findOwnInput _ [] = P.traceError "Own input not found"

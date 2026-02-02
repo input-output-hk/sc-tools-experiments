@@ -22,6 +22,7 @@ import Convex.TestingInterface (
 import Convex.Utils (failOnError)
 
 import BountySpec (bountyTests)
+import PingPongCoverageSpec (pingPongCoverageTests)
 import PingPongSpec (pingPongTests)
 import SampleSpec (sampleScriptTest)
 import Scripts (pingPongCovIdx)
@@ -54,6 +55,7 @@ tests ref =
             )
         , pingPongTests opts runOpts
         , bountyTests runOpts
+        , pingPongCoverageTests opts
         ]
     ]
  where

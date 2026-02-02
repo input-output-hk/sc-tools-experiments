@@ -93,6 +93,7 @@ test-suite convex-testing-interface-test
   main-is:        Spec.hs
   other-modules:
     BountySpec
+    PingPongCoverageSpec
     PingPongSpec
     SampleSpec
     Scripts
