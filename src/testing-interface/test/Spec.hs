@@ -1,25 +1,21 @@
 {-# LANGUAGE NumericUnderscores #-}
 
-import Control.Exception (catch, throwIO)
-import Data.IORef (IORef, newIORef, readIORef)
-import PlutusTx.Coverage (CoverageData, CoverageReport (CoverageReport))
-import Prettyprinter qualified as Pretty
-import System.Exit (ExitCode)
-import Test.Tasty (TestTree, defaultMain, testGroup)
-import Test.Tasty.HUnit (testCase)
-
+import Cardano.Api qualified as C
 import Convex.MockChain.Utils (
-  Options (coverageRef),
-  defaultOptions,
+  Options,
   mockchainFails,
   mockchainSucceedsWithOptions,
   modifyTransactionLimits,
  )
 import Convex.TestingInterface (
+  CoverageConfig (..),
   RunOptions (mcOptions),
-  defaultRunOptions,
+  printCoverageReport,
+  withCoverage,
  )
 import Convex.Utils (failOnError)
+import Test.Tasty (TestTree, defaultMain, testGroup)
+import Test.Tasty.HUnit (testCase)
 
 import BountySpec (bountyTests)
 import PingPongCoverageSpec (pingPongCoverageTests)
@@ -29,18 +25,22 @@ import Scripts (pingPongCovIdx)
 import Scripts qualified
 
 main :: IO ()
-main = do
-  ref <- newIORef mempty
-  defaultMain (tests ref)
-    `catch` ( \(e :: ExitCode) -> do
-                covData <- readIORef ref
-                let report = CoverageReport pingPongCovIdx covData
-                print $ Pretty.pretty report
-                throwIO e
-            )
+main = withCoverage config $ \opts0 runOpts0 ->
+  let
+    -- Use 30000 byte limit because the secure PingPong validator is larger
+    opts = modifyTransactionLimits opts0 30_000
+    runOpts = runOpts0{mcOptions = opts}
+   in
+    defaultMain (tests opts runOpts)
+ where
+  config =
+    CoverageConfig
+      { coverageIndices = [pingPongCovIdx]
+      , coverageReport = printCoverageReport
+      }
 
-tests :: IORef CoverageData -> TestTree
-tests ref =
+tests :: Options C.ConwayEra -> RunOptions -> TestTree
+tests opts runOpts =
   testGroup
     "testing-interface tests"
     [ testGroup
@@ -58,7 +58,3 @@ tests ref =
         , pingPongCoverageTests opts
         ]
     ]
- where
-  -- Use 30000 byte limit because the secure PingPong validator is larger
-  opts = modifyTransactionLimits (defaultOptions{coverageRef = Just ref}) 30_000
-  runOpts = defaultRunOptions{mcOptions = opts}

@@ -23,6 +23,19 @@ module Convex.TestingInterface (
   -- * Actions
   Actions (Actions),
 
+  -- * Coverage helpers
+  withCoverage,
+  CoverageConfig (..),
+  printCoverageReport,
+  writeCoverageReport,
+  silentCoverageReport,
+  printCoverageJSON,
+  writeCoverageJSON,
+  printCoverageJSONPretty,
+  writeCoverageJSONPretty,
+  CoverageSummary (..),
+  coverageSummary,
+
   -- * Re-exports from QuickCheck
   Gen,
   Arbitrary (..),
@@ -42,11 +55,35 @@ import Convex.MockChain (MockChainState (MockChainState, mcsCoverageData), Mockc
 import Convex.MockChain.Utils (Options (Options, coverageRef, params), defaultOptions)
 import Convex.Wallet.MockWallet qualified as Wallet
 import Data.Foldable (traverse_)
-import Data.IORef (modifyIORef)
+import Data.IORef (modifyIORef, newIORef, readIORef)
 
 import Control.Lens ((^.))
 import Convex.NodeParams (ledgerProtocolParameters)
 import Convex.ThreatModel (ThreatModel, ThreatModelEnv (..), runThreatModelM)
+
+import Control.Exception (catch, throwIO)
+import Data.Aeson (ToJSON (..), (.=))
+import Data.Aeson qualified as Aeson
+import Data.Aeson.Encode.Pretty qualified as Aeson
+import Data.Aeson.Key qualified as Key
+import Data.ByteString.Lazy.Char8 qualified as LBS
+import Data.Map qualified as Map
+import Data.Set qualified as Set
+import GHC.Generics (Generic)
+import PlutusTx.Coverage (
+  CovLoc (..),
+  CoverageAnnotation (..),
+  CoverageIndex,
+  CoverageReport (..),
+  Metadata (..),
+  coverageAnnotations,
+  coverageMetadata,
+  coveredAnnotations,
+  ignoredAnnotations,
+  _metadataSet,
+ )
+import Prettyprinter qualified as Pretty
+import System.Exit (ExitCode)
 
 {- | A testing interface defines the state and behavior of one or more smart contracts.
 
@@ -252,3 +289,188 @@ runAction opts modelState action = do
   unless False m = m
   when True m = m
   when False _ = pure ()
+
+{- | Configuration for coverage collection and reporting.
+
+Use with 'withCoverage' to set up coverage tracking for your test suite.
+-}
+data CoverageConfig = CoverageConfig
+  { coverageIndices :: [CoverageIndex]
+  {- ^ Coverage indices from compiled scripts (obtained via @'PlutusTx.Code.getCovIdx'@).
+  Multiple indices are combined with @'<>'@.
+  -}
+  , coverageReport :: CoverageReport -> IO ()
+  {- ^ Action to perform with the final coverage report.
+  Use 'printCoverageReport', 'writeCoverageReport', or 'silentCoverageReport'.
+  -}
+  }
+
+-- | Print a coverage report to stdout using prettyprinter.
+printCoverageReport :: CoverageReport -> IO ()
+printCoverageReport = print . Pretty.pretty
+
+-- | Write a coverage report to a file.
+writeCoverageReport :: FilePath -> CoverageReport -> IO ()
+writeCoverageReport fp = writeFile fp . show . Pretty.pretty
+
+-- | Collect coverage data but discard the report.
+silentCoverageReport :: CoverageReport -> IO ()
+silentCoverageReport _ = pure ()
+
+-- | Compact representation of a source location for JSON output.
+data JsonCovLoc = JsonCovLoc
+  { jclFile :: String
+  , jclStartLine :: Int
+  , jclStartCol :: Int
+  , jclEndLine :: Int
+  , jclEndCol :: Int
+  }
+  deriving (Generic)
+
+instance ToJSON JsonCovLoc where
+  toJSON (JsonCovLoc f sl sc el ec) =
+    Aeson.object
+      [ Key.fromString "file" .= f
+      , Key.fromString "startLine" .= sl
+      , Key.fromString "startCol" .= sc
+      , Key.fromString "endLine" .= el
+      , Key.fromString "endCol" .= ec
+      ]
+
+-- | Compact representation of a coverage annotation for JSON output.
+data JsonAnnotation
+  = JsonLocation JsonCovLoc
+  | JsonBool JsonCovLoc Bool
+
+instance ToJSON JsonAnnotation where
+  toJSON (JsonLocation loc) =
+    Aeson.object
+      [ Key.fromString "type" .= ("location" :: String)
+      , Key.fromString "loc" .= loc
+      ]
+  toJSON (JsonBool loc b) =
+    Aeson.object
+      [ Key.fromString "type" .= ("bool" :: String)
+      , Key.fromString "loc" .= loc
+      , Key.fromString "value" .= b
+      ]
+
+-- | A covered annotation with optional function name metadata.
+data JsonCovered = JsonCovered
+  { jcAnnotation :: JsonAnnotation
+  , jcSymbols :: [String]
+  }
+  deriving (Generic)
+
+instance ToJSON JsonCovered where
+  toJSON (JsonCovered ann syms) =
+    Aeson.object
+      [ Key.fromString "annotation" .= ann
+      , Key.fromString "symbols" .= syms
+      ]
+
+-- | Minimal coverage summary matching what Pretty.pretty shows.
+data CoverageSummary = CoverageSummary
+  { csCovered :: [JsonCovered]
+  , csUncovered :: [JsonAnnotation]
+  , csIgnored :: [JsonAnnotation]
+  }
+  deriving (Generic)
+
+instance ToJSON CoverageSummary where
+  toJSON (CoverageSummary cov uncov ign) =
+    Aeson.object
+      [ Key.fromString "covered" .= cov
+      , Key.fromString "uncovered" .= uncov
+      , Key.fromString "ignored" .= ign
+      ]
+
+-- | Convert a CovLoc to compact JSON representation.
+toJsonCovLoc :: CovLoc -> JsonCovLoc
+toJsonCovLoc (CovLoc f sl el sc ec) = JsonCovLoc f sl sc el ec
+
+-- | Convert a CoverageAnnotation to compact JSON representation.
+toJsonAnnotation :: CoverageAnnotation -> JsonAnnotation
+toJsonAnnotation (CoverLocation loc) = JsonLocation (toJsonCovLoc loc)
+toJsonAnnotation (CoverBool loc b) = JsonBool (toJsonCovLoc loc) b
+
+-- | Extract symbol names from Metadata.
+extractSymbols :: Set.Set Metadata -> [String]
+extractSymbols = foldr go []
+ where
+  go (ApplicationHeadSymbol s) acc = s : acc
+  go IgnoredAnnotation acc = acc
+
+-- | Convert a CoverageReport to a compact summary (same info as Pretty.pretty shows).
+coverageSummary :: CoverageReport -> CoverageSummary
+coverageSummary (CoverageReport idx covData) =
+  CoverageSummary
+    { csCovered =
+        [ JsonCovered (toJsonAnnotation ann) (extractSymbols $ metadataFor ann)
+        | ann <- Set.toList $ allAnns `Set.intersection` coveredAnns'
+        ]
+    , csUncovered = map toJsonAnnotation . Set.toList $ uncoveredAnns
+    , csIgnored = map toJsonAnnotation . Set.toList $ ignoredAnns' Set.\\ coveredAnns'
+    }
+ where
+  allAnns = idx ^. coverageAnnotations
+  coveredAnns' = covData ^. coveredAnnotations
+  ignoredAnns' = idx ^. ignoredAnnotations
+  uncoveredAnns = allAnns Set.\\ (coveredAnns' <> ignoredAnns')
+  metadataFor ann = maybe Set.empty _metadataSet $ Map.lookup ann (idx ^. coverageMetadata)
+
+-- | Print a coverage report as compact JSON to stdout.
+printCoverageJSON :: CoverageReport -> IO ()
+printCoverageJSON = LBS.putStrLn . Aeson.encode . coverageSummary
+
+-- | Write a coverage report as compact JSON to a file.
+writeCoverageJSON :: FilePath -> CoverageReport -> IO ()
+writeCoverageJSON fp = LBS.writeFile fp . Aeson.encode . coverageSummary
+
+-- | Print a coverage report as pretty-printed JSON to stdout.
+printCoverageJSONPretty :: CoverageReport -> IO ()
+printCoverageJSONPretty = LBS.putStrLn . Aeson.encodePretty . coverageSummary
+
+-- | Write a coverage report as pretty-printed JSON to a file.
+writeCoverageJSONPretty :: FilePath -> CoverageReport -> IO ()
+writeCoverageJSONPretty fp = LBS.writeFile fp . Aeson.encodePretty . coverageSummary
+
+{- | Run a test suite with Plutus script coverage collection.
+
+Creates the coverage 'IORef', wires it into 'Options' and 'RunOptions',
+runs the user's action, and on exit produces a 'CoverageReport' from the
+accumulated data.
+
+The report is generated when the inner action throws an 'ExitCode' exception
+(which is how @tasty@'s 'Test.Tasty.defaultMain' signals completion). The
+original exception is re-thrown after the report action runs.
+
+@
+main :: IO ()
+main = withCoverage config $ \\opts runOpts ->
+  defaultMain $ testGroup \"my tests\"
+    [ testCase \"t1\" (mockchainSucceedsWithOptions opts myTest)
+    , myPropertyTests runOpts
+    ]
+ where
+  config = CoverageConfig
+    { coverageIndices = [myScriptCovIdx]
+    , coverageReport  = printCoverageReport
+    }
+@
+-}
+withCoverage
+  :: CoverageConfig
+  -> (Options C.ConwayEra -> RunOptions -> IO ())
+  -> IO ()
+withCoverage CoverageConfig{coverageIndices, coverageReport = reportAction} k = do
+  ref <- newIORef mempty
+  let opts = defaultOptions{coverageRef = Just ref}
+      runOpts = defaultRunOptions{mcOptions = opts}
+  k opts runOpts
+    `catch` \(e :: ExitCode) -> do
+      covData <- readIORef ref
+      let combinedIdx = mconcat coverageIndices
+          report = CoverageReport combinedIdx covData
+      reportAction report
+      throwIO e

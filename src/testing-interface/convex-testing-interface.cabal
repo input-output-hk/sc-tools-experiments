@@ -52,6 +52,8 @@ library
 
   hs-source-dirs:  lib
   build-depends:
+    , aeson
+    , aeson-pretty
     , base              >=4.14.0
     , bytestring
     , cardano-api
@@ -61,6 +63,7 @@ library
     , convex-optics
     , convex-wallet
     , lens
+    , prettyprinter
     , QuickCheck
 
   -- cardano dependencies for ThreatModel
