@@ -15,6 +15,8 @@ import Convex.Utils (failOnError)
 import Test.Tasty (TestTree, defaultMain, testGroup)
 import Test.Tasty.HUnit (testCase)
 
+import AikenPingPongSpec (aikenPingPongTests)
+import AikenSpec (aikenTests)
 import BountySpec (bountyTests)
 import PingPongCoverageSpec (pingPongCoverageTests)
 import PingPongSpec (pingPongTests)
@@ -55,4 +57,6 @@ tests opts runOpts =
         , bountyTests runOpts
         , pingPongCoverageTests opts
         ]
+    , aikenTests opts
+    , aikenPingPongTests runOpts
     ]

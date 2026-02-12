@@ -1,0 +1,12 @@
+name = "sc-tools/contracts-example"
+version = "0.0.0"
+plutus = "v3"
+license = "Apache-2.0"
+description = "Simple Aiken validator for testing sc-tools interop"
+
+[[dependencies]]
+name = "aiken-lang/stdlib"
+version = "v3.0.0"
+source = "github"
+
+[config]
