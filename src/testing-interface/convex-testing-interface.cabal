@@ -44,6 +44,7 @@ library
     Convex.TestingInterface
     Convex.ThreatModel
     Convex.ThreatModel.Cardano.Api
+    Convex.ThreatModel.DatumBloat
     Convex.ThreatModel.DoubleSatisfaction
     Convex.ThreatModel.LargeData
     Convex.ThreatModel.LargeValue
@@ -103,6 +104,7 @@ test-suite convex-testing-interface-test
   other-modules:
     AikenPingPongSpec
     AikenSpec
+    AikenTipJarSpec
     BountySpec
     Paths_convex_testing_interface
     PingPongCoverageSpec
@@ -118,6 +120,7 @@ test-suite convex-testing-interface-test
   autogen-modules: Paths_convex_testing_interface
   build-depends:
     , base                      >=4.14.0
+    , bytestring
     , cardano-api
     , cardano-ledger-api
     , cardano-ledger-conway

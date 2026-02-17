@@ -1,6 +1,7 @@
 use aiken/collection/list
-
-use cardano/transaction.{InlineDatum, Input, Output, OutputReference, Transaction}
+use cardano/transaction.{
+  InlineDatum, Input, Output, OutputReference, Transaction,
+}
 
 /// State of the ping-pong contract
 pub type State {
@@ -40,10 +41,7 @@ validator ping_pong {
 
     // Find continuation output at our own address (SECURITY: prevents output redirect)
     expect Some(continuation) =
-      list.find(
-        self.outputs,
-        fn(output) { output.address == own_address },
-      )
+      list.find(self.outputs, fn(output) { output.address == own_address })
 
     // SECURITY: Verify output value equals input value (prevents large value attack)
     expect continuation.value == input_value

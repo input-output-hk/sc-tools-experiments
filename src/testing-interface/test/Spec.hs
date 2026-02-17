@@ -17,6 +17,7 @@ import Test.Tasty.HUnit (testCase)
 
 import AikenPingPongSpec (aikenPingPongTests)
 import AikenSpec (aikenTests)
+import AikenTipJarSpec (aikenTipJarTests)
 import BountySpec (bountyTests)
 import PingPongCoverageSpec (pingPongCoverageTests)
 import PingPongSpec (pingPongTests)
@@ -59,4 +60,5 @@ tests opts runOpts =
         ]
     , aikenTests opts
     , aikenPingPongTests runOpts
+    , aikenTipJarTests runOpts
     ]

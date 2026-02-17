@@ -194,7 +194,7 @@ instance TestingInterface AikenPingPongModel where
 
   perform model action = case action of
     AikenInitialize state -> do
-      liftIO $ putStrLn $ "[Aiken] Initializing contract with state: " ++ show state
+      -- liftIO $ putStrLn $ "[Aiken] Initializing contract with state: " ++ show state
       -- Deploy the contract with the initial state
       let txBody =
             execBuildTx
@@ -209,7 +209,7 @@ instance TestingInterface AikenPingPongModel where
         Left err -> fail $ "Failed to initialize contract: " ++ show err
         Right _ -> pure ()
     AikenPlayRound redeemer -> do
-      liftIO $ putStrLn $ "[Aiken] Playing round: " ++ show redeemer
+      -- liftIO $ putStrLn $ "[Aiken] Playing round: " ++ show redeemer
       -- Find the UTxO at the script address
       let scriptHash = C.hashScript (plutusScript aikenPingPongScript)
           scriptAddr = C.makeShelleyAddressInEra C.shelleyBasedEra Defaults.networkId (C.PaymentCredentialByScript scriptHash) C.NoStakeAddress
