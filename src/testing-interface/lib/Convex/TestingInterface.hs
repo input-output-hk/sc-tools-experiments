@@ -42,12 +42,17 @@ module Convex.TestingInterface (
   frequency,
   oneof,
   elements,
+
+  -- * Re-exports from Tasty
+  TestTree,
 ) where
 
 import Control.Monad (foldM)
 import Control.Monad.IO.Class (liftIO)
 import Test.QuickCheck (Arbitrary (..), Gen, Property, conjoin, counterexample, elements, frequency, oneof, property)
 import Test.QuickCheck.Monadic (monadicIO, monitor, run)
+import Test.Tasty (TestTree, testGroup)
+import Test.Tasty.QuickCheck (testProperty)
 
 import Cardano.Api qualified as C
 import Convex.Class (getTxs, getUtxo)
@@ -202,55 +207,63 @@ defaultRunOptions =
 {- | Main property for testing a testing interface.
 Generates random action sequences and checks that the implementation matches the model.
 -}
-propRunActions :: (TestingInterface state, Show (Action state)) => Actions state -> Property
-propRunActions = propRunActionsWithOptions defaultRunOptions
+propRunActions :: forall state. (TestingInterface state, Show (Action state)) => String -> TestTree
+propRunActions name = propRunActionsWithOptions @state name defaultRunOptions
 
 -- | Run testing interface tests with custom options
 propRunActionsWithOptions
   :: forall state
    . (TestingInterface state, Show (Action state))
-  => RunOptions
-  -> Actions state
-  -> Property
-propRunActionsWithOptions opts@RunOptions{mcOptions = Options{coverageRef, params}} (Actions actions) = monadicIO $ do
-  let initialSt = initialState @state
-
-  when (verbose opts) $
-    monitor (counterexample $ "Initial state: " ++ show initialSt)
-
-  result <- run $ runMockchain0IOWith Wallet.initialUTxOs params $ do
-    (finalState, lastUtxoBefore) <-
-      foldM
-        ( \(state, _) action -> do
-            utxoBefore <- fromLedgerUTxO C.shelleyBasedEra <$> getUtxo
-            newState <- runAction opts state action
-            pure (newState, Just utxoBefore)
-        )
-        (initialSt, Nothing)
-        actions
-    -- Get the last transaction
-    allTxs <- getTxs
-    let lastTx = if null allTxs then Nothing else Just (head allTxs)
-
-    -- Run threat models INSIDE MockchainT with full Phase 1 + Phase 2 validation
-    threatModelResult <- case (lastTx, lastUtxoBefore) of
-      (Just tx, Just utxo) -> do
-        let pparams' = params ^. ledgerProtocolParameters
-            env = ThreatModelEnv tx utxo pparams'
-        -- Use runThreatModelM with Wallet.w1 for re-balancing and re-signing
-        -- TODO: now signs with w1; in future we may want to vary this
-        conjoin <$> mapM (\tm -> runThreatModelM Wallet.w1 tm [env]) (threatModels @state)
-      _ -> pure (property True)
-
-    pure (finalState, threatModelResult)
-
-  case result of
-    ((finalState, threatModelProp), MockChainState{mcsCoverageData = covData}) -> do
-      monitor (counterexample $ "Final state: " ++ show finalState)
-      -- accumulate coverage
-      traverse_ (\ref -> liftIO $ modifyIORef ref (<> covData)) coverageRef
-      pure threatModelProp
+  => String
+  -> RunOptions
+  -> TestTree
+propRunActionsWithOptions groupName opts =
+  testGroup
+    groupName
+    [ testProperty "Positive tests" positiveTest
+    ]
  where
+  positiveTest :: Actions state -> Property
+  positiveTest (Actions actions) = monadicIO $ do
+    let RunOptions{mcOptions = Options{coverageRef, params}} = opts
+        initialSt = initialState @state
+
+    when (verbose opts) $
+      monitor (counterexample $ "Initial state: " ++ show initialSt)
+
+    result <- run $ runMockchain0IOWith Wallet.initialUTxOs params $ do
+      (finalState, lastUtxoBefore) <-
+        foldM
+          ( \(state, _) action -> do
+              utxoBefore <- fromLedgerUTxO C.shelleyBasedEra <$> getUtxo
+              newState <- runAction opts state action
+              pure (newState, Just utxoBefore)
+          )
+          (initialSt, Nothing)
+          actions
+      -- Get the last transaction
+      allTxs <- getTxs
+      let lastTx = if null allTxs then Nothing else Just (head allTxs)
+
+      -- Run threat models INSIDE MockchainT with full Phase 1 + Phase 2 validation
+      threatModelResult <- case (lastTx, lastUtxoBefore) of
+        (Just tx, Just utxo) -> do
+          let pparams' = params ^. ledgerProtocolParameters
+              env = ThreatModelEnv tx utxo pparams'
+          -- Use runThreatModelM with Wallet.w1 for re-balancing and re-signing
+          -- TODO: now signs with w1; in future we may want to vary this
+          conjoin <$> mapM (\tm -> runThreatModelM Wallet.w1 tm [env]) (threatModels @state)
+        _ -> pure (property True)
+
+      pure (finalState, threatModelResult)
+
+    case result of
+      ((finalState, threatModelProp), MockChainState{mcsCoverageData = covData}) -> do
+        monitor (counterexample $ "Final state: " ++ show finalState)
+        -- accumulate coverage
+        traverse_ (\ref -> liftIO $ modifyIORef ref (<> covData)) coverageRef
+        pure threatModelProp
+
   when True m = m
   when False _ = return ()
 

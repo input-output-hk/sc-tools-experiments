@@ -65,6 +65,8 @@ library
     , lens
     , prettyprinter
     , QuickCheck
+    , tasty
+    , tasty-quickcheck
 
   -- cardano dependencies for ThreatModel
   build-depends:

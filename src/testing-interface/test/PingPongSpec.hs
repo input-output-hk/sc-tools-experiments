@@ -163,7 +163,7 @@ instance TestingInterface PingPongModel where
 
   perform model action = case action of
     Initialize state -> do
-      liftIO $ putStrLn $ "Initializing contract with state: " ++ show state
+      -- liftIO $ putStrLn $ "Initializing contract with state: " ++ show state
       -- Deploy the contract with the initial state
       let txBody =
             execBuildTx
@@ -178,7 +178,7 @@ instance TestingInterface PingPongModel where
         Left err -> fail $ "Failed to initialize contract: " ++ show err
         Right _ -> pure ()
     PlayRound redeemer -> do
-      liftIO $ putStrLn $ "Playing round: " ++ show redeemer
+      -- liftIO $ putStrLn $ "Playing round: " ++ show redeemer
       -- Find the UTxO at the script address
       let scriptHash = C.hashScript (plutusScript Scripts.pingPongValidatorScript)
           scriptAddr = C.makeShelleyAddressInEra C.shelleyBasedEra Defaults.networkId (C.PaymentCredentialByScript scriptHash) C.NoStakeAddress
@@ -678,9 +678,9 @@ pingPongTests opts runOpts =
             (failOnError (pingPongMultipleRounds Scripts.Stopped [Scripts.Pong]))
             (\_ -> pure ())
         )
-    , testProperty
+    , propRunActionsWithOptions @PingPongModel
         "Property-based test with TestingInterface"
-        (propRunActionsWithOptions @PingPongModel runOpts)
+        runOpts
     , testProperty
         "PingPong VULNERABLE to unprotected output redirect"
         (propPingPongVulnerableToOutputRedirect runOpts)
