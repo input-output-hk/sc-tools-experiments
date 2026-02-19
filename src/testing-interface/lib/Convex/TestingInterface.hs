@@ -22,6 +22,7 @@ module Convex.TestingInterface (
 
   -- * Actions
   Actions (Actions),
+  InvalidActions (..),
 
   -- * Coverage helpers
   withCoverage,
@@ -49,7 +50,7 @@ module Convex.TestingInterface (
 
 import Control.Monad (foldM)
 import Control.Monad.IO.Class (liftIO)
-import Test.QuickCheck (Arbitrary (..), Gen, Property, conjoin, counterexample, elements, frequency, oneof, property)
+import Test.QuickCheck (Arbitrary (..), Gen, Property, conjoin, counterexample, discard, elements, frequency, oneof, property)
 import Test.QuickCheck.Monadic (monadicIO, monitor, run)
 import Test.Tasty (TestTree, testGroup)
 import Test.Tasty.QuickCheck (testProperty)
@@ -57,7 +58,7 @@ import Test.Tasty.QuickCheck (testProperty)
 import Cardano.Api qualified as C
 import Convex.Class (getTxs, getUtxo)
 import Convex.MockChain (MockChainState (MockChainState, mcsCoverageData), MockchainT, fromLedgerUTxO, runMockchain0IOWith)
-import Convex.MockChain.Utils (Options (Options, coverageRef, params), defaultOptions)
+import Convex.MockChain.Utils (Options (Options, coverageRef, params), defaultOptions, tryExtractCoverageData)
 import Convex.Wallet.MockWallet qualified as Wallet
 import Data.Foldable (traverse_)
 import Data.IORef (modifyIORef, newIORef, readIORef)
@@ -66,7 +67,7 @@ import Control.Lens ((^.))
 import Convex.NodeParams (ledgerProtocolParameters)
 import Convex.ThreatModel (ThreatModel, ThreatModelEnv (..), runThreatModelM)
 
-import Control.Exception (catch, throwIO)
+import Control.Exception (SomeException, catch, throwIO, try)
 import Data.Aeson (ToJSON (..), (.=))
 import Data.Aeson qualified as Aeson
 import Data.Aeson.Encode.Pretty qualified as Aeson
@@ -157,6 +158,12 @@ newtype ModelState state = ModelState {unModelState :: state}
 -- | A sequence of actions to perform
 newtype Actions state = Actions_ [Action state]
 
+newtype InvalidActions state = InvalidActions (Actions state, Action state)
+
+instance (TestingInterface state, Show (Action state)) => Show (InvalidActions state) where
+  show (InvalidActions (Actions prefix, bad)) =
+    "InvalidActions " ++ show prefix ++ " then " ++ show bad
+
 pattern Actions :: [Action state] -> Actions state
 pattern Actions as = Actions_ as
 {-# COMPLETE Actions #-}
@@ -166,6 +173,26 @@ instance (TestingInterface state, Show (Action state)) => Show (Actions state) w
 
 instance (TestingInterface state) => Arbitrary (Actions state) where
   arbitrary = Actions <$> genActions initialState 10
+
+instance (TestingInterface state) => Arbitrary (InvalidActions state) where
+  arbitrary = do
+    -- Generate a valid prefix (builds up state)
+    prefix <- genActions initialState 10
+    let finalState = foldl nextState initialState prefix
+    -- Generate an action that VIOLATES the precondition in that state
+    maybeInvalid <- arbitraryAction finalState `suchThatMaybe` (not . precondition finalState)
+    case maybeInvalid of
+      Nothing -> discard -- tell QuickCheck to skip this case
+      Just bad -> pure $ InvalidActions (Actions_ prefix, bad)
+
+-- | Try up to 100 times to generate a value satisfying a predicate
+suchThatMaybe :: Gen a -> (a -> Bool) -> Gen (Maybe a)
+suchThatMaybe gen p = go (100 :: Int)
+ where
+  go 0 = pure Nothing
+  go retries = do
+    a <- gen
+    if p a then pure (Just a) else go (retries - 1)
 
 -- | Generate a list of valid actions
 genActions :: (TestingInterface state) => state -> Int -> Gen [Action state]
@@ -178,14 +205,6 @@ genActions s n = do
       let s' = nextState s action
       actions <- genActions s' (n - 1)
       pure (action : actions)
- where
-  -- Try up to 100 times to generate a valid action, then give up
-  suchThatMaybe gen p = go (100 :: Int)
-   where
-    go 0 = pure Nothing
-    go retries = do
-      a <- gen
-      if p a then pure (Just a) else go (retries - 1)
 
 -- | Options for running property tests
 data RunOptions = RunOptions
@@ -221,8 +240,45 @@ propRunActionsWithOptions groupName opts =
   testGroup
     groupName
     [ testProperty "Positive tests" positiveTest
+    , testProperty "Negative tests" negativeTest
     ]
  where
+  negativeTest :: InvalidActions state -> Property
+  negativeTest (InvalidActions (Actions actions, badAction)) = monadicIO $ do
+    let RunOptions{mcOptions = Options{coverageRef, params}} = opts
+        initialSt = initialState @state
+
+    when (verbose opts) $
+      monitor (counterexample $ "Initial state: " ++ show initialSt)
+
+    result <- run $ try @SomeException $ runMockchain0IOWith Wallet.initialUTxOs params $ do
+      -- Execute the valid prefix
+      (finalState, _) <-
+        foldM
+          ( \(state, _) action -> do
+              newState <- runAction opts state action
+              pure (newState, Nothing :: Maybe (C.UTxO C.ConwayEra))
+          )
+          (initialSt, Nothing)
+          actions
+
+      -- Attempt the invalid action — should fail
+      perform finalState badAction
+
+    case result of
+      Left err -> do
+        -- Good: the invalid action failed as expected
+        -- Extract and accumulate coverage from the failure
+        let covData = tryExtractCoverageData err
+        traverse_ (\ref -> liftIO $ modifyIORef ref (<> covData)) coverageRef
+        pure (property True)
+      Right (_, MockChainState{mcsCoverageData = covData}) -> do
+        -- Accumulate coverage even on unexpected success
+        traverse_ (\ref -> liftIO $ modifyIORef ref (<> covData)) coverageRef
+        -- Bad: the invalid action succeeded — contract is too permissive
+        monitor (counterexample $ "Expected failure for invalid action but it succeeded")
+        pure (property False)
+
   positiveTest :: Actions state -> Property
   positiveTest (Actions actions) = monadicIO $ do
     let RunOptions{mcOptions = Options{coverageRef, params}} = opts
