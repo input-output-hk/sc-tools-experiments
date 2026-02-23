@@ -1,6 +1,7 @@
 {-# LANGUAGE DerivingStrategies #-}
 {-# LANGUAGE GADTs #-}
 {-# LANGUAGE LambdaCase #-}
+{-# LANGUAGE NamedFieldPuns #-}
 {-# LANGUAGE TypeApplications #-}
 {-# LANGUAGE ViewPatterns #-}
 
@@ -26,13 +27,14 @@ import Cardano.Slotting.Slot ()
 import Cardano.Slotting.Time (SlotLength, mkSlotLength)
 import Control.Lens ((&), (.~), (^.), _1)
 import Control.Monad (when)
-import Data.List (isPrefixOf)
 
 import Convex.CardanoApi.Lenses qualified as L
 import Convex.Class (
+  ExUnitsError (..),
   MockChainState,
   MonadBlockchain (..),
   MonadMockchain (..),
+  ValidationError (..),
   coverageData,
   env,
   getSlot,
@@ -50,6 +52,7 @@ import Data.Maybe.Strict
 import Data.SOP.NonEmpty (NonEmpty (NonEmptyOne))
 import Data.Sequence.Strict qualified as Seq
 import Data.Set qualified as Set
+import Data.Text qualified as Text
 import Data.Time.Clock.POSIX (posixSecondsToUTCTime)
 import Data.Word
 import GHC.Exts (toList)
@@ -387,10 +390,9 @@ validateTxM params tx utxo = do
   slot <- getSlot
   let mockState = buildMockState params slot utxo
   pure $ case applyTransaction params mockState tx of
-    Left err ->
-      let errStr = show err
-          covData = extractCoverageFromValidationError errStr
-       in (ValidityReport False [errStr], covData)
+    Left (VExUnits (Phase2Error (ScriptErrorEvaluationFailed DebugPlutusFailure{dpfEvaluationError, dpfExecutionLogs}))) ->
+      (ValidityReport False [show dpfEvaluationError], foldMap (coverageDataFromLogMsg . Text.unpack) dpfExecutionLogs)
+    Left err -> (ValidityReport False [show err], mempty)
     Right (state', _) -> (ValidityReport True [], state' ^. coverageData)
 
 {- | Re-balance fees and re-sign a modified transaction.
@@ -562,58 +564,3 @@ replaceAt :: Int -> a -> [a] -> [a]
 replaceAt _ _ [] = []
 replaceAt 0 x (_ : xs) = x : xs
 replaceAt n x (y : ys) = y : replaceAt (n - 1) x ys
-
-{- | Extract coverage data from a ValidationError string containing CovLoc annotations.
-Handles the format found in Phase2 script evaluation errors where coverage
-annotations appear as "CoverLocation (CovLoc {...})" or "CoverBool (CovLoc {...}) Bool"
--}
-extractCoverageFromValidationError :: String -> CoverageData
-extractCoverageFromValidationError errStr =
-  mconcat $ map (coverageDataFromLogMsg . unescapeHaskellString) $ extractCoverageAnnotations errStr
-
--- | Unescape common Haskell string escapes (backslash-quote to quote, backslash-backslash to backslash)
-unescapeHaskellString :: String -> String
-unescapeHaskellString [] = []
-unescapeHaskellString ('\\' : '"' : xs) = '"' : unescapeHaskellString xs
-unescapeHaskellString ('\\' : '\\' : xs) = '\\' : unescapeHaskellString xs
-unescapeHaskellString (x : xs) = x : unescapeHaskellString xs
-
-{- | Extract all "CoverLocation (...)" and "CoverBool (...)" substrings from text.
-Uses bracket counting to properly match nested parentheses.
--}
-extractCoverageAnnotations :: String -> [String]
-extractCoverageAnnotations str = go str
- where
-  go [] = []
-  go s = case findCoverageStart s of
-    Nothing -> []
-    Just (prefix, rest) ->
-      case extractBalancedParens rest of
-        Nothing -> go (drop 1 s) -- skip and continue
-        Just (content, remaining) ->
-          (prefix ++ "(" ++ content ++ ")") : go remaining
-
-  -- Find "CoverLocation (" or "CoverBool (" prefix
-  -- Returns the prefix and rest of string starting with '('
-  -- "CoverLocation " is 14 chars, "CoverBool " is 10 chars
-  findCoverageStart :: String -> Maybe (String, String)
-  findCoverageStart [] = Nothing
-  findCoverageStart s
-    | "CoverLocation (" `isPrefixOf` s = Just ("CoverLocation ", drop 14 s) -- keep "(CovLoc..."
-    | "CoverBool (" `isPrefixOf` s = Just ("CoverBool ", drop 10 s) -- keep "(CovLoc..."
-    | otherwise = findCoverageStart (drop 1 s)
-
-  -- Extract content within balanced parentheses
-  -- Expects the string to start with '(' and returns content between matching parens
-  extractBalancedParens :: String -> Maybe (String, String)
-  extractBalancedParens ('(' : xs) = go' 1 [] xs
-   where
-    go' _ _ [] = Nothing
-    go' n acc (c : cs)
-      | c == '(' = go' (n + 1) (c : acc) cs
-      | c == ')' =
-          if n == 1
-            then Just (reverse acc, cs)
-            else go' (n - 1) (c : acc) cs
-      | otherwise = go' n (c : acc) cs
-  extractBalancedParens _ = Nothing

@@ -85,6 +85,7 @@ library
     , plutus-tx
     , pretty
     , sop-extras
+    , text
     , time
 
 test-suite convex-testing-interface-test
