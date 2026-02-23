@@ -15,9 +15,13 @@ import Convex.Utils (failOnError)
 import Test.Tasty (TestTree, defaultMain, testGroup)
 import Test.Tasty.HUnit (testCase)
 
+import AikenHelloWorldSpec (aikenHelloWorldTests)
 import AikenPingPongSpec (aikenPingPongTests)
+import AikenSellNftSpec (aikenSellNftTests)
 import AikenSpec (aikenTests)
 import AikenTipJarSpec (aikenTipJarTests)
+import AikenTipJarV2Spec (aikenTipJarV2Tests)
+import AikenVestingSpec (aikenVestingTests)
 import BountySpec (bountyTests)
 import PingPongCoverageSpec (pingPongCoverageTests)
 import PingPongSpec (pingPongTests)
@@ -59,6 +63,10 @@ tests opts runOpts =
         , pingPongCoverageTests opts
         ]
     , aikenTests opts
+    , aikenHelloWorldTests runOpts
     , aikenPingPongTests runOpts
+    , aikenSellNftTests runOpts
     , aikenTipJarTests runOpts
+    , aikenTipJarV2Tests runOpts
+    , aikenVestingTests runOpts
     ]

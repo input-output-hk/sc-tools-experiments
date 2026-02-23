@@ -49,6 +49,7 @@ library
     Convex.ThreatModel.LargeData
     Convex.ThreatModel.LargeValue
     Convex.ThreatModel.Pretty
+    Convex.ThreatModel.TimeBoundManipulation
     Convex.ThreatModel.TxModifier
     Convex.ThreatModel.UnprotectedScriptOutput
 
@@ -102,9 +103,13 @@ test-suite convex-testing-interface-test
 
   main-is:         Spec.hs
   other-modules:
+    AikenHelloWorldSpec
     AikenPingPongSpec
+    AikenSellNftSpec
     AikenSpec
     AikenTipJarSpec
+    AikenTipJarV2Spec
+    AikenVestingSpec
     BountySpec
     Paths_convex_testing_interface
     PingPongCoverageSpec
