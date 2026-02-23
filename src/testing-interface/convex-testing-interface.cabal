@@ -103,8 +103,15 @@ test-suite convex-testing-interface-test
 
   main-is:         Spec.hs
   other-modules:
+    AikenBankSpec
     AikenHelloWorldSpec
+    AikenKingOfCardanoSpec
+    AikenLendingSpec
+    AikenMultisigTreasurySpec
+    AikenMultisigTreasuryV2Spec
+    AikenMultisigTreasuryV3Spec
     AikenPingPongSpec
+    AikenPurchaseOfferSpec
     AikenSellNftSpec
     AikenSpec
     AikenTipJarSpec
@@ -140,6 +147,7 @@ test-suite convex-testing-interface-test
     , convex-wallet
     , lens
     , mtl
+    , plutus-core
     , plutus-ledger-api
     , plutus-tx
     , plutus-tx-plugin

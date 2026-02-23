@@ -120,10 +120,10 @@ loadTipJarScript :: IO (C.PlutusScript C.PlutusScriptV3)
 loadTipJarScript = do
   path <- Pkg.getDataFileName "test/data/aiken-contracts-example.json"
   Blueprint{validators} <- Blueprint.loadFromFile path >>= either fail pure
-  case Map.lookup "tipjar.tipjar.spend" validators of
+  case Map.lookup "ctf_tipjar.ctf_tipjar.spend" validators of
     Just (C.ScriptInAnyLang (C.PlutusScriptLanguage C.PlutusScriptV3) (C.PlutusScript _ ps)) ->
       pure ps
-    _ -> fail "tipjar.tipjar.spend not found in Aiken blueprint"
+    _ -> fail "ctf_tipjar.ctf_tipjar.spend not found in Aiken blueprint"
 
 {- | Top-level binding for the Aiken TipJar script.
 

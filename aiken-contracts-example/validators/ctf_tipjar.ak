@@ -18,7 +18,7 @@ pub type Redeemer {
 
 const minimum_tip: Int = 5_000_000
 
-validator tipjar {
+validator ctf_tipjar {
   spend(
     datum_opt: Option<Datum>,
     redeemer: Redeemer,
