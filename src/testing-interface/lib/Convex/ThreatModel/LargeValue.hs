@@ -58,6 +58,7 @@ import Cardano.Api qualified as C
 import Convex.ThreatModel
 import Convex.ThreatModel.TxModifier (addPlutusScriptMint, alwaysSucceedsMintingPolicy)
 import Data.ByteString.Char8 qualified as BS
+import GHC.Exts (fromList)
 
 {- | Check for Large Value Attack vulnerabilities with 50 junk tokens.
 
@@ -103,7 +104,7 @@ largeValueAttackWith numTokens = do
         | i <- [1 .. numTokens]
         ]
       junkValue =
-        C.valueFromList
+        fromList
           [ (C.AssetId policyId name, qty)
           | (name, qty) <- junkTokens
           ]

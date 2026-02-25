@@ -14,6 +14,7 @@ import Cardano.Ledger.Api.Era qualified as Ledger
 import Cardano.Ledger.Binary qualified as CBOR
 import Cardano.Ledger.Conway.Scripts qualified as Conway
 import Cardano.Ledger.Conway.TxBody qualified as Conway
+import Cardano.Ledger.Keys (coerceKeyRole)
 import Cardano.Ledger.Mary.Value qualified as Mary
 import Data.Coerce
 
@@ -182,12 +183,23 @@ data TxMod where
     -> ReferenceScript Era
     -> Bool -- isReferenceInput
     -> TxMod
-  -- | Mint tokens using a Plutus script
+  -- | Mint tokens using a Plutus V2 script
   AddPlutusScriptMint
     :: PlutusScript PlutusScriptV2 -- The minting policy script
     -> AssetName -- Name of asset to mint
     -> Quantity -- Amount (positive = mint, negative = burn)
     -> ScriptData -- Redeemer for the minting policy
+    -> TxMod
+  -- | Mint tokens using a Plutus V3 script
+  AddPlutusScriptMintV3
+    :: PlutusScript PlutusScriptV3 -- The minting policy script
+    -> AssetName -- Name of asset to mint
+    -> Quantity -- Amount (positive = mint, negative = burn)
+    -> ScriptData -- Redeemer for the minting policy
+    -> TxMod
+  -- | Remove a required signer from the transaction
+  RemoveRequiredSigner
+    :: Hash PaymentKey
     -> TxMod
   ReplaceTx :: Tx Era -> UTxO Era -> TxMod
   deriving stock (Show)
@@ -599,6 +611,63 @@ applyTxMod tx utxos (AddPlutusScriptMint script assetName quantity redeemer) =
       mintIdx
       (toAlonzoData $ unsafeHashableScriptData redeemer, toAlonzoExUnits $ ExecutionUnits 0 0)
       $ recomputeScriptDataForMint Nothing idxUpdate scriptData
+applyTxMod tx utxos (AddPlutusScriptMintV3 script assetName quantity redeemer) =
+  ( Tx (ShelleyTxBody era body{Conway.ctbMint = mint'} scripts' scriptData' auxData validity) wits
+  , utxos
+  )
+ where
+  Tx (ShelleyTxBody era body@Conway.ConwayTxBody{..} scripts scriptData auxData validity) wits = tx
+
+  -- Convert cardano-api types to ledger types
+  scriptHash = hashScript $ PlutusScript PlutusScriptV3 script
+  ledgerPolicyId = Mary.PolicyID (toShelleyScriptHash scriptHash)
+  ledgerAssetName = toMaryAssetName assetName
+  Quantity qty = quantity
+
+  -- Add the asset to the mint field
+  newMintAsset = Mary.MultiAsset $ Map.singleton ledgerPolicyId (Map.singleton ledgerAssetName qty)
+  mint' = ctbMint <> newMintAsset
+
+  -- Calculate the mint index (sorted position of PolicyId in mint map keys)
+  Mary.MultiAsset mintMap = mint'
+  mintIdx = case Map.lookupIndex ledgerPolicyId mintMap of
+    Just idx' -> fromIntegral idx'
+    Nothing -> error "The impossible happened: PolicyId not in mint map after insertion"
+
+  -- Check if we need to update existing minting redeemer indices
+  -- (if our new PolicyId sorted before some existing ones)
+  Mary.MultiAsset oldMintMap = ctbMint
+  oldMintKeys = Map.keys oldMintMap
+  -- For each existing policy, check if its new index changed
+  idxUpdate oldIdx
+    | any
+        ( \p ->
+            Map.lookupIndex p mintMap == Just (fromIntegral oldIdx + 1)
+              && Map.lookupIndex p oldMintMap == Just (fromIntegral oldIdx)
+        )
+        oldMintKeys =
+        oldIdx + 1
+    | otherwise = oldIdx
+
+  -- Add the script to the scripts list
+  scriptInEra =
+    ScriptInEra
+      PlutusScriptV3InConway
+      (PlutusScript PlutusScriptV3 script)
+  newScript = toShelleyScript @Era scriptInEra
+  scripts' = scripts ++ [newScript]
+
+  -- Add the minting redeemer with the correct index
+  scriptData' =
+    addMintingRedeemer
+      mintIdx
+      (toAlonzoData $ unsafeHashableScriptData redeemer, toAlonzoExUnits $ ExecutionUnits 0 0)
+      $ recomputeScriptDataForMint Nothing idxUpdate scriptData
+applyTxMod tx utxos (RemoveRequiredSigner (PaymentKeyHash kh)) =
+  (Tx (ShelleyTxBody era body' scripts scriptData auxData validity) wits, utxos)
+ where
+  Tx (ShelleyTxBody era body@Conway.ConwayTxBody{..} scripts scriptData auxData validity) wits = tx
+  body' = body{Conway.ctbReqSignerHashes = Set.delete (coerceKeyRole kh) ctbReqSignerHashes}
 applyTxMod _ _ (ReplaceTx tx utxos) = (tx, utxos)
 
 -- | Add a new output of any type (public key or script)
@@ -641,7 +710,7 @@ addSimpleScriptInput script value rscript = txMod $ AddSimpleScriptInput script 
 addSimpleScriptReferenceInput :: SimpleScript -> Value -> ReferenceScript Era -> TxModifier
 addSimpleScriptReferenceInput script value rscript = txMod $ AddSimpleScriptInput script value rscript True
 
--- | Smart constructor for minting with a Plutus script
+-- | Smart constructor for minting with a Plutus V2 script
 addPlutusScriptMint
   :: PlutusScript PlutusScriptV2
   -> AssetName
@@ -650,6 +719,16 @@ addPlutusScriptMint
   -> TxModifier
 addPlutusScriptMint script name qty redeemer =
   txMod $ AddPlutusScriptMint script name qty redeemer
+
+-- | Smart constructor for minting with a Plutus V3 script
+addPlutusScriptMintV3
+  :: PlutusScript PlutusScriptV3
+  -> AssetName
+  -> Quantity
+  -> ScriptData -- Redeemer
+  -> TxModifier
+addPlutusScriptMintV3 script name qty redeemer =
+  txMod $ AddPlutusScriptMintV3 script name qty redeemer
 
 {- | Always-succeeds minting policy for testing
 Takes 2 arguments: redeemer and script context
@@ -675,6 +754,10 @@ changeValidityLowerBound lo = txMod $ ChangeValidityRange (Just lo) Nothing
 -- | Change the validity upper bound of the transaction.
 changeValidityUpperBound :: TxValidityUpperBound Era -> TxModifier
 changeValidityUpperBound hi = txMod $ ChangeValidityRange Nothing (Just hi)
+
+-- | Remove a required signer from the transaction.
+removeRequiredSigner :: Hash PaymentKey -> TxModifier
+removeRequiredSigner = txMod . RemoveRequiredSigner
 
 {- | The most general transaction modifier. Simply replace the original transaction and `UTxO` set
   by the given values. In most cases the modifiers above should be sufficient.

@@ -71,6 +71,7 @@ module Convex.ThreatModel (
   inPrecondition,
   ensure,
   ensureHasInputAt,
+  failPrecondition,
 
   -- ** Validation
   shouldValidate,
@@ -85,6 +86,7 @@ module Convex.ThreatModel (
   getTxReferenceInputs,
   getTxOutputs,
   getRedeemer,
+  getTxRequiredSigners,
 
   -- ** Random generation
   forAllTM,
@@ -146,6 +148,7 @@ import Text.Printf
 import Control.Lens ((%~), (&))
 import Convex.Class (MonadMockchain (..), coverageData)
 import Convex.ThreatModel.Cardano.Api
+import Convex.ThreatModel.Cardano.Api qualified as TM
 import Convex.ThreatModel.Pretty
 import Convex.ThreatModel.TxModifier
 import Convex.Wallet (Wallet)
@@ -366,6 +369,9 @@ threatPrecondition = \case
   MonitorLocal m k -> MonitorLocal m (threatPrecondition k)
   Done a -> Done a
 
+failPrecondition :: String -> ThreatModel a
+failPrecondition reason = Monitor (tabulate "Precondition failed with reason" [reason]) Skip
+
 -- | Same as `threatPrecondition` but takes a boolean and skips the test if the argument is @False@.
 ensure :: Bool -> ThreatModel ()
 ensure False = Skip
@@ -472,6 +478,10 @@ getRedeemer :: Input -> ThreatModel (Maybe Redeemer)
 getRedeemer (Input _ txIn) = do
   tx <- originalTx
   pure $ redeemerOfTxIn tx txIn
+
+-- | Get the required signers from the original transaction body.
+getTxRequiredSigners :: ThreatModel [Hash PaymentKey]
+getTxRequiredSigners = TM.txRequiredSigners <$> originalTx
 
 -- | Generate a random value. Takes a QuickCheck generator and a `shrink` function.
 forAllTM :: (Show a) => Gen a -> (a -> [a]) -> ThreatModel a

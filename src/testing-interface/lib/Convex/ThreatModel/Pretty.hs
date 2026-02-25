@@ -213,6 +213,9 @@ prettyUpperBound (TxValidityUpperBound _ (Just slot)) = text (show $ unSlotNo sl
 prettyPlutusV2Script :: PlutusScript PlutusScriptV2 -> Doc
 prettyPlutusV2Script = prettyHash . hashScript . PlutusScript PlutusScriptV2
 
+prettyPlutusV3Script :: PlutusScript PlutusScriptV3 -> Doc
+prettyPlutusV3Script = prettyHash . hashScript . PlutusScript PlutusScriptV3
+
 prettySimpleScript :: SimpleScript -> Doc
 prettySimpleScript = prettyHash . hashScript . SimpleScript
 
@@ -318,6 +321,16 @@ prettyTxModifier (TxModifier txmod) = vcat [prettyMod m | m <- txmod]
       , text (show quantity)
       , prettyScriptData redeemer
       ]
+  prettyMod (AddPlutusScriptMintV3 script assetName quantity redeemer) =
+    fblock
+      (text "addPlutusScriptMintV3")
+      [ prettyPlutusV3Script script
+      , text (show assetName)
+      , text (show quantity)
+      , prettyScriptData redeemer
+      ]
+  prettyMod (RemoveRequiredSigner signer) =
+    text "removeRequiredSigner" <+> prettyHash signer
   prettyMod (ReplaceTx tx utxos) =
     fblock
       (text "replaceTx")

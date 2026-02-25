@@ -42,6 +42,7 @@ module AikenKingOfCardanoSpec (
 
   -- * Standalone threat model tests
   propKingVulnerableToSelfReference,
+  propKingVulnerableToSelfReferenceInjection,
 ) where
 
 import Cardano.Api qualified as C
@@ -71,6 +72,7 @@ import Convex.ThreatModel (ThreatModelEnv (..), runThreatModelM)
 import Convex.ThreatModel.Cardano.Api (dummyTxId)
 
 import Convex.ThreatModel.LargeData (largeDataAttackWith)
+import Convex.ThreatModel.SelfReferenceInjection (selfReferenceInjection)
 import Convex.ThreatModel.UnprotectedScriptOutput (unprotectedScriptOutput)
 import Convex.Utils (failOnError)
 import Convex.Wallet (Wallet, addressInEra)
@@ -704,6 +706,45 @@ propKingUnprotectedOutput opts = monadicIO $ do
       monitor (counterexample "Testing king_of_cardano for unprotected script output vulnerability")
       pure prop
 
+{- | Test selfReferenceInjection threat model on the king_of_cardano contract.
+
+This test detects the self-reference vulnerability using the generic threat model:
+1. Sets up a normal overthrow transaction (w2 overthrows w1)
+2. The threat model modifies the datum, replacing the current_king address
+   with the script's own address
+3. If the modified transaction still validates, the vulnerability exists
+
+This test is wrapped with expectFailure because king_of_cardano IS vulnerable
+to this attack - the threat model should detect the vulnerability (i.e., the
+shouldNotValidate check will fail, meaning the modified tx DOES validate).
+-}
+propKingVulnerableToSelfReferenceInjection :: RunOptions -> Property
+propKingVulnerableToSelfReferenceInjection opts = QC.expectFailure $ monadicIO $ do
+  let Options{params} = mcOptions opts
+
+  result <- run $ runMockchain0IOWith Wallet.initialUTxOs params $ runExceptT $ do
+    (tx, utxo) <- kingScenario
+
+    let pparams' = params ^. ledgerProtocolParameters
+        env =
+          ThreatModelEnv
+            { currentTx = tx
+            , currentUTxOs = utxo
+            , pparams = pparams'
+            }
+
+    -- Run the self-reference injection threat model
+    -- This will try to replace address fields with the script's own address
+    lift $ runThreatModelM Wallet.w1 selfReferenceInjection [env]
+
+  case result of
+    (Left err, _) -> do
+      monitor (counterexample $ "Mockchain error: " ++ show err)
+      pure $ QC.property False
+    (Right prop, _finalState) -> do
+      monitor (counterexample "Testing king_of_cardano for self-reference injection vulnerability")
+      pure prop
+
 -- ----------------------------------------------------------------------------
 -- TestingInterface instance
 -- ----------------------------------------------------------------------------
@@ -855,5 +896,8 @@ aikenKingOfCardanoTests runOpts =
         , testProperty
             "protected script output (no redirect vulnerability)"
             (propKingUnprotectedOutput runOpts)
+        , testProperty
+            "vulnerable to self-reference injection (threat model)"
+            (propKingVulnerableToSelfReferenceInjection runOpts)
         ]
     ]
