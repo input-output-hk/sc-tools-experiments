@@ -25,7 +25,7 @@ import Convex.Class (MonadMockchain)
 import Convex.CoinSelection (BalanceTxError, ChangeOutputPosition (TrailingChange))
 import Convex.MockChain.CoinSelection (tryBalanceAndSubmit)
 import Convex.MockChain.Defaults qualified as Defaults
-import Convex.MockChain.Utils (Options, mockchainFailsWithOptions, mockchainSucceedsWithOptions)
+import Convex.TestingInterface (Options, mockchainFailsWithOptions, mockchainSucceedsWithOptions)
 import Convex.Utils (failOnError)
 import Convex.Wallet.MockWallet qualified as Wallet
 import Data.Map qualified as Map

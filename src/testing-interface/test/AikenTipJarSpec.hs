@@ -49,9 +49,10 @@ import Convex.CoinSelection (BalanceTxError, ChangeOutputPosition (TrailingChang
 import Convex.MockChain (fromLedgerUTxO, runMockchain0IOWith)
 import Convex.MockChain.CoinSelection (balanceAndSubmit, tryBalanceAndSubmit)
 import Convex.MockChain.Defaults qualified as Defaults
-import Convex.MockChain.Utils (Options (Options, params), mockchainSucceeds)
+import Convex.MockChain.Utils (mockchainSucceeds)
 import Convex.NodeParams (ledgerProtocolParameters)
 import Convex.TestingInterface (
+  Options (Options, params),
   RunOptions (mcOptions),
   TestingInterface (..),
   propRunActionsWithOptions,
@@ -575,15 +576,16 @@ instance TestingInterface TipJarModel where
       , tmHasBeenClaimed = False
       }
 
-  -- Generate actions: InitTipJar first, then Tips/Claims based on state
-  -- After claim, no valid actions exist (precondition blocks all), so QuickCheck stops.
-  -- We return InitTipJar when claimed, but precondition will reject it.
-  -- Note: OwnerClaim has very low probability (1:19) to ensure most sequences end with Tip.
-  -- This allows threat models that require script outputs (like largeDataAttackWith) to run.
+  -- Generate actions: init-type actions TIGHT, spending actions BROAD.
+  -- Init creates fresh UTxO (always succeeds on Cardano) - only when not initialized.
+  -- Spending actions can fail on-chain - generate even when invalid for negative testing.
   arbitraryAction model
-    | tmHasBeenClaimed model = pure InitTipJar -- precondition will reject
-    | not (tmInitialized model) = pure InitTipJar
-    | otherwise = QC.frequency [(19, Tip <$> genMessage), (1, pure OwnerClaim)]
+    | not (tmInitialized model) && not (tmHasBeenClaimed model) = pure InitTipJar
+    | otherwise =
+        QC.frequency
+          [ (17, Tip <$> genMessage)
+          , (3, pure OwnerClaim)
+          ]
    where
     genMessage = do
       len <- QC.choose (1, 50)

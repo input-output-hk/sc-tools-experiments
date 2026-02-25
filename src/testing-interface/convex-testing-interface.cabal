@@ -66,7 +66,7 @@ library
   build-depends:
     , aeson
     , aeson-pretty
-    , base                   >=4.14.0
+    , base                    >=4.14.0
     , bytestring
     , cardano-api
     , containers
@@ -80,6 +80,7 @@ library
     , prettyprinter
     , QuickCheck
     , tasty
+    , tasty-expected-failure
     , tasty-quickcheck
 
   -- cardano dependencies for ThreatModel
@@ -164,5 +165,6 @@ test-suite convex-testing-interface-test
     , prettyprinter
     , QuickCheck
     , tasty
+    , tasty-expected-failure
     , tasty-hunit
     , tasty-quickcheck

@@ -74,11 +74,12 @@ import Convex.CoinSelection (BalanceTxError, ChangeOutputPosition (TrailingChang
 import Convex.MockChain (fromLedgerUTxO, runMockchain0IOWith)
 import Convex.MockChain.CoinSelection (balanceAndSubmit, tryBalanceAndSubmit)
 import Convex.MockChain.Defaults qualified as Defaults
-import Convex.MockChain.Utils (Options (Options, params), mockchainSucceeds)
+import Convex.MockChain.Utils (mockchainSucceeds)
 import Convex.NodeParams (ledgerProtocolParameters)
 import Convex.PlutusLedger.V1 (transAddressInEra)
 import Convex.TestingInterface (
-  RunOptions (mcOptions),
+  Options (Options, params),
+  RunOptions (disableNegativeTesting, mcOptions),
   TestingInterface (..),
   propRunActionsWithOptions,
  )
@@ -813,24 +814,33 @@ instance TestingInterface MultisigV3Model where
       }
 
   -- Generate actions based on state
+  -- Init actions: TIGHT - only generate when not initialized
+  -- Non-init actions: BROAD - generate all variants for negative testing
   arbitraryAction model
-    | mmv3HasBeenUsed model = pure InitMultisigV3 -- precondition will reject
-    | not (mmv3Initialized model) = pure InitMultisigV3
+    | mmv3HasBeenUsed model =
+        QC.frequency
+          [ (1, SignMultisigV3 <$> QC.elements [Signer1, Signer2]) -- Invalid: used
+          , (1, pure MintValidationToken) -- Valid: mint works independently
+          , (1, pure UseMultisigV3) -- Invalid: used
+          , (1, pure SignReplayExploit) -- Invalid: used
+          ]
+    | not (mmv3Initialized model) && not (mmv3HasBeenUsed model) = pure InitMultisigV3
     | length (mmv3SignedUsers model) < 2 =
         QC.frequency
           [ (70, SignMultisigV3 <$> pickSigner model)
-          , (10, pure SignReplayExploit) -- Test sign replay
+          , (10, pure SignReplayExploit) -- Exploit: replay signature
           , (10, pure MintValidationToken)
-          , (10, pure UseMultisigV3) -- Occasionally test 1-of-N exploit
+          , (10, pure UseMultisigV3) -- May be invalid: needs token
           ]
     | not (mmv3HasValidationToken model) =
         QC.frequency
           [ (80, pure MintValidationToken)
-          , (20, pure UseMultisigV3)
+          , (20, pure UseMultisigV3) -- Invalid: no token yet
           ]
     | otherwise =
         QC.frequency
-          [ (1, pure UseMultisigV3)
+          [ (90, pure UseMultisigV3)
+          , (10, pure MintValidationToken) -- Invalid: already has token
           ]
    where
     pickSigner m
@@ -840,7 +850,7 @@ instance TestingInterface MultisigV3Model where
 
   precondition model InitMultisigV3 = not (mmv3Initialized model) && not (mmv3HasBeenUsed model)
   precondition model (SignMultisigV3 _) = mmv3Initialized model && not (mmv3HasBeenUsed model)
-  precondition model MintValidationToken = mmv3Initialized model && not (mmv3HasValidationToken model)
+  precondition model MintValidationToken = not (mmv3HasValidationToken model)
   precondition model UseMultisigV3 =
     mmv3Initialized model && not (null (mmv3SignedUsers model)) && mmv3HasValidationToken model
   precondition model SignReplayExploit =
@@ -991,7 +1001,7 @@ aikenMultisigTreasuryV3Tests runOpts =
         "property tests"
         [ propRunActionsWithOptions @MultisigV3Model
             "property-based testing"
-            runOpts
+            runOpts{disableNegativeTesting = Just "CTF vulnerability: sign replay allows duplicate signatures and unauthorized validation token minting"}
         , testProperty
             "vulnerable to sign replay (duplicate signatures)"
             (propMultisigV3SignReplayExploit runOpts)

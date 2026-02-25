@@ -63,7 +63,7 @@ import Convex.MockChain.CoinSelection (balanceAndSubmit, tryBalanceAndSubmit)
 import Convex.MockChain.Defaults qualified as Defaults
 import Convex.MockChain.Utils (mockchainSucceeds)
 import Convex.TestingInterface (
-  RunOptions,
+  RunOptions (disableNegativeTesting),
   TestingInterface (..),
   propRunActionsWithOptions,
  )
@@ -911,12 +911,15 @@ instance TestingInterface BankModel where
       , bmInitialized = False
       }
 
+  -- Generate actions following PingPong pattern:
+  -- - Init actions: TIGHT (only when not initialized) - creates fresh UTxOs
+  -- - Non-init actions: BROAD (generate invalid variants for negative testing)
   arbitraryAction model
     | not (bmInitialized model) = pure InitBankAction
     | otherwise =
         QC.frequency
           [ (3, DepositAction <$> (fromInteger <$> QC.choose (1_000_000, 20_000_000)))
-          , (2, WithdrawAction <$> (fromInteger <$> QC.choose (1_000_000, min 20_000_000 (bmAccountBalance model))))
+          , (7, WithdrawAction <$> (fromInteger <$> QC.choose (1_000_000, 20_000_000))) -- May overdraw for negative testing
           ]
 
   precondition model InitBankAction = not (bmInitialized model)
@@ -1012,6 +1015,6 @@ aikenBankTests runOpts =
         "property tests"
         [ propRunActionsWithOptions @BankModel
             "property-based testing (bank_00)"
-            runOpts
+            runOpts{disableNegativeTesting = Just "CTF vulnerability: bank_00 allows negative balance withdrawals (no balance >= 0 check in account validator)"}
         ]
     ]

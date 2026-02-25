@@ -67,10 +67,11 @@ import Convex.CoinSelection (BalanceTxError, ChangeOutputPosition (TrailingChang
 import Convex.MockChain (fromLedgerUTxO, runMockchain0IOWith)
 import Convex.MockChain.CoinSelection (balanceAndSubmit, tryBalanceAndSubmit)
 import Convex.MockChain.Defaults qualified as Defaults
-import Convex.MockChain.Utils (Options (Options, params), mockchainSucceeds)
+import Convex.MockChain.Utils (mockchainSucceeds)
 import Convex.NodeParams (ledgerProtocolParameters)
 import Convex.PlutusLedger.V1 (transAddressInEra)
 import Convex.TestingInterface (
+  Options (Options, params),
   RunOptions (mcOptions),
   TestingInterface (..),
   propRunActionsWithOptions,
@@ -826,21 +827,17 @@ instance TestingInterface LendingModel where
       }
 
   -- Generate actions based on state
+  -- Init-type actions (RequestLoanAction): TIGHT - only when not initialized
+  -- Non-init actions (LendAction, RepayAction): BROAD - for negative testing
   arbitraryAction model
-    | lmRepaid model = pure $ RequestLoanAction 50_000_000 5_000_000 -- precondition will reject
-    | not (lmInitialized model) =
+    | not (lmInitialized model) && not (lmRepaid model) =
         RequestLoanAction
           <$> (fromInteger <$> QC.choose (10_000_000, 100_000_000))
           <*> (fromInteger <$> QC.choose (1_000_000, 10_000_000))
-    | lmLender model == Nothing =
-        QC.frequency
-          [ (9, pure LendAction)
-          , (1, pure RepayAction) -- precondition will reject
-          ]
     | otherwise =
         QC.frequency
-          [ (9, pure RepayAction)
-          , (1, pure LendAction) -- precondition will reject
+          [ (5, pure LendAction)
+          , (5, pure RepayAction)
           ]
 
   precondition model (RequestLoanAction _ _) = not (lmInitialized model) && not (lmRepaid model)

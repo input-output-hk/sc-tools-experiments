@@ -56,9 +56,10 @@ import Convex.CoinSelection (BalanceTxError, ChangeOutputPosition (TrailingChang
 import Convex.MockChain (fromLedgerUTxO, runMockchain0IOWith)
 import Convex.MockChain.CoinSelection (balanceAndSubmit, tryBalanceAndSubmit)
 import Convex.MockChain.Defaults qualified as Defaults
-import Convex.MockChain.Utils (Options (Options, params), mockchainSucceeds)
+import Convex.MockChain.Utils (mockchainSucceeds)
 import Convex.NodeParams (ledgerProtocolParameters)
 import Convex.TestingInterface (
+  Options (Options, params),
   RunOptions (mcOptions),
   TestingInterface (..),
   propRunActionsWithOptions,
@@ -504,16 +505,21 @@ instance TestingInterface VestingModel where
       , vmBeneficiary = Nothing
       }
 
-  -- Generate actions: LockVesting when not locked, Unlock when locked
-  -- Note: we use small lock slots (100-500) and reset the slot after unlocks
-  -- to avoid issues with slots being in the past
+  -- Generate actions: init-type actions TIGHT, spending actions BROAD.
+  -- LockVesting creates fresh UTxO (always succeeds on Cardano) - only when not locked.
+  -- Unlock actions can fail on-chain - generate even when invalid for negative testing.
   arbitraryAction model
-    | vmLocked model =
+    | not (vmLocked model) =
+        QC.frequency
+          [ (7, LockVesting <$> genLovelace <*> genLockSlot)
+          , (2, pure UnlockAfterDeadline) -- Invalid: not locked, will fail in perform
+          , (1, pure UnlockBeforeDeadline) -- Invalid: not locked, will fail in perform
+          ]
+    | otherwise =
         QC.frequency
           [ (4, pure UnlockAfterDeadline)
           , (1, pure UnlockBeforeDeadline) -- Less frequent exploit attempts
           ]
-    | otherwise = LockVesting <$> genLovelace <*> genLockSlot
    where
     genLovelace = fromInteger <$> QC.choose (5_000_000, 50_000_000)
     -- Use a fixed future range relative to slot 0 - we reset the clock before each lock

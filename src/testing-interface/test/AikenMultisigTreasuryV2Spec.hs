@@ -75,11 +75,12 @@ import Convex.CoinSelection (BalanceTxError, ChangeOutputPosition (TrailingChang
 import Convex.MockChain (fromLedgerUTxO, runMockchain0IOWith)
 import Convex.MockChain.CoinSelection (balanceAndSubmit, tryBalanceAndSubmit)
 import Convex.MockChain.Defaults qualified as Defaults
-import Convex.MockChain.Utils (Options (Options, params), mockchainSucceeds)
+import Convex.MockChain.Utils (mockchainSucceeds)
 import Convex.NodeParams (ledgerProtocolParameters)
 import Convex.PlutusLedger.V1 (transAddressInEra)
 import Convex.TestingInterface (
-  RunOptions (mcOptions),
+  Options (Options, params),
+  RunOptions (disableNegativeTesting, mcOptions),
   TestingInterface (..),
   propRunActionsWithOptions,
  )
@@ -89,7 +90,7 @@ import Convex.ThreatModel.Cardano.Api (dummyTxId)
 import Convex.ThreatModel.TokenForgery (tokenForgeryAttackV3)
 import Convex.ThreatModel.UnprotectedScriptOutput (unprotectedScriptOutput)
 import Convex.Utils (failOnError)
-import Convex.Wallet (Wallet, addressInEra, verificationKeyHash)
+import Convex.Wallet (Wallet, addressInEra, getWallet, verificationKeyHash)
 import Convex.Wallet.MockWallet qualified as Wallet
 import Data.Map qualified as Map
 import Data.Maybe (mapMaybe)
@@ -790,33 +791,46 @@ instance TestingInterface MultisigV2Model where
       }
 
   -- Generate actions based on state
+  -- Init actions: TIGHT - only generate when not initialized
+  -- Non-init actions: BROAD - generate all variants for negative testing
   arbitraryAction model
-    | mmv2HasBeenUsed model = pure InitMultisigV2 -- precondition will reject
-    | not (mmv2Initialized model) = pure InitMultisigV2
+    | mmv2HasBeenUsed model =
+        QC.frequency
+          [ (1, SignMultisigV2 <$> QC.elements [Signer1, Signer2]) -- Invalid: used
+          , (1, pure UseMultisigV2) -- Invalid: used
+          , (1, pure ForgeTokenAndUse) -- Invalid: used
+          ]
+    | not (mmv2Initialized model) && not (mmv2HasBeenUsed model) = pure InitMultisigV2
     | length (mmv2SignedUsers model) < 2 =
         QC.frequency
-          [ (90, SignMultisigV2 <$> pickUnsignedSigner model)
-          , (5, pure UseMultisigV2) -- Occasionally test 1-of-N exploit
-          , (5, pure ForgeTokenAndUse) -- Occasionally test token forgery
+          [ (70, SignMultisigV2 <$> pickUnsignedSigner model)
+          , (10, SignMultisigV2 <$> pickSignedSigner model) -- Invalid: already signed
+          , (10, pure UseMultisigV2) -- May succeed (1-of-N exploit)
+          , (10, pure ForgeTokenAndUse) -- May succeed (forgery exploit)
           ]
     | otherwise =
         QC.frequency
-          [ (1, pure UseMultisigV2)
-          , (1, pure ForgeTokenAndUse)
+          [ (40, pure UseMultisigV2)
+          , (40, pure ForgeTokenAndUse)
+          , (20, SignMultisigV2 <$> QC.elements [Signer1, Signer2]) -- Invalid: both signed
           ]
    where
     pickUnsignedSigner m
       | walletPkhBytes Wallet.w1 `notElem` mmv2SignedUsers m = pure Signer1
       | walletPkhBytes Wallet.w2 `notElem` mmv2SignedUsers m = pure Signer2
       | otherwise = QC.elements [Signer1, Signer2]
+    pickSignedSigner m
+      | walletPkhBytes Wallet.w1 `elem` mmv2SignedUsers m = pure Signer1
+      | walletPkhBytes Wallet.w2 `elem` mmv2SignedUsers m = pure Signer2
+      | otherwise = QC.elements [Signer1, Signer2]
 
   precondition model InitMultisigV2 = not (mmv2Initialized model) && not (mmv2HasBeenUsed model)
   precondition model (SignMultisigV2 sc) =
-    mmv2Initialized model && walletPkhBytes (signerToWallet sc) `notElem` mmv2SignedUsers model
+    mmv2Initialized model && walletPkhBytes (signerToWallet sc) `notElem` mmv2SignedUsers model && not (mmv2HasBeenUsed model)
   precondition model UseMultisigV2 =
-    mmv2Initialized model && not (null (mmv2SignedUsers model))
+    mmv2Initialized model && not (null (mmv2SignedUsers model)) && not (mmv2HasBeenUsed model)
   precondition model ForgeTokenAndUse =
-    mmv2Initialized model -- Attacker can attempt exploit anytime after init
+    mmv2Initialized model && not (mmv2HasBeenUsed model)
 
   nextState model action = case action of
     InitMultisigV2 ->
@@ -871,7 +885,11 @@ instance TestingInterface MultisigV2Model where
         [] -> fail "No UTxO found at multisig v2 script address"
         ((txIn, value, datum) : _) -> do
           let txBody = execBuildTx $ signMultisigV2 @C.ConwayEra Defaults.networkId txIn datum value w
-          runExceptT (balanceAndSubmit mempty Wallet.w1 txBody TrailingChange []) >>= \case
+              -- If signer is not w1, we need to provide their witness since w1 is used for balancing
+              additionalWitnesses = case sc of
+                Signer1 -> []
+                Signer2 -> [C.WitnessPaymentKey (getWallet w)]
+          runExceptT (balanceAndSubmit mempty Wallet.w1 txBody TrailingChange additionalWitnesses) >>= \case
             Left err -> fail $ "Failed to sign multisig v2: " ++ show err
             Right _ -> pure ()
     UseMultisigV2 -> do
@@ -879,14 +897,14 @@ instance TestingInterface MultisigV2Model where
       case result of
         [] -> fail "No UTxO found at multisig v2 script address for use"
         ((txIn, _, datum) : _) -> do
-          let signer =
-                if walletPkhBytes Wallet.w1 `elem` mv2SignedUsers datum
-                  then Wallet.w1
-                  else Wallet.w2
+          let w1IsSigner = walletPkhBytes Wallet.w1 `elem` mv2SignedUsers datum
+              signer = if w1IsSigner then Wallet.w1 else Wallet.w2
               beneficiaryAddr = addressInEra Defaults.networkId Wallet.w1
               releaseVal = fromInteger (mv2ReleaseValue datum) :: C.Lovelace
               txBody = execBuildTx $ useMultisigV2 @C.ConwayEra txIn beneficiaryAddr releaseVal signer
-          runExceptT (balanceAndSubmit mempty Wallet.w1 txBody TrailingChange []) >>= \case
+              -- If signer is not w1, we need to provide their witness since w1 is used for balancing
+              additionalWitnesses = if w1IsSigner then [] else [C.WitnessPaymentKey (getWallet signer)]
+          runExceptT (balanceAndSubmit mempty Wallet.w1 txBody TrailingChange additionalWitnesses) >>= \case
             Left err -> fail $ "Failed to use multisig v2: " ++ show err
             Right _ -> pure ()
     ForgeTokenAndUse -> do
@@ -950,7 +968,7 @@ aikenMultisigTreasuryV2Tests runOpts =
         "property tests"
         [ propRunActionsWithOptions @MultisigV2Model
             "property-based testing"
-            runOpts
+            runOpts{disableNegativeTesting = Just "CTF vulnerability: token forgery allows unauthorized treasury access without valid governance token"}
         , testProperty
             "vulnerable to token forgery"
             (propMultisigV2TokenForgeryExploit runOpts)
