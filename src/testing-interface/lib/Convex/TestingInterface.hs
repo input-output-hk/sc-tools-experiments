@@ -65,6 +65,7 @@ import Test.HUnit (Assertion)
 import Test.QuickCheck (Arbitrary (..), Gen, Property, conjoin, counterexample, discard, elements, frequency, oneof, property)
 import Test.QuickCheck.Monadic (monadicIO, monitor, run)
 import Test.Tasty (TestTree, testGroup)
+import Test.Tasty.ExpectedFailure (ignoreTestBecause)
 import Test.Tasty.QuickCheck (testProperty)
 
 import Cardano.Api qualified as C
@@ -250,6 +251,10 @@ data RunOptions = RunOptions
   , maxActions :: Int
   -- ^ Maximum number of actions to generate
   , mcOptions :: Options C.ConwayEra
+  , disableNegativeTesting :: Maybe String
+  {- ^ If @Just reason@, negative tests are skipped (shown as IGNORED) with the given reason.
+  If @Nothing@, negative tests run normally. Default: @Nothing@.
+  -}
   }
 
 defaultRunOptions :: RunOptions
@@ -258,6 +263,7 @@ defaultRunOptions =
     { verbose = False
     , maxActions = 10
     , mcOptions = defaultOptions
+    , disableNegativeTesting = Nothing
     }
 
 {- | Main property for testing a testing interface.
@@ -277,9 +283,13 @@ propRunActionsWithOptions groupName opts =
   testGroup
     groupName
     [ testProperty "Positive tests" positiveTest
-    , testProperty "Negative tests" negativeTest
+    , negativeTestTree
     ]
  where
+  negativeTestTree = case disableNegativeTesting opts of
+    Nothing -> testProperty "Negative tests" negativeTest
+    Just reason -> ignoreTestBecause reason $ testProperty "Negative tests" negativeTest
+
   negativeTest :: InvalidActions state -> Property
   negativeTest (InvalidActions (Actions actions, badAction)) = monadicIO $ do
     let RunOptions{mcOptions = Options{coverageRef, params}} = opts

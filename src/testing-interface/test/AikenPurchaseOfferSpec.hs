@@ -59,9 +59,10 @@ import Convex.CoinSelection (BalanceTxError, ChangeOutputPosition (TrailingChang
 import Convex.MockChain (fromLedgerUTxO, runMockchain0IOWith)
 import Convex.MockChain.CoinSelection (balanceAndSubmit, tryBalanceAndSubmit)
 import Convex.MockChain.Defaults qualified as Defaults
-import Convex.MockChain.Utils (Options (Options, params), mockchainSucceeds)
+import Convex.MockChain.Utils (mockchainSucceeds)
 import Convex.PlutusLedger.V1 (transAddressInEra)
 import Convex.TestingInterface (
+  Options (Options, params),
   RunOptions (mcOptions),
   TestingInterface (..),
   propRunActionsWithOptions,
@@ -688,18 +689,16 @@ instance TestingInterface PurchaseOfferModel where
       }
 
   -- Generate actions based on state
+  -- Init-type actions (CreateOffer): TIGHT - only when not initialized AND not fulfilled
+  -- Non-init actions (FulfillOffer): BROAD - for negative testing
   arbitraryAction model
-    | pomHasBeenFulfilled model = pure (CreateOffer 50_000_000) -- precondition will reject
-    | not (pomInitialized model) = CreateOffer <$> genOfferAmount
-    | otherwise =
-        QC.frequency
-          [ (1, pure FulfillOffer)
-          ]
+    | not (pomInitialized model) && not (pomHasBeenFulfilled model) = CreateOffer <$> genOfferAmount
+    | otherwise = pure FulfillOffer
    where
     genOfferAmount = fromInteger <$> QC.choose (20_000_000, 100_000_000)
 
   precondition model (CreateOffer _) = not (pomInitialized model) && not (pomHasBeenFulfilled model)
-  precondition model FulfillOffer = pomInitialized model
+  precondition model FulfillOffer = pomInitialized model && not (pomHasBeenFulfilled model)
 
   nextState model action = case action of
     CreateOffer amount ->

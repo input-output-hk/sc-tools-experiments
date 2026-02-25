@@ -57,9 +57,10 @@ import Convex.CoinSelection (BalanceTxError, ChangeOutputPosition (TrailingChang
 import Convex.MockChain (fromLedgerUTxO, runMockchain0IOWith)
 import Convex.MockChain.CoinSelection (balanceAndSubmit, tryBalanceAndSubmit)
 import Convex.MockChain.Defaults qualified as Defaults
-import Convex.MockChain.Utils (Options (Options, params), mockchainSucceeds)
+import Convex.MockChain.Utils (mockchainSucceeds)
 import Convex.NodeParams (ledgerProtocolParameters)
 import Convex.TestingInterface (
+  Options (Options, params),
   RunOptions (mcOptions),
   TestingInterface (..),
   propRunActionsWithOptions,
@@ -568,11 +569,16 @@ instance TestingInterface TipJarV2Model where
       , tmHasBeenClaimed = False
       }
 
-  -- Generate actions: InitTipJarV2 first, then Tips/Claims based on state
+  -- Generate actions: init-type actions TIGHT, spending actions BROAD.
+  -- Init creates fresh UTxO (always succeeds on Cardano) - only when not initialized.
+  -- Spending actions can fail on-chain - generate even when invalid for negative testing.
   arbitraryAction model
-    | tmHasBeenClaimed model = pure InitTipJarV2 -- precondition will reject
-    | not (tmInitialized model) = pure InitTipJarV2
-    | otherwise = QC.frequency [(19, TipV2 <$> genMessage), (1, pure OwnerClaimV2)]
+    | not (tmInitialized model) && not (tmHasBeenClaimed model) = pure InitTipJarV2
+    | otherwise =
+        QC.frequency
+          [ (17, TipV2 <$> genMessage)
+          , (3, pure OwnerClaimV2)
+          ]
    where
     genMessage = do
       len <- QC.choose (1, 50)

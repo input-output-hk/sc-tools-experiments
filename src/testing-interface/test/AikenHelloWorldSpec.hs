@@ -327,10 +327,18 @@ instance TestingInterface HelloWorldModel where
       , hwTxIn = Nothing
       }
 
-  -- Generate actions: LockFunds when not locked, UnlockCorrect when locked
+  -- Generate actions following PingPong pattern:
+  -- - LockFunds: TIGHT (only when not locked) - creates fresh UTxO, always succeeds on-chain
+  -- - UnlockCorrect: BROAD (generate even when not locked for negative testing) - spends UTxO
   arbitraryAction model
-    | hwLocked model = pure UnlockCorrect
-    | otherwise = LockFunds <$> genLovelace
+    | hwLocked model =
+        -- Locked: only unlock is valid, but can fail on-chain if UTxO already spent
+        pure UnlockCorrect
+    | otherwise =
+        QC.frequency
+          [ (8, LockFunds <$> genLovelace)
+          , (2, pure UnlockCorrect) -- Invalid: not locked (for negative testing)
+          ]
    where
     genLovelace = fromInteger <$> QC.choose (5_000_000, 50_000_000)
 

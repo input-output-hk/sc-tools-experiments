@@ -60,11 +60,12 @@ import Convex.CoinSelection (BalanceTxError, ChangeOutputPosition (TrailingChang
 import Convex.MockChain (fromLedgerUTxO, runMockchain0IOWith)
 import Convex.MockChain.CoinSelection (balanceAndSubmit, tryBalanceAndSubmit)
 import Convex.MockChain.Defaults qualified as Defaults
-import Convex.MockChain.Utils (Options (Options, params), mockchainSucceeds)
+import Convex.MockChain.Utils (mockchainSucceeds)
 import Convex.NodeParams (ledgerProtocolParameters)
 import Convex.PlutusLedger.V1 (transAddressInEra)
 import Convex.TestingInterface (
-  RunOptions (mcOptions),
+  Options (Options, params),
+  RunOptions (disableNegativeTesting, mcOptions),
   TestingInterface (..),
   propRunActionsWithOptions,
  )
@@ -785,19 +786,25 @@ instance TestingInterface KingModel where
       }
 
   -- Generate actions based on state
+  -- Init-type actions (InitCompetition): TIGHT - only when not initialized
+  -- Non-init actions (OverthrowKingAction, CloseCompetitionAction): BROAD - for negative testing
   arbitraryAction model
-    | kmCompetitionClosed model = pure InitCompetition -- precondition will reject
-    | not (kmInitialized model) = pure InitCompetition
+    | not (kmInitialized model) && not (kmCompetitionClosed model) = pure InitCompetition
     | otherwise =
         QC.frequency
-          [ (9, OverthrowKingAction <$> genHigherBid (kmValue model))
-          , (1, pure CloseCompetitionAction)
+          [ (7, OverthrowKingAction <$> genHigherBid (kmValue model))
+          , (1, OverthrowKingAction <$> genLowerBid (kmValue model)) -- Invalid: bid too low
+          , (2, pure CloseCompetitionAction)
           ]
    where
     genHigherBid currentVal = do
-      -- Generate extra amount and add to current value
       extra <- fromInteger <$> (QC.choose (1_000_000, 10_000_000) :: QC.Gen Integer)
       pure $ currentVal + extra
+    genLowerBid currentVal = do
+      let currentValInt = fromIntegral currentVal :: Integer
+          maxReduction = min 5_000_000 (max 1_000_000 (currentValInt - 1_000_000))
+      reduction <- fromInteger <$> (QC.choose (1_000_000, maxReduction) :: QC.Gen Integer)
+      pure $ max 1_000_000 (currentVal - reduction)
 
   precondition model InitCompetition = not (kmInitialized model) && not (kmCompetitionClosed model)
   precondition model (OverthrowKingAction newVal) =
@@ -889,7 +896,7 @@ aikenKingOfCardanoTests runOpts =
         "property tests"
         [ propRunActionsWithOptions @KingModel
             "property-based testing"
-            runOpts
+            runOpts{disableNegativeTesting = Just "CTF vulnerability: CloseCompetition redeemer does not check if competition is already closed"}
         , testProperty
             "vulnerable to self-reference attack"
             (propKingVulnerableToSelfReference runOpts)

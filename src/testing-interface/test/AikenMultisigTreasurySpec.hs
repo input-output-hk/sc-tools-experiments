@@ -60,10 +60,11 @@ import Convex.CoinSelection (BalanceTxError, ChangeOutputPosition (TrailingChang
 import Convex.MockChain (fromLedgerUTxO, runMockchain0IOWith)
 import Convex.MockChain.CoinSelection (balanceAndSubmit, tryBalanceAndSubmit)
 import Convex.MockChain.Defaults qualified as Defaults
-import Convex.MockChain.Utils (Options (Options, params), mockchainSucceeds)
+import Convex.MockChain.Utils (mockchainSucceeds)
 import Convex.NodeParams (ledgerProtocolParameters)
 import Convex.PlutusLedger.V1 (transAddressInEra)
 import Convex.TestingInterface (
+  Options (Options, params),
   RunOptions (mcOptions),
   TestingInterface (..),
   propRunActionsWithOptions,
@@ -865,36 +866,37 @@ instance TestingInterface MultisigModel where
       }
 
   -- Generate actions based on state
-  -- Note: UseMultisig has very low probability (1:99) to ensure most sequences end with SignMultisig.
-  -- This allows threat models that require script outputs (like unprotectedScriptOutput) to run.
-  -- After use, no valid actions exist (precondition blocks all), so QuickCheck stops.
+  -- Init actions: TIGHT - only generate when not initialized
+  -- Non-init actions: BROAD - generate all variants for negative testing
   arbitraryAction model
-    | mmHasBeenUsed model = pure InitMultisig -- precondition will reject
-    | not (mmInitialized model) = pure InitMultisig
+    | mmHasBeenUsed model = SignMultisig <$> QC.elements [Signer1, Signer2] -- Invalid: already used, will fail
+    | not (mmInitialized model) && not (mmHasBeenUsed model) = pure InitMultisig
     | length (mmSignedUsers model) < 2 =
-        -- Can still sign - pick a signer that hasn't signed yet
-        -- Very rarely try to use (to occasionally test the 1-of-N vulnerability)
         QC.frequency
-          [ (99, SignMultisig <$> pickUnsignedSigner model)
-          , (1, pure UseMultisig) -- Very rarely use (exploit 1-of-N vulnerability)
+          [ (80, SignMultisig <$> pickUnsignedSigner model)
+          , (10, SignMultisig <$> pickSignedSigner model) -- Invalid: already signed
+          , (10, pure UseMultisig) -- May succeed (1-of-N vulnerability)
           ]
     | otherwise =
-        -- Both signers have signed - very rarely use, mostly just stay here
-        -- (Can't sign again since both have signed)
         QC.frequency
-          [ (1, pure UseMultisig)
+          [ (90, pure UseMultisig)
+          , (10, SignMultisig <$> QC.elements [Signer1, Signer2]) -- Invalid: both signed
           ]
    where
     pickUnsignedSigner m
       | walletPkhBytes Wallet.w1 `notElem` mmSignedUsers m = pure Signer1
       | walletPkhBytes Wallet.w2 `notElem` mmSignedUsers m = pure Signer2
-      | otherwise = QC.elements [Signer1, Signer2] -- Both signed, pick any
+      | otherwise = QC.elements [Signer1, Signer2]
+    pickSignedSigner m
+      | walletPkhBytes Wallet.w1 `elem` mmSignedUsers m = pure Signer1
+      | walletPkhBytes Wallet.w2 `elem` mmSignedUsers m = pure Signer2
+      | otherwise = QC.elements [Signer1, Signer2]
 
   precondition model InitMultisig = not (mmInitialized model) && not (mmHasBeenUsed model)
   precondition model (SignMultisig sc) =
-    mmInitialized model && walletPkhBytes (signerToWallet sc) `notElem` mmSignedUsers model
+    mmInitialized model && walletPkhBytes (signerToWallet sc) `notElem` mmSignedUsers model && not (mmHasBeenUsed model)
   precondition model UseMultisig =
-    mmInitialized model && not (null (mmSignedUsers model))
+    mmInitialized model && not (null (mmSignedUsers model)) && not (mmHasBeenUsed model)
 
   nextState model action = case action of
     InitMultisig ->
@@ -937,10 +939,11 @@ instance TestingInterface MultisigModel where
         [] -> fail "No UTxO found at multisig script address"
         ((txIn, value, datum) : _) -> do
           let txBody = execBuildTx $ signMultisig @C.ConwayEra Defaults.networkId txIn datum value w
-          -- NOTE: Using w1 for ALL transaction submissions because the threat model
-          -- re-balancer uses w1 for re-signing and expects a change output to w1's address.
-          -- The signer w is still added as a required signature by signMultisig.
-          runExceptT (balanceAndSubmit mempty Wallet.w1 txBody TrailingChange []) >>= \case
+              -- If signer is not w1, we need to provide their witness since w1 is used for balancing
+              additionalWitnesses = case sc of
+                Signer1 -> []
+                Signer2 -> [C.WitnessPaymentKey (getWallet w)]
+          runExceptT (balanceAndSubmit mempty Wallet.w1 txBody TrailingChange additionalWitnesses) >>= \case
             Left err -> fail $ "Failed to sign multisig: " ++ show err
             Right _ -> pure ()
     UseMultisig -> do
@@ -949,16 +952,14 @@ instance TestingInterface MultisigModel where
         [] -> fail "No UTxO found at multisig script address for use"
         ((txIn, _, datum) : _) -> do
           -- Use the first signed user to sign the Use transaction
-          let signer =
-                if walletPkhBytes Wallet.w1 `elem` mdSignedUsers datum
-                  then Wallet.w1
-                  else Wallet.w2
+          let w1IsSigner = walletPkhBytes Wallet.w1 `elem` mdSignedUsers datum
+              signer = if w1IsSigner then Wallet.w1 else Wallet.w2
               beneficiaryAddr = addressInEra Defaults.networkId Wallet.w1
               releaseVal = fromInteger (mdReleaseValue datum) :: C.Lovelace
               txBody = execBuildTx $ useMultisig @C.ConwayEra txIn beneficiaryAddr releaseVal signer
-          -- NOTE: Using w1 for ALL transaction submissions because the threat model
-          -- re-balancer uses w1 for re-signing and expects a change output to w1's address.
-          runExceptT (balanceAndSubmit mempty Wallet.w1 txBody TrailingChange []) >>= \case
+              -- If signer is not w1, we need to provide their witness since w1 is used for balancing
+              additionalWitnesses = if w1IsSigner then [] else [C.WitnessPaymentKey (getWallet signer)]
+          runExceptT (balanceAndSubmit mempty Wallet.w1 txBody TrailingChange additionalWitnesses) >>= \case
             Left err -> fail $ "Failed to use multisig: " ++ show err
             Right _ -> pure ()
 

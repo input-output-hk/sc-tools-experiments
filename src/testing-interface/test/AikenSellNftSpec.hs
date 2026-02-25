@@ -50,10 +50,11 @@ import Convex.CoinSelection (BalanceTxError, ChangeOutputPosition (TrailingChang
 import Convex.MockChain (fromLedgerUTxO, runMockchain0IOWith)
 import Convex.MockChain.CoinSelection (balanceAndSubmit, tryBalanceAndSubmit)
 import Convex.MockChain.Defaults qualified as Defaults
-import Convex.MockChain.Utils (Options (Options, params), mockchainSucceeds)
+import Convex.MockChain.Utils (mockchainSucceeds)
 import Convex.NodeParams (ledgerProtocolParameters)
 import Convex.PlutusLedger.V1 (transAddressInEra)
 import Convex.TestingInterface (
+  Options (Options, params),
   RunOptions (mcOptions),
   TestingInterface (..),
   propRunActionsWithOptions,
@@ -473,13 +474,19 @@ instance TestingInterface SellNftModel where
       , smInitialized = False
       }
 
-  -- Generate actions: ListNft or BuySingle based on state
+  -- Generate actions: all types in every state (weighted)
+  -- Precondition filters invalid ones; this enables negative testing
   arbitraryAction model
-    | null (smListings model) = ListNft <$> genPrice
+    | null (smListings model) =
+        QC.frequency
+          [ (9, ListNft <$> genPrice)
+          , (1, BuySingle <$> QC.choose (0, 5)) -- Invalid: no listings
+          ]
     | otherwise =
         QC.frequency
           [ (3, ListNft <$> genPrice)
-          , (7, BuySingle <$> QC.choose (0, length (smListings model) - 1))
+          , (6, BuySingle <$> QC.choose (0, length (smListings model) - 1))
+          , (1, BuySingle <$> QC.choose (length (smListings model), length (smListings model) + 5)) -- Invalid: out of bounds
           ]
    where
     genPrice = fromInteger <$> QC.choose (5_000_000, 20_000_000)
