@@ -68,7 +68,10 @@ import Convex.TestingInterface (
   propRunActionsWithOptions,
  )
 import Convex.ThreatModel.Cardano.Api (dummyTxId)
+import Convex.ThreatModel.MutualExclusion (mutualExclusionAttack)
+import Convex.ThreatModel.NegativeInteger (negativeIntegerAttack)
 import Convex.ThreatModel.UnprotectedScriptOutput (unprotectedScriptOutput)
+import Convex.ThreatModel.ValueUnderpayment (valueUnderpaymentAttack)
 import Convex.Utils (failOnError)
 import Convex.Wallet (Wallet, addressInEra, verificationKeyHash)
 import Convex.Wallet.MockWallet qualified as Wallet
@@ -990,7 +993,7 @@ instance TestingInterface BankModel where
 
   monitoring _state _action prop = prop
 
-  threatModels = [unprotectedScriptOutput]
+  threatModels = [unprotectedScriptOutput, negativeIntegerAttack, valueUnderpaymentAttack, mutualExclusionAttack]
 
 -- ----------------------------------------------------------------------------
 -- Test tree

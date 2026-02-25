@@ -46,12 +46,21 @@ library
     Convex.ThreatModel.Cardano.Api
     Convex.ThreatModel.DatumBloat
     Convex.ThreatModel.DoubleSatisfaction
+    Convex.ThreatModel.DuplicateListEntry
+    Convex.ThreatModel.InputDuplication
     Convex.ThreatModel.LargeData
     Convex.ThreatModel.LargeValue
+    Convex.ThreatModel.MutualExclusion
+    Convex.ThreatModel.NegativeInteger
     Convex.ThreatModel.Pretty
+    Convex.ThreatModel.RedeemerAssetSubstitution
+    Convex.ThreatModel.SelfReferenceInjection
+    Convex.ThreatModel.SignatoryRemoval
     Convex.ThreatModel.TimeBoundManipulation
+    Convex.ThreatModel.TokenForgery
     Convex.ThreatModel.TxModifier
     Convex.ThreatModel.UnprotectedScriptOutput
+    Convex.ThreatModel.ValueUnderpayment
 
   hs-source-dirs:  lib
   build-depends:

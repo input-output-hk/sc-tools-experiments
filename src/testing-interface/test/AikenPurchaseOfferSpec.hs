@@ -42,6 +42,7 @@ module AikenPurchaseOfferSpec (
 
   -- * Standalone threat model tests
   propPurchaseOfferVulnerableToRedeemerManipulation,
+  propPurchaseOfferVulnerableToRedeemerSubstitution,
 ) where
 
 import Cardano.Api qualified as C
@@ -53,6 +54,7 @@ import Convex.Aiken.Blueprint qualified as Blueprint
 import Convex.BuildTx (MonadBuildTx, execBuildTx, setMinAdaDepositAll)
 import Convex.BuildTx qualified as BuildTx
 import Convex.Class (MonadMockchain, getUtxo)
+import Convex.Class qualified
 import Convex.CoinSelection (BalanceTxError, ChangeOutputPosition (TrailingChange))
 import Convex.MockChain (fromLedgerUTxO, runMockchain0IOWith)
 import Convex.MockChain.CoinSelection (balanceAndSubmit, tryBalanceAndSubmit)
@@ -64,13 +66,16 @@ import Convex.TestingInterface (
   TestingInterface (..),
   propRunActionsWithOptions,
  )
+import Convex.ThreatModel (ThreatModelEnv (..), runThreatModelM)
 import Convex.ThreatModel.Cardano.Api (dummyTxId)
+import Convex.ThreatModel.RedeemerAssetSubstitution (redeemerAssetSubstitution)
 import Convex.Utils (failOnError)
 import Convex.Wallet (Wallet, addressInEra)
 import Convex.Wallet.MockWallet qualified as Wallet
 import Data.ByteString qualified as BS
 import Data.Map qualified as Map
 import Data.Maybe (mapMaybe)
+import GHC.Exts (fromList)
 
 import Paths_convex_testing_interface qualified as Pkg
 import PlutusLedgerApi.V1 qualified as PV1
@@ -214,7 +219,7 @@ mintTokensToWallet
   -> m ()
 mintTokensToWallet destAddr tokenName = do
   BuildTx.mintPlutus mintingScript () tokenName 1
-  let nftValue = C.valueFromList [(C.AssetId testPolicyId tokenName, 1)]
+  let nftValue = fromList [(C.AssetId testPolicyId tokenName, 1)]
   BuildTx.payToAddress destAddr nftValue
   setMinAdaDepositAll Defaults.bundledProtocolParameters
 
@@ -302,7 +307,7 @@ fulfillOffer txIn ownerAddr soldPolicyIdBs tokenName = do
   BuildTx.addInputWithTxBody txIn witness
   -- Pay the NFT to the owner (along with min ADA)
   -- Coin selection will find the token from the seller's wallet
-  let nftValue = C.valueFromList [(C.AssetId testPolicyId tokenName, 1)]
+  let nftValue = fromList [(C.AssetId testPolicyId tokenName, 1)]
   BuildTx.payToAddress ownerAddr nftValue
   setMinAdaDepositAll Defaults.bundledProtocolParameters
 
@@ -596,6 +601,52 @@ propPurchaseOfferVulnerableToRedeemerManipulation opts = monadicIO $ do
       -- The exploit transaction SUCCEEDED - vulnerability confirmed!
       pure $ QC.property True
 
+{- | Test that the purchase_offer contract is vulnerable to redeemer asset substitution.
+
+This test uses the generic `redeemerAssetSubstitution` threat model to detect
+contracts that trust redeemer-provided asset references without validation.
+
+The test:
+1. Creates a vulnerable offer (desired_token_name = None)
+2. Captures a valid fulfillment transaction
+3. Runs the `redeemerAssetSubstitution` threat model against it
+4. Expects the threat model to FAIL (wrapped with expectFailure)
+
+Because the contract is vulnerable, modifying the redeemer's ByteString fields
+(the token name) will still allow the transaction to validate - the threat model
+will not reject it as it should. This is wrapped with `expectFailure` because
+we EXPECT the vulnerable contract to be detected.
+-}
+propPurchaseOfferVulnerableToRedeemerSubstitution :: RunOptions -> Property
+propPurchaseOfferVulnerableToRedeemerSubstitution opts = QC.expectFailure $ monadicIO $ do
+  let Options{params} = mcOptions opts
+
+  -- Run the scenario and threat model INSIDE MockchainT
+  result <- run $ runMockchain0IOWith Wallet.initialUTxOs params $ runExceptT $ do
+    -- Set up the scenario and get the fulfill transaction
+    (fulfillTx, utxoBefore) <- purchaseOfferScenario
+
+    -- Create threat model environment from the captured transaction
+    pparams <- Convex.Class.queryProtocolParameters
+    let threatEnv =
+          ThreatModelEnv
+            { currentTx = fulfillTx
+            , currentUTxOs = utxoBefore
+            , pparams = pparams
+            }
+
+    -- Run the redeemerAssetSubstitution threat model
+    -- This should fail for a secure contract, but will pass for vulnerable ones
+    runThreatModelM Wallet.w2 redeemerAssetSubstitution [threatEnv]
+
+  case result of
+    (Left err, _) -> do
+      monitor (counterexample $ "Mockchain error: " ++ show err)
+      pure $ QC.property False
+    (Right prop, _) ->
+      -- Return the property from the threat model
+      pure prop
+
 -- ----------------------------------------------------------------------------
 -- TestingInterface instance
 -- ----------------------------------------------------------------------------
@@ -739,5 +790,8 @@ aikenPurchaseOfferTests runOpts =
         , testProperty
             "redeemer-controlled asset vulnerability confirmed"
             (propPurchaseOfferVulnerableToRedeemerManipulation runOpts)
+        , testProperty
+            "redeemer asset substitution threat model detects vulnerability (expectFailure)"
+            (propPurchaseOfferVulnerableToRedeemerSubstitution runOpts)
         ]
     ]
