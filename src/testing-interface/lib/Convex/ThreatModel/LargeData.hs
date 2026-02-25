@@ -90,35 +90,36 @@ largeDataAttackWith n = do
   target <- pickAny scriptOutputsWithDatum
 
   -- Extract the inline datum (we know it exists due to the filter)
-  case getInlineDatum target of
-    Nothing -> fail "Expected inline datum but found none"
-    Just originalDatum -> do
-      let bloatedDatum = bloatData n originalDatum
+  originalDatum <- case getInlineDatum target of
+    Nothing -> failPrecondition "Script output missing inline datum"
+    Just originalDatum' -> pure originalDatum'
 
-      counterexampleTM $
-        paragraph
-          [ "The transaction contains a script output at index"
-          , show (outputIx target)
-          , "with an inline datum."
-          ]
+  let bloatedDatum = bloatData n originalDatum
 
-      counterexampleTM $
-        paragraph
-          [ "Testing if the datum can be bloated with"
-          , show n
-          , "extra fields while still passing validation."
-          ]
+  counterexampleTM $
+    paragraph
+      [ "The transaction contains a script output at index"
+      , show (outputIx target)
+      , "with an inline datum."
+      ]
 
-      counterexampleTM $
-        paragraph
-          [ "If this validates, the script's FromData parser is permissive"
-          , "and ignores extra Constr fields. An attacker could exploit this"
-          , "to make a single datum satisfy multiple validators,"
-          , "or to bypass certain datum-based checks."
-          ]
+  counterexampleTM $
+    paragraph
+      [ "Testing if the datum can be bloated with"
+      , show n
+      , "extra fields while still passing validation."
+      ]
 
-      -- Try to validate with the bloated datum
-      shouldNotValidate $ changeDatumOf target (toInlineDatum bloatedDatum)
+  counterexampleTM $
+    paragraph
+      [ "If this validates, the script's FromData parser is permissive"
+      , "and ignores extra Constr fields. An attacker could exploit this"
+      , "to make a single datum satisfy multiple validators,"
+      , "or to bypass certain datum-based checks."
+      ]
+
+  -- Try to validate with the bloated datum
+  shouldNotValidate $ changeDatumOf target (toInlineDatum bloatedDatum)
 
 {- | Bloat a @ScriptData@ value by appending extra fields to a @Constr@.
 

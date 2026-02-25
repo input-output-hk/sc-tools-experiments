@@ -57,6 +57,7 @@ module AikenMultisigTreasuryV2Spec (
 
   -- * Standalone threat model tests
   propMultisigV2TokenForgeryExploit,
+  propMultisigV2TokenForgeryThreatModel,
 ) where
 
 import Cardano.Api qualified as C
@@ -85,6 +86,7 @@ import Convex.TestingInterface (
 import Convex.ThreatModel (ThreatModelEnv (..), runThreatModelM)
 import Convex.ThreatModel.Cardano.Api (dummyTxId)
 
+import Convex.ThreatModel.TokenForgery (tokenForgeryAttackV3)
 import Convex.ThreatModel.UnprotectedScriptOutput (unprotectedScriptOutput)
 import Convex.Utils (failOnError)
 import Convex.Wallet (Wallet, addressInEra, verificationKeyHash)
@@ -687,6 +689,48 @@ propMultisigV2UnprotectedOutput opts = QC.expectFailure $ monadicIO $ do
       monitor (counterexample "Testing multisig v2 for unprotected script output vulnerability")
       pure prop
 
+{- | Test tokenForgeryAttackV3 threat model on the multisig v2.
+
+The V2 minting policy only checks that SOMEONE signed the transaction:
+@list.length(self.extra_signatories) > 0@
+
+This means any signed transaction can mint additional validation tokens.
+The threat model should detect this by trying to mint extra tokens with
+the same minting policy.
+
+This test uses expectFailure because the contract IS vulnerable - the
+threat model's shouldNotValidate will fail (i.e., the extra minting
+will succeed), causing the test to fail normally. We expect this failure.
+-}
+propMultisigV2TokenForgeryThreatModel :: RunOptions -> Property
+propMultisigV2TokenForgeryThreatModel opts = QC.expectFailure $ monadicIO $ do
+  let Options{params} = mcOptions opts
+
+  result <- run $ runMockchain0IOWith Wallet.initialUTxOs params $ runExceptT $ do
+    -- Use the same scenario that creates a Sign transaction
+    -- This transaction already has minting (the validation token)
+    (tx, utxo) <- multisigV2ContinuationScenario
+
+    let pparams' = params ^. ledgerProtocolParameters
+        env =
+          ThreatModelEnv
+            { currentTx = tx
+            , currentUTxOs = utxo
+            , pparams = pparams'
+            }
+
+    -- Run the token forgery threat model
+    -- It will try to mint extra tokens using the V2 minting policy
+    lift $ runThreatModelM Wallet.w1 (tokenForgeryAttackV3 multisigV2MintScript validationTokenName) [env]
+
+  case result of
+    (Left err, _) -> do
+      monitor (counterexample $ "Mockchain error: " ++ show err)
+      pure $ QC.property False
+    (Right prop, _finalState) -> do
+      monitor (counterexample "Testing multisig v2 for token forgery vulnerability via threat model")
+      pure prop
+
 -- ----------------------------------------------------------------------------
 -- TestingInterface instance
 -- ----------------------------------------------------------------------------
@@ -913,5 +957,8 @@ aikenMultisigTreasuryV2Tests runOpts =
         , testProperty
             "vulnerable to unprotected script output (expectFailure)"
             (propMultisigV2UnprotectedOutput runOpts)
+        , testProperty
+            "vulnerable to token forgery threat model (expectFailure)"
+            (propMultisigV2TokenForgeryThreatModel runOpts)
         ]
     ]

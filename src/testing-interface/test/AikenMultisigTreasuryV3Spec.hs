@@ -56,6 +56,7 @@ module AikenMultisigTreasuryV3Spec (
 
   -- * Standalone threat model tests
   propMultisigV3SignReplayExploit,
+  propMultisigV3VulnerableToDuplicateListEntry,
 ) where
 
 import Cardano.Api qualified as C
@@ -84,6 +85,7 @@ import Convex.TestingInterface (
 import Convex.ThreatModel (ThreatModelEnv (..), runThreatModelM)
 import Convex.ThreatModel.Cardano.Api (dummyTxId)
 
+import Convex.ThreatModel.DuplicateListEntry (duplicateListEntryAttack)
 import Convex.ThreatModel.UnprotectedScriptOutput (unprotectedScriptOutput)
 import Convex.Utils (failOnError)
 import Convex.Wallet (Wallet, addressInEra, verificationKeyHash)
@@ -705,6 +707,48 @@ propMultisigV3UnprotectedOutput opts = QC.expectFailure $ monadicIO $ do
       monitor (counterexample "Testing multisig v3 for unprotected script output vulnerability")
       pure prop
 
+{- | Test that the multisig v3 contract is vulnerable to duplicate list entry attack.
+
+The Sign action creates a continuation output with @signed_users = [signer_pkh]@.
+The validator doesn't check for duplicate entries in this list.
+
+An attacker can:
+1. Intercept a valid Sign transaction
+2. Duplicate the first entry in @signed_users@ to fill multiple signature slots
+3. The validator only checks length, not uniqueness
+
+This test uses expectFailure because the vulnerability SHOULD be detected
+(the modified transaction should NOT validate, but it does).
+-}
+propMultisigV3VulnerableToDuplicateListEntry :: RunOptions -> Property
+propMultisigV3VulnerableToDuplicateListEntry opts = QC.expectFailure $ monadicIO $ do
+  let Options{params} = mcOptions opts
+
+  result <- run $ runMockchain0IOWith Wallet.initialUTxOs params $ runExceptT $ do
+    -- Create a Sign transaction (w1 signs, creating continuation with signed_users = [w1_pkh])
+    (tx, utxo) <- multisigV3ContinuationScenario
+
+    let pparams' = params ^. ledgerProtocolParameters
+        env =
+          ThreatModelEnv
+            { currentTx = tx
+            , currentUTxOs = utxo
+            , pparams = pparams'
+            }
+
+    -- Run the duplicate list entry threat model
+    -- This will try to duplicate the first entry in signed_users
+    -- If the validator is vulnerable, the modified tx will still validate
+    lift $ runThreatModelM Wallet.w1 duplicateListEntryAttack [env]
+
+  case result of
+    (Left err, _) -> do
+      monitor (counterexample $ "Mockchain error: " ++ show err)
+      pure $ QC.property False
+    (Right prop, _finalState) -> do
+      monitor (counterexample "Testing multisig v3 for duplicate list entry vulnerability")
+      pure prop
+
 -- ----------------------------------------------------------------------------
 -- TestingInterface instance
 -- ----------------------------------------------------------------------------
@@ -954,5 +998,8 @@ aikenMultisigTreasuryV3Tests runOpts =
         , testProperty
             "vulnerable to unprotected script output (expectFailure)"
             (propMultisigV3UnprotectedOutput runOpts)
+        , testProperty
+            "vulnerable to duplicate list entry (expectFailure)"
+            (propMultisigV3VulnerableToDuplicateListEntry runOpts)
         ]
     ]

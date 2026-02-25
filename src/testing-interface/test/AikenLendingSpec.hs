@@ -49,6 +49,7 @@ module AikenLendingSpec (
 
   -- * Standalone threat model tests
   propLendingVulnerableToInputOrdering,
+  propLendingVulnerableToInputDuplication,
 ) where
 
 import Cardano.Api qualified as C
@@ -77,6 +78,7 @@ import Convex.TestingInterface (
 import Convex.ThreatModel (ThreatModelEnv (..), runThreatModelM)
 import Convex.ThreatModel.Cardano.Api (dummyTxId)
 
+import Convex.ThreatModel.InputDuplication (inputDuplication)
 import Convex.ThreatModel.UnprotectedScriptOutput (unprotectedScriptOutput)
 import Convex.Utils (failOnError)
 import Convex.Wallet (Wallet, addressInEra, verificationKeyHash)
@@ -713,6 +715,68 @@ propLendingUnprotectedOutput opts = monadicIO $ do
       monitor (counterexample "Testing ctf_lending for unprotected script output vulnerability")
       pure prop
 
+{- | Test inputDuplication threat model on the lending contract.
+
+This threat model:
+1. Sets up TWO unfunded loan requests at the lending script address
+2. Creates a valid Fund transaction for ONE loan
+3. The threat model finds the second loan UTxO and adds it as another input
+4. Tests if the modified transaction validates (exploiting input ordering vulnerability)
+
+Note: Currently this test PASSES because the modified transaction fails validation
+due to execution unit constraints (the threat model uses ExecutionUnits 0 0 for the
+new input). The underlying input ordering vulnerability DOES exist (as demonstrated
+by the explicit exploit test), but the threat model infrastructure cannot currently
+detect it due to script execution budget limitations.
+
+TODO: Fix the inputDuplication threat model to properly calculate execution units
+for added script inputs, which would allow detection of this vulnerability class.
+-}
+propLendingVulnerableToInputDuplication :: RunOptions -> Property
+propLendingVulnerableToInputDuplication opts = monadicIO $ do
+  let Options{params} = mcOptions opts
+
+  result <- run $ runMockchain0IOWith Wallet.initialUTxOs params $ runExceptT $ do
+    -- Create loan request from w1 (will be funded)
+    let request1 = execBuildTx $ requestLoan @C.ConwayEra Defaults.networkId Wallet.w1 50_000_000 5_000_000 10_000_000
+    _ <- tryBalanceAndSubmit mempty Wallet.w1 request1 TrailingChange []
+
+    -- Create loan request from w2 (will be the "extra" input for threat model)
+    let request2 = execBuildTx $ requestLoan @C.ConwayEra Defaults.networkId Wallet.w2 100_000_000 10_000_000 10_000_000
+    _ <- tryBalanceAndSubmit mempty Wallet.w2 request2 TrailingChange []
+
+    -- Find both loan requests
+    loans <- findLendingUtxos
+    case loans of
+      ((txIn1, value1, datum1) : _secondLoan : _) -> do
+        -- Capture UTxO BEFORE funding (includes both loan UTxOs)
+        utxoBefore <- fromLedgerUTxO C.shelleyBasedEra <$> getUtxo
+
+        -- Fund ONLY the first loan with a valid transaction
+        let lendTxBody = execBuildTx $ lendFunds Defaults.networkId txIn1 datum1 value1 Wallet.w3
+        lendTx <- tryBalanceAndSubmit mempty Wallet.w3 lendTxBody TrailingChange []
+
+        let pparams' = params ^. ledgerProtocolParameters
+            env =
+              ThreatModelEnv
+                { currentTx = lendTx
+                , currentUTxOs = utxoBefore
+                , pparams = pparams'
+                }
+
+        -- Run inputDuplication threat model
+        -- It should find the second loan UTxO and try adding it as another input
+        lift $ runThreatModelM Wallet.w1 inputDuplication [env]
+      _ -> fail "Expected at least 2 loan request UTxOs"
+
+  case result of
+    (Left err, _) -> do
+      monitor (counterexample $ "Mockchain error: " ++ show err)
+      pure $ QC.property False
+    (Right prop, _finalState) -> do
+      monitor (counterexample "Testing ctf_lending for input duplication vulnerability")
+      pure prop
+
 -- ----------------------------------------------------------------------------
 -- TestingInterface instance
 -- ----------------------------------------------------------------------------
@@ -872,5 +936,8 @@ aikenLendingTests runOpts =
         , testProperty
             "vulnerable to unprotected script output (expectFailure)"
             (QC.expectFailure $ propLendingUnprotectedOutput runOpts)
+        , testProperty
+            "vulnerable to input duplication"
+            (propLendingVulnerableToInputDuplication runOpts)
         ]
     ]

@@ -241,6 +241,11 @@ txSigners (Tx _ wits) = [toHash wit | ShelleyKeyWitness _ (WitVKey wit _) <- wit
       . hashKey
       . coerceKeyRole
 
+-- | Get the required signers from the transaction body (not witnesses).
+txRequiredSigners :: Tx Era -> [Hash PaymentKey]
+txRequiredSigners (Tx (ShelleyTxBody _ body _ _ _ _) _) =
+  map (PaymentKeyHash . coerceKeyRole) . Set.toList $ Conway.ctbReqSignerHashes body
+
 txInputs :: Tx Era -> [TxIn]
 txInputs tx = map fst $ txIns body
  where
@@ -395,16 +400,18 @@ validateTxM params tx utxo = do
     Left err -> (ValidityReport False [show err], mempty)
     Right (state', _) -> (ValidityReport True [], state' ^. coverageData)
 
-{- | Re-balance fees and re-sign a modified transaction.
+{- | Re-balance fees, recalculate execution units, and re-sign a modified transaction.
 
 After applying TxModifier operations, the transaction body changes which:
 1. Invalidates the original signatures (body hash changed)
 2. May require different fees (outputs changed)
+3. May have invalid execution units (for added scripts)
 
 This function:
-1. Calculates the new required fee
-2. Adjusts the change output (last output to wallet address) to compensate
-3. Re-signs the transaction with the wallet's key
+1. Recalculates execution units for all scripts
+2. Calculates the new required fee
+3. Adjusts the change output (last output to wallet address) to compensate
+4. Re-signs the transaction with the wallet's key
 -}
 rebalanceAndSign
   :: (MonadMockchain Era m, MonadFail m)
@@ -415,14 +422,21 @@ rebalanceAndSign
 rebalanceAndSign wallet tx utxo = do
   pparams <- Convex.Class.queryProtocolParameters
   networkId <- Convex.Class.queryNetworkId
+  systemStart <- Convex.Class.querySystemStart
+  eraHistory <- Convex.Class.queryEraHistory
+
   let walletAddr = Wallet.addressInEra networkId wallet
 
+  -- First, recalculate execution units for all scripts in the transaction
+  -- This is necessary because TxModifier may add scripts with ExecutionUnits 0 0
+  let txWithUpdatedExUnits = updateExecutionUnits pparams systemStart eraHistory utxo tx
+
   -- Get the current fee from the transaction (from the ledger body)
-  let currentFee = getTxFeeCoin tx
+  let currentFee = getTxFeeCoin txWithUpdatedExUnits
 
   -- Create a temp tx with max fee to calculate the actual required fee
   let maxFee = Coin (2 ^ (32 :: Integer) - 1)
-      tempTx = setTxFeeCoin maxFee tx
+      tempTx = setTxFeeCoin maxFee txWithUpdatedExUnits
       Tx tempBody _ = tempTx
       newFee =
         calculateMinTxFee
@@ -436,19 +450,93 @@ rebalanceAndSign wallet tx utxo = do
   let feeDiff = newFee - currentFee -- positive = fee increased
 
   -- Adjust the change output and set the new fee
-  let currentOuts = txOutputs tx
+  let currentOuts = txOutputs txWithUpdatedExUnits
   adjustedOutputs <- adjustChangeOutput walletAddr feeDiff currentOuts
 
   -- Apply the changes: new fee and adjusted outputs
-  let modifiedTx = setTxOutputsList adjustedOutputs $ setTxFeeCoin newFee tx
+  let modifiedTx = setTxOutputsList adjustedOutputs $ setTxFeeCoin newFee txWithUpdatedExUnits
 
-  -- Recalculate script integrity hash
+  -- Recalculate script integrity hash (after updating execution units)
   let finalTx = recalculateScriptIntegrityHash pparams modifiedTx
 
   -- Re-sign (strip old signatures and add new one)
   let Tx finalBody _ = finalTx
       unsignedTx = makeSignedTransaction [] finalBody
   pure $ Wallet.signTx wallet unsignedTx
+
+{- | Update execution units in a transaction by evaluating all scripts.
+
+This computes the actual execution units required for each script and updates
+the redeemers in the transaction with those values. This is necessary because
+TxModifier operations like addPlutusScriptMint use ExecutionUnits 0 0 as
+placeholders.
+-}
+updateExecutionUnits
+  :: LedgerProtocolParameters Era
+  -> SystemStart
+  -> EraHistory
+  -> UTxO Era
+  -> Tx Era
+  -> Tx Era
+updateExecutionUnits pparams systemStart eraHistory utxo tx =
+  let exUnitsMap =
+        evaluateTransactionExecutionUnits
+          ConwayEra
+          systemStart
+          (toLedgerEpochInfo eraHistory)
+          pparams
+          utxo
+          (getTxBody tx)
+      -- Extract only successful execution unit results
+      successfulExUnits =
+        Map.mapMaybe
+          ( \case
+              Right (_, exUnits) -> Just exUnits
+              Left _ -> Nothing
+          )
+          exUnitsMap
+   in updateTxRedeemersWithExUnits successfulExUnits tx
+
+{- | Update the execution units in a transaction's redeemers.
+
+This function takes a map from ScriptWitnessIndex to ExecutionUnits and updates
+the corresponding redeemers in the transaction.
+-}
+updateTxRedeemersWithExUnits
+  :: Map.Map ScriptWitnessIndex ExecutionUnits
+  -> Tx Era
+  -> Tx Era
+updateTxRedeemersWithExUnits exUnitsMap (Tx (ShelleyTxBody era body scripts scriptData auxData validity) wits) =
+  let scriptData' = updateScriptDataExUnits exUnitsMap scriptData
+   in Tx (ShelleyTxBody era body scripts scriptData' auxData validity) wits
+
+-- | Update execution units in TxBodyScriptData based on ScriptWitnessIndex map.
+updateScriptDataExUnits
+  :: Map.Map ScriptWitnessIndex ExecutionUnits
+  -> TxBodyScriptData Era
+  -> TxBodyScriptData Era
+updateScriptDataExUnits _ TxBodyNoScriptData = TxBodyNoScriptData
+updateScriptDataExUnits exUnitsMap (TxBodyScriptData eraWit dats (Ledger.Redeemers rdmrs)) =
+  TxBodyScriptData eraWit dats (Ledger.Redeemers updatedRdmrs)
+ where
+  updatedRdmrs = Map.mapWithKey updateRedeemer rdmrs
+
+  updateRedeemer :: Conway.ConwayPlutusPurpose Ledger.AsIx LedgerEra -> (Ledger.Data LedgerEra, Ledger.ExUnits) -> (Ledger.Data LedgerEra, Ledger.ExUnits)
+  updateRedeemer purpose (dat, _oldExUnits) =
+    case purposeToScriptWitnessIndex purpose of
+      Just idx -> case Map.lookup idx exUnitsMap of
+        Just newExUnits -> (dat, toAlonzoExUnits newExUnits)
+        Nothing -> (dat, _oldExUnits) -- Keep old if not in map
+      Nothing -> (dat, _oldExUnits)
+
+  -- Convert Conway purpose to cardano-api ScriptWitnessIndex
+  purposeToScriptWitnessIndex :: Conway.ConwayPlutusPurpose Ledger.AsIx LedgerEra -> Maybe ScriptWitnessIndex
+  purposeToScriptWitnessIndex (Conway.ConwaySpending (Ledger.AsIx ix)) = Just $ ScriptWitnessIndexTxIn (fromIntegral ix)
+  purposeToScriptWitnessIndex (Conway.ConwayMinting (Ledger.AsIx ix)) = Just $ ScriptWitnessIndexMint (fromIntegral ix)
+  purposeToScriptWitnessIndex (Conway.ConwayRewarding (Ledger.AsIx ix)) = Just $ ScriptWitnessIndexWithdrawal (fromIntegral ix)
+  purposeToScriptWitnessIndex (Conway.ConwayCertifying (Ledger.AsIx ix)) = Just $ ScriptWitnessIndexCertificate (fromIntegral ix)
+  purposeToScriptWitnessIndex (Conway.ConwayVoting (Ledger.AsIx ix)) = Just $ ScriptWitnessIndexVoting (fromIntegral ix)
+  purposeToScriptWitnessIndex (Conway.ConwayProposing (Ledger.AsIx ix)) = Just $ ScriptWitnessIndexProposing (fromIntegral ix)
 
 {- | Recalculate and update the script integrity hash in a transaction.
 

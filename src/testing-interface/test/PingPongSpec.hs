@@ -77,6 +77,7 @@ import Convex.ThreatModel.UnprotectedScriptOutput (unprotectedScriptOutput)
 import Convex.Utils (failOnError)
 import Convex.Wallet.MockWallet qualified as Wallet
 import Data.Map qualified as Map
+import PingPongCoverageSpec (pingPongCoverageTests)
 import PlutusTx.Builtins (dataToBuiltinData)
 import PlutusTx.IsData.Class (UnsafeFromData (unsafeFromBuiltinData))
 import Scripts qualified
@@ -680,4 +681,5 @@ pingPongTests opts runOpts =
     , testProperty
         "PingPong VULNERABLE to large value attack"
         (propPingPongVulnerableToLargeValue runOpts)
+    , pingPongCoverageTests opts
     ]
