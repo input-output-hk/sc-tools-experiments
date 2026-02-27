@@ -42,6 +42,7 @@ import Convex.TestingInterface (
 import Convex.ThreatModel (
   ThreatModelEnv (..),
   runThreatModelM,
+  runThreatModelMQuiet,
  )
 import Convex.ThreatModel.DoubleSatisfaction (doubleSatisfaction)
 import Convex.Wallet (addressInEra, verificationKeyHash)
@@ -106,15 +107,14 @@ propBountyVulnerableToDoubleSatisfaction opts = QC.expectFailure $ monadicIO $ d
             }
 
     -- Run the threat model INSIDE MockchainT with full Phase 1 + Phase 2 validation
-    lift $ runThreatModelM Wallet.w1 doubleSatisfaction [env]
+    -- Use runThreatModelMQuiet to suppress verbose counterexample output
+    lift $ runThreatModelMQuiet Wallet.w1 doubleSatisfaction [env]
 
   case result of
     (Left err, _) -> do
       monitor (counterexample $ "Mockchain error: " ++ show err)
       pure $ QC.property False
-    (Right prop, _finalState) -> do
-      monitor (counterexample "Testing VULNERABLE bounty for double satisfaction vulnerability")
-      pure prop
+    (Right prop, _finalState) -> pure prop
  where
   bountyVulnerableScenario
     :: ( MonadMockchain C.ConwayEra m

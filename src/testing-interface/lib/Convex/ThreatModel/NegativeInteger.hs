@@ -63,7 +63,7 @@ negativeIntegerAttack  -- Negate all integers in the datum
 @
 -}
 negativeIntegerAttack :: ThreatModel ()
-negativeIntegerAttack = do
+negativeIntegerAttack = Named "Negative Integer Attack" $ do
   -- Get all outputs from the transaction
   outputs <- getTxOutputs
 

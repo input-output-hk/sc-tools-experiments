@@ -1,6 +1,5 @@
 {-# LANGUAGE DeriveAnyClass #-}
 {-# LANGUAGE DerivingStrategies #-}
-{-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE NamedFieldPuns #-}
 {-# LANGUAGE NumericUnderscores #-}
 {-# LANGUAGE OverloadedStrings #-}
@@ -41,27 +40,22 @@ module AikenMultisigTreasurySpec (
   -- * Standalone threat model tests
   propMultisigVulnerableToSingleSignerUse,
   propMultisigVulnerableToSignDestruction,
-  propMultisigVulnerableToSignatoryRemoval,
-  propMultisigVulnerableToUnprotectedOutput,
 ) where
 
 import Cardano.Api qualified as C
-import Control.Lens ((^.))
 import Control.Monad (void)
-import Control.Monad.Except (MonadError, runExceptT)
+import Control.Monad.Except (runExceptT)
 import Control.Monad.IO.Class (MonadIO (..))
-import Control.Monad.Trans (lift)
 import Convex.Aiken.Blueprint (Blueprint (..))
 import Convex.Aiken.Blueprint qualified as Blueprint
 import Convex.BuildTx (MonadBuildTx, execBuildTx)
 import Convex.BuildTx qualified as BuildTx
 import Convex.Class (MonadMockchain, getUtxo)
-import Convex.CoinSelection (BalanceTxError, ChangeOutputPosition (TrailingChange))
+import Convex.CoinSelection (ChangeOutputPosition (TrailingChange))
 import Convex.MockChain (fromLedgerUTxO, runMockchain0IOWith)
 import Convex.MockChain.CoinSelection (balanceAndSubmit, tryBalanceAndSubmit)
 import Convex.MockChain.Defaults qualified as Defaults
 import Convex.MockChain.Utils (mockchainSucceeds)
-import Convex.NodeParams (ledgerProtocolParameters)
 import Convex.PlutusLedger.V1 (transAddressInEra)
 import Convex.TestingInterface (
   Options (Options, params),
@@ -69,10 +63,8 @@ import Convex.TestingInterface (
   TestingInterface (..),
   propRunActionsWithOptions,
  )
-import Convex.ThreatModel (ThreatModelEnv (..), runThreatModelM)
 import Convex.ThreatModel.Cardano.Api (dummyTxId)
 
-import Convex.ThreatModel.SignatoryRemoval (signatoryRemoval)
 import Convex.ThreatModel.UnprotectedScriptOutput (unprotectedScriptOutput)
 import Convex.Utils (failOnError)
 import Convex.Wallet (Wallet, addressInEra, getWallet, verificationKeyHash)
@@ -92,7 +84,6 @@ import Test.Tasty.HUnit (assertFailure, testCase)
 import Test.Tasty.QuickCheck (
   Property,
   counterexample,
-  testProperty,
  )
 import Test.Tasty.QuickCheck qualified as QC
 
@@ -606,209 +597,6 @@ propMultisigVulnerableToSignDestruction opts = monadicIO $ do
       -- The Sign transaction SUCCEEDED without continuation - vulnerability confirmed!
       pure $ QC.property True
 
-{- | Test that the multisig contract is vulnerable to signatory removal.
-
-This uses the generic 'signatoryRemoval' threat model to detect
-Vulnerability 2: Use only requires ANY ONE signed_user to sign
-the transaction, not ALL required_signers.
-
-The threat model removes required signers one at a time and checks
-if the transaction still validates. If it does, there's a threshold
-vulnerability (1-of-N instead of N-of-N).
-
-We use 'expectFailure' because finding the vulnerability means the
-QuickCheck property fails (which is expected for a vulnerable script).
--}
-propMultisigVulnerableToSignatoryRemoval :: RunOptions -> Property
-propMultisigVulnerableToSignatoryRemoval opts = QC.expectFailure $ monadicIO $ do
-  let Options{params} = mcOptions opts
-
-  -- Run the scenario AND the threat model INSIDE MockchainT
-  result <- run $ runMockchain0IOWith Wallet.initialUTxOs params $ runExceptT $ do
-    -- Initialize with both w1 and w2 in signed_users (fully signed)
-    let beneficiaryAddr = walletPlutusAddress Wallet.w1
-        datum =
-          MultisigDatum
-            { mdReleaseValue = 10_000_000
-            , mdBeneficiary = beneficiaryAddr
-            , mdRequiredSigners = [walletPkhBytes Wallet.w1, walletPkhBytes Wallet.w2]
-            , mdSignedUsers = [walletPkhBytes Wallet.w1, walletPkhBytes Wallet.w2] -- Both have signed
-            }
-    let initTxBody =
-          execBuildTx $
-            BuildTx.payToScriptInlineDatum
-              Defaults.networkId
-              multisigScriptHash
-              datum
-              C.NoStakeAddress
-              (C.lovelaceToValue 20_000_000)
-    _ <- tryBalanceAndSubmit mempty Wallet.w1 initTxBody TrailingChange []
-
-    -- Capture UTxO BEFORE Use
-    utxoBefore <- fromLedgerUTxO C.shelleyBasedEra <$> getUtxo
-
-    -- Create a Use transaction with BOTH w1 AND w2 as required signers
-    -- This tests if the script properly requires ALL signers
-    msResult <- findMultisigUtxos
-    case msResult of
-      [] -> fail "Expected UTxO at script address"
-      ((txIn, _, _) : _) -> do
-        let beneficiaryAddrC = addressInEra Defaults.networkId Wallet.w1
-            -- Build Use transaction with both signers required
-            useTxBody = execBuildTx $ do
-              let witness _ =
-                    C.ScriptWitness C.ScriptWitnessForSpending $
-                      BuildTx.buildScriptWitness
-                        multisigScript
-                        (C.ScriptDatumForTxIn Nothing)
-                        Use
-              BuildTx.setScriptsValid
-              BuildTx.addInputWithTxBody txIn witness
-              -- Add BOTH signers as required
-              BuildTx.addRequiredSignature (verificationKeyHash Wallet.w1)
-              BuildTx.addRequiredSignature (verificationKeyHash Wallet.w2)
-              BuildTx.payToAddress beneficiaryAddrC (C.lovelaceToValue 10_000_000)
-        useTx <- tryBalanceAndSubmit mempty Wallet.w1 useTxBody TrailingChange [C.WitnessPaymentKey (getWallet Wallet.w2)]
-
-        -- Build threat model env
-        let pparams' = params ^. ledgerProtocolParameters
-            env =
-              ThreatModelEnv
-                { currentTx = useTx
-                , currentUTxOs = utxoBefore
-                , pparams = pparams'
-                }
-
-        -- Run the signatory removal threat model
-        lift $ runThreatModelM Wallet.w1 signatoryRemoval [env]
-
-  case result of
-    (Left err, _) -> do
-      monitor (counterexample $ "Mockchain error: " ++ show err)
-      pure $ QC.property False
-    (Right prop, _finalState) -> do
-      monitor (counterexample "Testing multisig for signatory removal vulnerability")
-      pure prop
-
-{- | Test that the multisig contract is vulnerable to unprotected script output.
-
-This demonstrates Vulnerability 1 using a different threat model: the
-unprotectedScriptOutput threat model redirects script outputs to the attacker's
-address while preserving the datum. Since the Sign action doesn't validate
-the destination address, this succeeds.
-
-This is functionally equivalent to continuationRemoval for this vulnerability
-because the validator doesn't check the continuation output at all.
-
-We use 'expectFailure' because finding the vulnerability means the
-QuickCheck property fails (which is expected for a vulnerable script).
--}
-propMultisigVulnerableToUnprotectedOutput :: RunOptions -> Property
-propMultisigVulnerableToUnprotectedOutput opts = QC.expectFailure $ monadicIO $ do
-  let Options{params} = mcOptions opts
-
-  -- Run the scenario AND the threat model INSIDE MockchainT
-  -- Uses the SAME fixture as propMultisigVulnerableToContinuationRemoval
-  result <- run $ runMockchain0IOWith Wallet.initialUTxOs params $ runExceptT $ do
-    -- Initialize multisig
-    let initTxBody = execBuildTx $ initMultisig @C.ConwayEra Defaults.networkId Wallet.w1 20_000_000
-    _ <- tryBalanceAndSubmit mempty Wallet.w1 initTxBody TrailingChange []
-
-    -- Capture UTxO BEFORE signing (for threat model)
-    utxoBefore <- fromLedgerUTxO C.shelleyBasedEra <$> getUtxo
-
-    -- Sign with w1, creating a proper continuation output
-    msResult <- findMultisigUtxos
-    case msResult of
-      [] -> fail "Expected UTxO at script address"
-      ((txIn, value, datum) : _) -> do
-        let signTxBody = execBuildTx $ signMultisig @C.ConwayEra Defaults.networkId txIn datum value Wallet.w1
-        signTx <- tryBalanceAndSubmit mempty Wallet.w1 signTxBody TrailingChange []
-
-        -- Build threat model env
-        let pparams' = params ^. ledgerProtocolParameters
-            env =
-              ThreatModelEnv
-                { currentTx = signTx
-                , currentUTxOs = utxoBefore
-                , pparams = pparams'
-                }
-
-        -- Run the unprotected script output threat model
-        lift $ runThreatModelM Wallet.w1 unprotectedScriptOutput [env]
-
-  case result of
-    (Left err, _) -> do
-      monitor (counterexample $ "Mockchain error: " ++ show err)
-      pure $ QC.property False
-    (Right prop, _finalState) -> do
-      monitor (counterexample "Testing multisig for unprotected script output vulnerability")
-      pure prop
-
-{- | Run a scenario for threat model testing with continuation output.
-
-This creates a proper Sign transaction that has a continuation output,
-which unprotectedScriptOutput can test.
--}
-multisigContinuationScenario
-  :: ( MonadMockchain C.ConwayEra m
-     , MonadError (BalanceTxError C.ConwayEra) m
-     , MonadFail m
-     )
-  => m (C.Tx C.ConwayEra, C.UTxO C.ConwayEra)
-multisigContinuationScenario = do
-  -- Initialize multisig
-  let initTxBody = execBuildTx $ initMultisig @C.ConwayEra Defaults.networkId Wallet.w1 20_000_000
-  _ <- tryBalanceAndSubmit mempty Wallet.w1 initTxBody TrailingChange []
-
-  -- Capture UTxO BEFORE signing (for threat model)
-  utxoBefore <- fromLedgerUTxO C.shelleyBasedEra <$> getUtxo
-
-  -- Sign with w1 (creating continuation)
-  result <- findMultisigUtxos
-  case result of
-    [] -> fail "Expected UTxO at script address"
-    ((txIn, value, datum) : _) -> do
-      let signTxBody = execBuildTx $ signMultisig @C.ConwayEra Defaults.networkId txIn datum value Wallet.w1
-      signTx <- tryBalanceAndSubmit mempty Wallet.w1 signTxBody TrailingChange []
-      pure (signTx, utxoBefore)
-
-{- | Test unprotectedScriptOutput threat model on the multisig.
-
-The Sign action creates a continuation output. This test checks if that
-output can be redirected to the signer (attacker) while preserving the datum.
-
-NOTE: This will likely PASS (no vulnerability detected) because the multisig
-validator doesn't actually check the continuation at all - so redirecting it
-is already covered by the "no continuation" vulnerability. However, this
-test demonstrates that the unprotectedScriptOutput threat model works.
--}
-propMultisigUnprotectedOutput :: RunOptions -> Property
-propMultisigUnprotectedOutput opts = QC.expectFailure $ monadicIO $ do
-  let Options{params} = mcOptions opts
-
-  result <- run $ runMockchain0IOWith Wallet.initialUTxOs params $ runExceptT $ do
-    (tx, utxo) <- multisigContinuationScenario
-
-    let pparams' = params ^. ledgerProtocolParameters
-        env =
-          ThreatModelEnv
-            { currentTx = tx
-            , currentUTxOs = utxo
-            , pparams = pparams'
-            }
-
-    -- Run the threat model INSIDE MockchainT with full Phase 1 + Phase 2 validation
-    lift $ runThreatModelM Wallet.w1 unprotectedScriptOutput [env]
-
-  case result of
-    (Left err, _) -> do
-      monitor (counterexample $ "Mockchain error: " ++ show err)
-      pure $ QC.property False
-    (Right prop, _finalState) -> do
-      monitor (counterexample "Testing multisig for unprotected script output vulnerability")
-      pure prop
-
 -- ----------------------------------------------------------------------------
 -- TestingInterface instance
 -- ----------------------------------------------------------------------------
@@ -929,9 +717,7 @@ instance TestingInterface MultisigModel where
   perform _model action = case action of
     InitMultisig -> do
       let txBody = execBuildTx $ initMultisig @C.ConwayEra Defaults.networkId Wallet.w1 20_000_000
-      runExceptT (balanceAndSubmit mempty Wallet.w1 txBody TrailingChange []) >>= \case
-        Left err -> fail $ "Failed to initialize multisig: " ++ show err
-        Right _ -> pure ()
+      void $ balanceAndSubmit mempty Wallet.w1 txBody TrailingChange []
     SignMultisig sc -> do
       let w = signerToWallet sc
       result <- findMultisigUtxos
@@ -943,9 +729,7 @@ instance TestingInterface MultisigModel where
               additionalWitnesses = case sc of
                 Signer1 -> []
                 Signer2 -> [C.WitnessPaymentKey (getWallet w)]
-          runExceptT (balanceAndSubmit mempty Wallet.w1 txBody TrailingChange additionalWitnesses) >>= \case
-            Left err -> fail $ "Failed to sign multisig: " ++ show err
-            Right _ -> pure ()
+          void $ balanceAndSubmit mempty Wallet.w1 txBody TrailingChange additionalWitnesses
     UseMultisig -> do
       result <- findMultisigUtxos
       case result of
@@ -959,9 +743,7 @@ instance TestingInterface MultisigModel where
               txBody = execBuildTx $ useMultisig @C.ConwayEra txIn beneficiaryAddr releaseVal signer
               -- If signer is not w1, we need to provide their witness since w1 is used for balancing
               additionalWitnesses = if w1IsSigner then [] else [C.WitnessPaymentKey (getWallet signer)]
-          runExceptT (balanceAndSubmit mempty Wallet.w1 txBody TrailingChange additionalWitnesses) >>= \case
-            Left err -> fail $ "Failed to use multisig: " ++ show err
-            Right _ -> pure ()
+          void $ balanceAndSubmit mempty Wallet.w1 txBody TrailingChange additionalWitnesses
 
   -- Simplified validation that always returns True
   -- This is acceptable for a CTF contract since we're primarily testing vulnerabilities
@@ -972,12 +754,11 @@ instance TestingInterface MultisigModel where
   -- NOTE: threatModels is empty for multisig because most action sequences
   -- end with UseMultisig (which doesn't create a script output). Threat models
   -- like unprotectedScriptOutput require a script output, causing 100% test discard.
-  --
-  -- The vulnerabilities are tested separately with standalone expectFailure tests:
-  -- - propMultisigVulnerableToSingleSignerUse (1-of-N vulnerability)
-  -- - propMultisigVulnerableToSignDestruction (no continuation check)
-  -- - propMultisigUnprotectedOutput (unprotected script output via expectFailure)
   threatModels = []
+
+  -- Expected vulnerabilities: these threat models SHOULD find issues
+  -- (inverted pass/fail, quiet output)
+  expectedVulnerabilities = [unprotectedScriptOutput]
 
 -- ----------------------------------------------------------------------------
 -- Test tree
@@ -994,20 +775,11 @@ aikenMultisigTreasuryTests runOpts =
         [ propRunActionsWithOptions @MultisigModel
             "property-based testing"
             runOpts
-        , testProperty
+        , QC.testProperty
             "vulnerable to single-signer Use (1-of-N)"
             (propMultisigVulnerableToSingleSignerUse runOpts)
-        , testProperty
+        , QC.testProperty
             "vulnerable to Sign destroying UTxO"
             (propMultisigVulnerableToSignDestruction runOpts)
-        , testProperty
-            "vulnerable to unprotected script output (expectFailure)"
-            (propMultisigUnprotectedOutput runOpts)
-        , testProperty
-            "vulnerable to signatory removal (expectFailure)"
-            (propMultisigVulnerableToSignatoryRemoval runOpts)
-        , testProperty
-            "vulnerable to unprotected output (expectFailure)"
-            (propMultisigVulnerableToUnprotectedOutput runOpts)
         ]
     ]

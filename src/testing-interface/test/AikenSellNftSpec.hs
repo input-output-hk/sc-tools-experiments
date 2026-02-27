@@ -30,36 +30,27 @@ module AikenSellNftSpec (
 
   -- * Test tree
   aikenSellNftTests,
-
-  -- * Standalone threat model tests
-  propSellNftVulnerableToDoubleSatisfaction,
 ) where
 
 import Cardano.Api qualified as C
-import Control.Lens ((^.))
 import Control.Monad (void)
-import Control.Monad.Except (MonadError, runExceptT)
 import Control.Monad.IO.Class (MonadIO (..))
-import Control.Monad.Trans (lift)
 import Convex.Aiken.Blueprint (Blueprint (..))
 import Convex.Aiken.Blueprint qualified as Blueprint
 import Convex.BuildTx (MonadBuildTx, execBuildTx)
 import Convex.BuildTx qualified as BuildTx
 import Convex.Class (MonadMockchain, getUtxo)
-import Convex.CoinSelection (BalanceTxError, ChangeOutputPosition (TrailingChange))
-import Convex.MockChain (fromLedgerUTxO, runMockchain0IOWith)
+import Convex.CoinSelection (ChangeOutputPosition (TrailingChange))
+import Convex.MockChain (fromLedgerUTxO)
 import Convex.MockChain.CoinSelection (balanceAndSubmit, tryBalanceAndSubmit)
 import Convex.MockChain.Defaults qualified as Defaults
 import Convex.MockChain.Utils (mockchainSucceeds)
-import Convex.NodeParams (ledgerProtocolParameters)
 import Convex.PlutusLedger.V1 (transAddressInEra)
 import Convex.TestingInterface (
-  Options (Options, params),
-  RunOptions (mcOptions),
+  RunOptions,
   TestingInterface (..),
   propRunActionsWithOptions,
  )
-import Convex.ThreatModel (ThreatModelEnv (..), runThreatModelM)
 import Convex.ThreatModel.DoubleSatisfaction (doubleSatisfaction)
 import Convex.Utils (failOnError)
 import Convex.Wallet (Wallet, addressInEra)
@@ -71,14 +62,8 @@ import PlutusLedgerApi.V1 qualified as PV1
 import PlutusTx qualified
 
 import System.IO.Unsafe (unsafePerformIO)
-import Test.QuickCheck.Monadic (monadicIO, monitor, run)
 import Test.Tasty (TestTree, testGroup)
 import Test.Tasty.HUnit (assertFailure, testCase)
-import Test.Tasty.QuickCheck (
-  Property,
-  counterexample,
-  testProperty,
- )
 import Test.Tasty.QuickCheck qualified as QC
 
 -- ----------------------------------------------------------------------------
@@ -364,89 +349,6 @@ aikenSellNftUnitTests =
     ]
 
 -- ----------------------------------------------------------------------------
--- Standalone Threat Model Tests
--- ----------------------------------------------------------------------------
-
-{- | Run a sell_nft scenario: list one NFT, then buy it.
-
-Returns the buy transaction and the UTxO state captured BEFORE the buy,
-for threat model testing.
-
-This follows the same pattern as BountySpec's bountyVulnerableScenario.
-
-IMPORTANT: The doubleSatisfaction threat model requires:
-- The signer (attacker) is DIFFERENT from the output recipient (victim)
-- So w2 lists (is the seller/victim), w1 buys (is the attacker)
-- The threat model will try to exploit w1's ability to steal the payment to w2
--}
-sellNftScenario
-  :: ( MonadMockchain C.ConwayEra m
-     , MonadError (BalanceTxError C.ConwayEra) m
-     , MonadFail m
-     )
-  => m (C.Tx C.ConwayEra, C.UTxO C.ConwayEra)
-sellNftScenario = do
-  -- w2 lists an NFT for 10 ADA (w2 is the seller/victim)
-  let listTxBody = execBuildTx $ listNft Defaults.networkId Wallet.w2 10_000_000
-  _ <- tryBalanceAndSubmit mempty Wallet.w2 listTxBody TrailingChange []
-
-  -- Capture UTxO BEFORE buying (for threat model)
-  utxoBefore <- fromLedgerUTxO C.shelleyBasedEra <$> getUtxo
-
-  -- Find the listing
-  result <- findSellNftUtxos
-  case result of
-    [] -> fail "Expected UTxO at script address"
-    ((txIn, _, _) : _) -> do
-      -- w1 buys it (w1 is the attacker/signer, pays to w2 the victim)
-      -- The threat model will check if w1 can steal the payment to w2
-      let sellerAddr = addressInEra Defaults.networkId Wallet.w2
-          buyTxBody = execBuildTx $ buyNft @C.ConwayEra txIn sellerAddr 10_000_000
-      buyTx <- tryBalanceAndSubmit mempty Wallet.w1 buyTxBody TrailingChange []
-      pure (buyTx, utxoBefore)
-
-{- | Test that the sell_nft contract is vulnerable to double satisfaction.
-
-This test runs the doubleSatisfaction threat model against the sell_nft
-validator. The threat model attempts to bundle a "safe script" input
-that satisfies the validator's payment check.
-
-Since sell_nft only checks "some output pays seller >= price" without
-uniquely identifying which output belongs to this spend, the threat model
-WILL find a vulnerability.
-
-We use 'expectFailure' because finding the vulnerability means the
-QuickCheck property fails (which is expected for a vulnerable script).
--}
-propSellNftVulnerableToDoubleSatisfaction :: RunOptions -> Property
-propSellNftVulnerableToDoubleSatisfaction opts = QC.expectFailure $ monadicIO $ do
-  let Options{params} = mcOptions opts
-
-  -- Run the scenario AND the threat model INSIDE MockchainT
-  result <- run $ runMockchain0IOWith Wallet.initialUTxOs params $ runExceptT $ do
-    (tx, utxo) <- sellNftScenario
-
-    let pparams' = params ^. ledgerProtocolParameters
-        env =
-          ThreatModelEnv
-            { currentTx = tx
-            , currentUTxOs = utxo
-            , pparams = pparams'
-            }
-
-    -- Run the threat model INSIDE MockchainT with full Phase 1 + Phase 2 validation
-    -- Use w1 (the buyer/attacker) for re-balancing since they signed the tx
-    lift $ runThreatModelM Wallet.w1 doubleSatisfaction [env]
-
-  case result of
-    (Left err, _) -> do
-      monitor (counterexample $ "Mockchain error: " ++ show err)
-      pure $ QC.property False
-    (Right prop, _finalState) -> do
-      monitor (counterexample "Testing sell_nft for double satisfaction vulnerability")
-      pure prop
-
--- ----------------------------------------------------------------------------
 -- TestingInterface instance
 -- ----------------------------------------------------------------------------
 
@@ -517,9 +419,7 @@ instance TestingInterface SellNftModel where
       -- NOTE: Using w1 for all tx submissions because the threat model
       -- re-balancer uses w1 for re-signing. See TipJar's similar pattern.
       let txBody = execBuildTx $ listNft @C.ConwayEra Defaults.networkId Wallet.w2 price
-      runExceptT (balanceAndSubmit mempty Wallet.w1 txBody TrailingChange []) >>= \case
-        Left err -> fail $ "Failed to list NFT: " ++ show err
-        Right _ -> pure ()
+      void $ balanceAndSubmit mempty Wallet.w1 txBody TrailingChange []
     BuySingle idx -> do
       result <- findSellNftUtxos
       case drop idx result of
@@ -530,9 +430,7 @@ instance TestingInterface SellNftModel where
           let sellerAddr = addressInEra Defaults.networkId Wallet.w2
               price = fromInteger (snPrice datum) :: C.Lovelace
               txBody = execBuildTx $ buyNft @C.ConwayEra txIn sellerAddr price
-          runExceptT (balanceAndSubmit mempty Wallet.w1 txBody TrailingChange []) >>= \case
-            Left err -> fail $ "Failed to buy NFT: " ++ show err
-            Right _ -> pure ()
+          void $ balanceAndSubmit mempty Wallet.w1 txBody TrailingChange []
 
   validate model = do
     result <- findSellNftUtxos
@@ -553,14 +451,14 @@ instance TestingInterface SellNftModel where
   --    (it's just paying to a script address), so these threat models give
   --    false positives.
   --
-  -- 3. The only applicable threat model is doubleSatisfaction, which IS a real
-  --    vulnerability in sell_nft. It's tested separately as a standalone
-  --    expectFailure test in propSellNftVulnerableToDoubleSatisfaction.
-  --
   -- Applicable threat models for one-shot spend patterns would need to only
   -- run on BuySingle transactions (which have script inputs). This is a future
   -- enhancement for the TestingInterface framework.
   threatModels = []
+
+  -- doubleSatisfaction is a KNOWN vulnerability in this contract.
+  -- It's run as an expected vulnerability (inverted pass/fail).
+  expectedVulnerabilities = [doubleSatisfaction]
 
 -- ----------------------------------------------------------------------------
 -- Test tree
@@ -577,8 +475,5 @@ aikenSellNftTests runOpts =
         [ propRunActionsWithOptions @SellNftModel
             "property-based testing"
             runOpts
-        , testProperty
-            "vulnerable to double satisfaction (expectFailure)"
-            (propSellNftVulnerableToDoubleSatisfaction runOpts)
         ]
     ]

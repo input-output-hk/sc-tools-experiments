@@ -1,6 +1,5 @@
 {-# LANGUAGE DeriveAnyClass #-}
 {-# LANGUAGE DerivingStrategies #-}
-{-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE NamedFieldPuns #-}
 {-# LANGUAGE NumericUnderscores #-}
 {-# LANGUAGE OverloadedStrings #-}
@@ -42,7 +41,6 @@ module AikenPurchaseOfferSpec (
 
   -- * Standalone threat model tests
   propPurchaseOfferVulnerableToRedeemerManipulation,
-  propPurchaseOfferVulnerableToRedeemerSubstitution,
 ) where
 
 import Cardano.Api qualified as C
@@ -54,7 +52,6 @@ import Convex.Aiken.Blueprint qualified as Blueprint
 import Convex.BuildTx (MonadBuildTx, execBuildTx, setMinAdaDepositAll)
 import Convex.BuildTx qualified as BuildTx
 import Convex.Class (MonadMockchain, getUtxo)
-import Convex.Class qualified
 import Convex.CoinSelection (BalanceTxError, ChangeOutputPosition (TrailingChange))
 import Convex.MockChain (fromLedgerUTxO, runMockchain0IOWith)
 import Convex.MockChain.CoinSelection (balanceAndSubmit, tryBalanceAndSubmit)
@@ -67,7 +64,6 @@ import Convex.TestingInterface (
   TestingInterface (..),
   propRunActionsWithOptions,
  )
-import Convex.ThreatModel (ThreatModelEnv (..), runThreatModelM)
 import Convex.ThreatModel.Cardano.Api (dummyTxId)
 import Convex.ThreatModel.RedeemerAssetSubstitution (redeemerAssetSubstitution)
 import Convex.Utils (failOnError)
@@ -222,6 +218,31 @@ mintTokensToWallet destAddr tokenName = do
   BuildTx.mintPlutus mintingScript () tokenName 1
   let nftValue = fromList [(C.AssetId testPolicyId tokenName, 1)]
   BuildTx.payToAddress destAddr nftValue
+  setMinAdaDepositAll Defaults.bundledProtocolParameters
+
+{- | Mint BOTH valuable and worthless tokens to the same output
+This ensures both tokens are in the same UTxO so the fulfill transaction
+will include both when coin selection finds one of them.
+-}
+mintBothTokensToWallet
+  :: forall m
+   . ( C.HasScriptLanguageInEra C.PlutusScriptV1 C.ConwayEra
+     , MonadBuildTx C.ConwayEra m
+     )
+  => C.AddressInEra C.ConwayEra
+  -- ^ Destination wallet address
+  -> m ()
+mintBothTokensToWallet destAddr = do
+  -- Mint both tokens
+  BuildTx.mintPlutus mintingScript () valuableTokenName 1
+  BuildTx.mintPlutus mintingScript () worthlessTokenName 1
+  -- Send both to the same output
+  let bothTokensValue =
+        fromList
+          [ (C.AssetId testPolicyId valuableTokenName, 1)
+          , (C.AssetId testPolicyId worthlessTokenName, 1)
+          ]
+  BuildTx.payToAddress destAddr bothTokensValue
   setMinAdaDepositAll Defaults.bundledProtocolParameters
 
 -- ----------------------------------------------------------------------------
@@ -520,7 +541,11 @@ aikenPurchaseOfferUnitTests =
 {- | Run a purchase offer scenario for threat model testing.
 
 Creates an offer with desired_token_name = None (vulnerable pattern),
-then attempts to fulfill it.
+then attempts to fulfill it with the VALUABLE token.
+
+For threat model testing, we mint BOTH tokens to the seller. The threat model
+will then try to swap the valuable token for the worthless one. If the swap
+succeeds (transaction still validates), the contract is vulnerable.
 
 Returns the fulfill transaction and the UTxO state captured BEFORE the fulfill,
 for threat model testing.
@@ -532,9 +557,11 @@ purchaseOfferScenario
      )
   => m (C.Tx C.ConwayEra, C.UTxO C.ConwayEra)
 purchaseOfferScenario = do
-  -- First, attacker mints a worthless token
-  let mintTxBody = execBuildTx $ mintTokensToWallet (addressInEra Defaults.networkId Wallet.w2) worthlessTokenName
-  _ <- tryBalanceAndSubmit mempty Wallet.w2 mintTxBody TrailingChange []
+  -- Seller (w2) mints BOTH tokens in a SINGLE transaction
+  -- This puts both tokens in the same UTxO, so the fulfill transaction
+  -- will include both when coin selection finds the valuable token
+  let mintBothTxBody = execBuildTx $ mintBothTokensToWallet (addressInEra Defaults.networkId Wallet.w2)
+  _ <- tryBalanceAndSubmit mempty Wallet.w2 mintBothTxBody TrailingChange []
 
   -- w1 creates a VULNERABLE offer (any token from policy accepted)
   let createTxBody =
@@ -556,15 +583,16 @@ purchaseOfferScenario = do
     [] -> fail "Expected UTxO at script address"
     ((txIn, _, _) : _) -> do
       let ownerAddr = addressInEra Defaults.networkId Wallet.w1
-          -- Attacker uses a worthless token
+          -- Legitimate fulfillment with the VALUABLE token
+          -- The threat model will try to swap this for the worthless token
           fulfillTxBody =
             execBuildTx $
               fulfillOffer
                 txIn
                 ownerAddr
                 testPolicyIdBytes
-                worthlessTokenName
-      -- w2 (attacker) fulfills with worthless token
+                valuableTokenName -- Using valuable token - threat model will try to swap
+                -- w2 fulfills with valuable token
       fulfillTx <- tryBalanceAndSubmit mempty Wallet.w2 fulfillTxBody TrailingChange []
       pure (fulfillTx, utxoBefore)
 
@@ -601,52 +629,6 @@ propPurchaseOfferVulnerableToRedeemerManipulation opts = monadicIO $ do
       monitor (counterexample "Vulnerability confirmed: worthless token accepted!")
       -- The exploit transaction SUCCEEDED - vulnerability confirmed!
       pure $ QC.property True
-
-{- | Test that the purchase_offer contract is vulnerable to redeemer asset substitution.
-
-This test uses the generic `redeemerAssetSubstitution` threat model to detect
-contracts that trust redeemer-provided asset references without validation.
-
-The test:
-1. Creates a vulnerable offer (desired_token_name = None)
-2. Captures a valid fulfillment transaction
-3. Runs the `redeemerAssetSubstitution` threat model against it
-4. Expects the threat model to FAIL (wrapped with expectFailure)
-
-Because the contract is vulnerable, modifying the redeemer's ByteString fields
-(the token name) will still allow the transaction to validate - the threat model
-will not reject it as it should. This is wrapped with `expectFailure` because
-we EXPECT the vulnerable contract to be detected.
--}
-propPurchaseOfferVulnerableToRedeemerSubstitution :: RunOptions -> Property
-propPurchaseOfferVulnerableToRedeemerSubstitution opts = QC.expectFailure $ monadicIO $ do
-  let Options{params} = mcOptions opts
-
-  -- Run the scenario and threat model INSIDE MockchainT
-  result <- run $ runMockchain0IOWith Wallet.initialUTxOs params $ runExceptT $ do
-    -- Set up the scenario and get the fulfill transaction
-    (fulfillTx, utxoBefore) <- purchaseOfferScenario
-
-    -- Create threat model environment from the captured transaction
-    pparams <- Convex.Class.queryProtocolParameters
-    let threatEnv =
-          ThreatModelEnv
-            { currentTx = fulfillTx
-            , currentUTxOs = utxoBefore
-            , pparams = pparams
-            }
-
-    -- Run the redeemerAssetSubstitution threat model
-    -- This should fail for a secure contract, but will pass for vulnerable ones
-    runThreatModelM Wallet.w2 redeemerAssetSubstitution [threatEnv]
-
-  case result of
-    (Left err, _) -> do
-      monitor (counterexample $ "Mockchain error: " ++ show err)
-      pure $ QC.property False
-    (Right prop, _) ->
-      -- Return the property from the threat model
-      pure prop
 
 -- ----------------------------------------------------------------------------
 -- TestingInterface instance
@@ -723,10 +705,8 @@ instance TestingInterface PurchaseOfferModel where
   perform _model action = case action of
     CreateOffer amount -> do
       -- First, mint a worthless token for the attacker
-      let mintTxBody = execBuildTx $ mintTokensToWallet (addressInEra Defaults.networkId Wallet.w1) worthlessTokenName
-      runExceptT (balanceAndSubmit mempty Wallet.w1 mintTxBody TrailingChange []) >>= \case
-        Left err -> fail $ "Failed to mint token: " ++ show err
-        Right _ -> pure ()
+      let mintTxBody = execBuildTx $ mintBothTokensToWallet (addressInEra Defaults.networkId Wallet.w1)
+      void $ balanceAndSubmit mempty Wallet.w1 mintTxBody TrailingChange []
       -- Then create the offer
       let txBody =
             execBuildTx $
@@ -736,9 +716,7 @@ instance TestingInterface PurchaseOfferModel where
                 amount
                 testPolicyIdBytes
                 Nothing -- Any token - VULNERABLE pattern
-      runExceptT (balanceAndSubmit mempty Wallet.w1 txBody TrailingChange []) >>= \case
-        Left err -> fail $ "Failed to create offer: " ++ show err
-        Right _ -> pure ()
+      void $ balanceAndSubmit mempty Wallet.w1 txBody TrailingChange []
     FulfillOffer -> do
       result <- findPurchaseOfferUtxos
       case result of
@@ -753,23 +731,14 @@ instance TestingInterface PurchaseOfferModel where
                     testPolicyIdBytes
                     worthlessTokenName -- EXPLOIT: worthless token
                     -- NOTE: Using w1 for submission for threat model compatibility
-          runExceptT (balanceAndSubmit mempty Wallet.w1 txBody TrailingChange []) >>= \case
-            Left err -> fail $ "Failed to fulfill offer: " ++ show err
-            Right _ -> pure ()
+          void $ balanceAndSubmit mempty Wallet.w1 txBody TrailingChange []
 
   -- Simplified validation
   validate _model = pure True
 
   monitoring _state _action prop = prop
 
-  -- NOTE: threatModels is empty because this is a one-shot spend pattern:
-  -- CreateOffer creates a script output (no validator runs)
-  -- FulfillOffer spends the script input (validator runs, no script output created)
-  --
-  -- The vulnerability is demonstrated separately in:
-  -- - Unit test "EXPLOIT: fulfill with wrong token when desired_token_name is None"
-  -- - propPurchaseOfferVulnerableToRedeemerManipulation
-  threatModels = []
+  expectedVulnerabilities = [redeemerAssetSubstitution]
 
 -- ----------------------------------------------------------------------------
 -- Test tree
@@ -789,8 +758,5 @@ aikenPurchaseOfferTests runOpts =
         , testProperty
             "redeemer-controlled asset vulnerability confirmed"
             (propPurchaseOfferVulnerableToRedeemerManipulation runOpts)
-        , testProperty
-            "redeemer asset substitution threat model detects vulnerability (expectFailure)"
-            (propPurchaseOfferVulnerableToRedeemerSubstitution runOpts)
         ]
     ]

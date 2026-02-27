@@ -50,6 +50,7 @@ module AikenBankSpec (
 import Cardano.Api qualified as C
 import Control.Monad (void)
 import Control.Monad.Except (runExceptT)
+
 import Control.Monad.IO.Class (MonadIO (..))
 import Control.Monad.Trans (lift)
 import Convex.Aiken.Blueprint (Blueprint (..))
@@ -952,9 +953,7 @@ instance TestingInterface BankModel where
   perform _model action = case action of
     InitBankAction -> do
       let txBody = execBuildTx $ initBank bankLevel00 Defaults.networkId Wallet.w1 100_000_000
-      runExceptT (balanceAndSubmit mempty Wallet.w1 txBody TrailingChange []) >>= \case
-        Left err -> fail $ "Failed to initialize bank: " ++ show err
-        Right _ -> pure ()
+      void $ balanceAndSubmit mempty Wallet.w1 txBody TrailingChange []
     DepositAction amt -> do
       [(bankTxIn, bankValue)] <- findBankUtxos bankLevel00
       [(accountTxIn, accountValue, accountDatum)] <- findAccountUtxos bankLevel00
@@ -970,9 +969,7 @@ instance TestingInterface BankModel where
                 accountValue
                 amt
                 Wallet.w1
-      runExceptT (balanceAndSubmit mempty Wallet.w1 txBody TrailingChange []) >>= \case
-        Left err -> fail $ "Failed to deposit: " ++ show err
-        Right _ -> pure ()
+      void $ balanceAndSubmit mempty Wallet.w1 txBody TrailingChange []
     WithdrawAction amt -> do
       [(bankTxIn, bankValue)] <- findBankUtxos bankLevel00
       [(accountTxIn, accountValue, accountDatum)] <- findAccountUtxos bankLevel00
@@ -988,9 +985,7 @@ instance TestingInterface BankModel where
                 accountValue
                 amt
                 Wallet.w1
-      runExceptT (balanceAndSubmit mempty Wallet.w1 txBody TrailingChange []) >>= \case
-        Left err -> fail $ "Failed to withdraw: " ++ show err
-        Right _ -> pure ()
+      void $ balanceAndSubmit mempty Wallet.w1 txBody TrailingChange []
 
   validate _model = pure True
 

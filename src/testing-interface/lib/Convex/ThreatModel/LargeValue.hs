@@ -84,7 +84,7 @@ like @valuePaidTo addr >= expected@ instead of exact matching, allowing
 attackers to inflate UTxO min-Ada requirements or lock funds permanently.
 -}
 largeValueAttackWith :: Int -> ThreatModel ()
-largeValueAttackWith numTokens = do
+largeValueAttackWith numTokens = Named ("Large Value Attack (" ++ show numTokens ++ " tokens)") $ do
   -- Get all outputs from the transaction
   outputs <- getTxOutputs
 

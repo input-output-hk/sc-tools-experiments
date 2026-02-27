@@ -28,7 +28,7 @@ module AikenPingPongSpec (
 ) where
 
 import Cardano.Api qualified as C
-import Control.Monad.Except (runExceptT)
+import Control.Monad (void)
 import Control.Monad.IO.Class (MonadIO (..))
 import Convex.Aiken.Blueprint (Blueprint (..))
 import Convex.Aiken.Blueprint qualified as Blueprint
@@ -205,9 +205,7 @@ instance TestingInterface AikenPingPongModel where
                   C.NoStakeAddress
                   (C.lovelaceToValue $ apmValue model)
               )
-      runExceptT (balanceAndSubmit mempty Wallet.w1 txBody TrailingChange []) >>= \case
-        Left err -> fail $ "Failed to initialize contract: " ++ show err
-        Right _ -> pure ()
+      void $ balanceAndSubmit mempty Wallet.w1 txBody TrailingChange []
     AikenPlayRound redeemer -> do
       -- liftIO $ putStrLn $ "[Aiken] Playing round: " ++ show redeemer
       -- Find the UTxO at the script address
@@ -224,17 +222,12 @@ instance TestingInterface AikenPingPongModel where
           -- Get the value from the UTxO
           let lovelace = C.selectLovelace (C.fromMaryValue val)
           -- Execute the round
-          runExceptT
-            ( balanceAndSubmit
-                mempty
-                Wallet.w1
-                (execBuildTx $ playAikenPingPongRound aikenPingPongScript Defaults.networkId lovelace redeemer txIn)
-                TrailingChange
-                []
-            )
-            >>= \case
-              Left err -> fail $ "Failed to play round: " ++ show err
-              Right _ -> pure ()
+          void $ balanceAndSubmit
+            mempty
+            Wallet.w1
+            (execBuildTx $ playAikenPingPongRound aikenPingPongScript Defaults.networkId lovelace redeemer txIn)
+            TrailingChange
+            []
 
   validate model = case apmTxIn model of
     Nothing -> pure True -- No contract deployed yet

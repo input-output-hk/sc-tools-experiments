@@ -55,7 +55,7 @@ module AikenLendingSpec (
 import Cardano.Api qualified as C
 import Control.Lens ((^.))
 import Control.Monad (void)
-import Control.Monad.Except (MonadError, runExceptT)
+import Control.Monad.Except (runExceptT)
 import Control.Monad.IO.Class (MonadIO (..))
 import Control.Monad.Trans (lift)
 import Convex.Aiken.Blueprint (Blueprint (..))
@@ -63,7 +63,7 @@ import Convex.Aiken.Blueprint qualified as Blueprint
 import Convex.BuildTx (MonadBuildTx, execBuildTx)
 import Convex.BuildTx qualified as BuildTx
 import Convex.Class (MonadMockchain, getUtxo)
-import Convex.CoinSelection (BalanceTxError, ChangeOutputPosition (TrailingChange))
+import Convex.CoinSelection (ChangeOutputPosition (TrailingChange))
 import Convex.MockChain (fromLedgerUTxO, runMockchain0IOWith)
 import Convex.MockChain.CoinSelection (balanceAndSubmit, tryBalanceAndSubmit)
 import Convex.MockChain.Defaults qualified as Defaults
@@ -78,7 +78,6 @@ import Convex.TestingInterface (
  )
 import Convex.ThreatModel (ThreatModelEnv (..), runThreatModelM)
 import Convex.ThreatModel.Cardano.Api (dummyTxId)
-
 import Convex.ThreatModel.InputDuplication (inputDuplication)
 import Convex.ThreatModel.UnprotectedScriptOutput (unprotectedScriptOutput)
 import Convex.Utils (failOnError)
@@ -657,65 +656,6 @@ propLendingVulnerableToInputOrdering opts = monadicIO $ do
       -- The exploit SUCCEEDED - vulnerability confirmed!
       pure $ QC.property True
 
-{- | Run a lending scenario for threat model testing.
-
-Creates a normal lending transaction that produces a continuation output.
--}
-lendingScenario
-  :: ( MonadMockchain C.ConwayEra m
-     , MonadError (BalanceTxError C.ConwayEra) m
-     , MonadFail m
-     )
-  => m (C.Tx C.ConwayEra, C.UTxO C.ConwayEra)
-lendingScenario = do
-  -- Borrower creates loan request
-  let requestTxBody = execBuildTx $ requestLoan @C.ConwayEra Defaults.networkId Wallet.w1 50_000_000 5_000_000 10_000_000
-  _ <- tryBalanceAndSubmit mempty Wallet.w1 requestTxBody TrailingChange []
-
-  -- Capture UTxO BEFORE lending
-  utxoBefore <- fromLedgerUTxO C.shelleyBasedEra <$> getUtxo
-
-  -- Lender funds the loan
-  result <- findLendingUtxos
-  case result of
-    [] -> fail "Expected loan request UTxO"
-    ((txIn, value, datum) : _) -> do
-      -- Use w1 for balance because threat model rebalancer uses w1
-      let lendTxBody = execBuildTx $ lendFunds Defaults.networkId txIn datum value Wallet.w2
-      lendTx <- tryBalanceAndSubmit mempty Wallet.w1 lendTxBody TrailingChange []
-      pure (lendTx, utxoBefore)
-
-{- | Test unprotectedScriptOutput threat model on the lending contract.
-
-The Lend action creates a continuation output. This test checks if that
-output can be redirected to the signer (attacker) while preserving the datum.
--}
-propLendingUnprotectedOutput :: RunOptions -> Property
-propLendingUnprotectedOutput opts = monadicIO $ do
-  let Options{params} = mcOptions opts
-
-  result <- run $ runMockchain0IOWith Wallet.initialUTxOs params $ runExceptT $ do
-    (tx, utxo) <- lendingScenario
-
-    let pparams' = params ^. ledgerProtocolParameters
-        env =
-          ThreatModelEnv
-            { currentTx = tx
-            , currentUTxOs = utxo
-            , pparams = pparams'
-            }
-
-    -- Run the threat model INSIDE MockchainT with full Phase 1 + Phase 2 validation
-    lift $ runThreatModelM Wallet.w1 unprotectedScriptOutput [env]
-
-  case result of
-    (Left err, _) -> do
-      monitor (counterexample $ "Mockchain error: " ++ show err)
-      pure $ QC.property False
-    (Right prop, _finalState) -> do
-      monitor (counterexample "Testing ctf_lending for unprotected script output vulnerability")
-      pure prop
-
 {- | Test inputDuplication threat model on the lending contract.
 
 This threat model:
@@ -875,9 +815,7 @@ instance TestingInterface LendingModel where
   perform _model action = case action of
     RequestLoanAction borrowed interest -> do
       let txBody = execBuildTx $ requestLoan @C.ConwayEra Defaults.networkId Wallet.w1 borrowed interest 10_000_000
-      runExceptT (balanceAndSubmit mempty Wallet.w1 txBody TrailingChange []) >>= \case
-        Left err -> fail $ "Failed to request loan: " ++ show err
-        Right _ -> pure ()
+      void $ balanceAndSubmit mempty Wallet.w1 txBody TrailingChange []
     LendAction -> do
       result <- findLendingUtxos
       case result of
@@ -885,18 +823,14 @@ instance TestingInterface LendingModel where
         ((txIn, value, datum) : _) -> do
           let txBody = execBuildTx $ lendFunds Defaults.networkId txIn datum value Wallet.w2
           -- Use w1 for balance because threat model rebalancer uses w1
-          runExceptT (balanceAndSubmit mempty Wallet.w1 txBody TrailingChange []) >>= \case
-            Left err -> fail $ "Failed to lend: " ++ show err
-            Right _ -> pure ()
+          void $ balanceAndSubmit mempty Wallet.w1 txBody TrailingChange []
     RepayAction -> do
       result <- findLendingUtxos
       case result of
         [] -> fail "No loan found for repayment"
         ((txIn, _, datum) : _) -> do
           let txBody = execBuildTx $ repayLoan txIn datum Wallet.w1
-          runExceptT (balanceAndSubmit mempty Wallet.w1 txBody TrailingChange []) >>= \case
-            Left err -> fail $ "Failed to repay: " ++ show err
-            Right _ -> pure ()
+          void $ balanceAndSubmit mempty Wallet.w1 txBody TrailingChange []
 
   -- Simplified validation
   validate _model = pure True
@@ -909,8 +843,11 @@ instance TestingInterface LendingModel where
   --
   -- The vulnerabilities are tested separately with standalone tests:
   -- - propLendingVulnerableToInputOrdering (input ordering bypass)
-  -- - propLendingUnprotectedOutput (unprotected script output via expectFailure)
   threatModels = []
+
+  -- unprotectedScriptOutput is a KNOWN vulnerability in this contract.
+  -- It's run as an expected vulnerability (inverted pass/fail).
+  expectedVulnerabilities = [unprotectedScriptOutput]
 
 -- ----------------------------------------------------------------------------
 -- Test tree
@@ -930,9 +867,6 @@ aikenLendingTests runOpts =
         , testProperty
             "vulnerable to input ordering bypass"
             (propLendingVulnerableToInputOrdering runOpts)
-        , testProperty
-            "vulnerable to unprotected script output (expectFailure)"
-            (QC.expectFailure $ propLendingUnprotectedOutput runOpts)
         , testProperty
             "vulnerable to input duplication"
             (propLendingVulnerableToInputDuplication runOpts)

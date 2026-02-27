@@ -29,7 +29,7 @@ safeScript = RequireAllOf [] -- TODO: this is not the right script!
   attacker. This works for both Ada-only outputs and outputs with tokens.
 -}
 doubleSatisfaction :: ThreatModel ()
-doubleSatisfaction = do
+doubleSatisfaction = Named "Double Satisfaction" $ do
   signer <- keyAddressAny <$> anySigner
 
   outputs <- getTxOutputs

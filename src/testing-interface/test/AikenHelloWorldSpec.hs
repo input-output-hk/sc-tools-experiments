@@ -1,6 +1,5 @@
 {-# LANGUAGE DeriveAnyClass #-}
 {-# LANGUAGE DerivingStrategies #-}
-{-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE NamedFieldPuns #-}
 {-# LANGUAGE NumericUnderscores #-}
 {-# LANGUAGE OverloadedStrings #-}
@@ -362,9 +361,7 @@ instance TestingInterface HelloWorldModel where
   perform _model action = case action of
     LockFunds amount -> do
       let txBody = execBuildTx $ lockFunds @C.ConwayEra Defaults.networkId amount
-      runExceptT (balanceAndSubmit mempty Wallet.w1 txBody TrailingChange []) >>= \case
-        Left err -> fail $ "Failed to lock funds: " ++ show err
-        Right _ -> pure ()
+      void $ balanceAndSubmit mempty Wallet.w1 txBody TrailingChange []
     UnlockCorrect -> do
       result <- findHelloWorldUtxo
       case result of
@@ -378,9 +375,7 @@ instance TestingInterface HelloWorldModel where
                     value
                     Wallet.w2
                     (HelloWorldRedeemer correctPassword)
-          runExceptT (balanceAndSubmit mempty Wallet.w2 txBody TrailingChange []) >>= \case
-            Left err -> fail $ "Failed to unlock funds: " ++ show err
-            Right _ -> pure ()
+          void $ balanceAndSubmit mempty Wallet.w2 txBody TrailingChange []
 
   validate model = do
     result <- findHelloWorldUtxo

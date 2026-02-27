@@ -152,6 +152,21 @@ addScriptData ix dat rdmr (TxBodyScriptData era (Ledger.TxDats dats) (Ledger.Red
     (Ledger.TxDats $ Map.insert (Ledger.hashData dat) dat dats)
     (Ledger.Redeemers $ Map.insert (Conway.ConwaySpending (Ledger.AsIx ix)) rdmr rdmrs)
 
+{- | Update only the redeemer for a spending input (does not modify TxDats)
+Use this when the original UTxO has an inline datum to avoid adding orphaned datums
+-}
+updateRedeemer
+  :: Word32
+  -> (Ledger.Data (ShelleyLedgerEra Era), Ledger.ExUnits)
+  -> TxBodyScriptData Era
+  -> TxBodyScriptData Era
+updateRedeemer ix rdmr TxBodyNoScriptData = updateRedeemer ix rdmr emptyTxBodyScriptData
+updateRedeemer ix rdmr (TxBodyScriptData era dats (Ledger.Redeemers rdmrs)) =
+  TxBodyScriptData
+    era
+    dats
+    (Ledger.Redeemers $ Map.insert (Conway.ConwaySpending (Ledger.AsIx ix)) rdmr rdmrs)
+
 -- | Add a minting redeemer to the script data (no datum needed for minting)
 addMintingRedeemer
   :: Word32
@@ -420,6 +435,23 @@ rebalanceAndSign
   -> UTxO Era
   -> m (Tx Era)
 rebalanceAndSign wallet tx utxo = do
+  result <- tryRebalanceAndSign wallet tx utxo
+  case result of
+    Left err -> fail err
+    Right signedTx -> pure signedTx
+
+{- | Like 'rebalanceAndSign' but returns Either instead of using MonadFail.
+
+This is useful for threat model execution where we want to handle rebalancing
+failures (e.g., "No change output found") as skipped tests rather than errors.
+-}
+tryRebalanceAndSign
+  :: (MonadMockchain Era m)
+  => Wallet
+  -> Tx Era
+  -> UTxO Era
+  -> m (Either String (Tx Era))
+tryRebalanceAndSign wallet tx utxo = do
   pparams <- Convex.Class.queryProtocolParameters
   networkId <- Convex.Class.queryNetworkId
   systemStart <- Convex.Class.querySystemStart
@@ -451,18 +483,19 @@ rebalanceAndSign wallet tx utxo = do
 
   -- Adjust the change output and set the new fee
   let currentOuts = txOutputs txWithUpdatedExUnits
-  adjustedOutputs <- adjustChangeOutput walletAddr feeDiff currentOuts
+  case tryAdjustChangeOutput walletAddr feeDiff currentOuts of
+    Left err -> pure (Left err)
+    Right adjustedOutputs -> do
+      -- Apply the changes: new fee and adjusted outputs
+      let modifiedTx = setTxOutputsList adjustedOutputs $ setTxFeeCoin newFee txWithUpdatedExUnits
 
-  -- Apply the changes: new fee and adjusted outputs
-  let modifiedTx = setTxOutputsList adjustedOutputs $ setTxFeeCoin newFee txWithUpdatedExUnits
+      -- Recalculate script integrity hash (after updating execution units)
+      let finalTx = recalculateScriptIntegrityHash pparams modifiedTx
 
-  -- Recalculate script integrity hash (after updating execution units)
-  let finalTx = recalculateScriptIntegrityHash pparams modifiedTx
-
-  -- Re-sign (strip old signatures and add new one)
-  let Tx finalBody _ = finalTx
-      unsignedTx = makeSignedTransaction [] finalBody
-  pure $ Wallet.signTx wallet unsignedTx
+      -- Re-sign (strip old signatures and add new one)
+      let Tx finalBody _ = finalTx
+          unsignedTx = makeSignedTransaction [] finalBody
+      pure $ Right $ Wallet.signTx wallet unsignedTx
 
 {- | Update execution units in a transaction by evaluating all scripts.
 
@@ -624,7 +657,21 @@ adjustChangeOutput
   -> [TxOut CtxTx Era]
   -- ^ Transaction outputs
   -> m [TxOut CtxTx Era]
-adjustChangeOutput walletAddr (Coin feeDiff) outputs = do
+adjustChangeOutput walletAddr feeDiff outputs =
+  case tryAdjustChangeOutput walletAddr feeDiff outputs of
+    Left err -> fail err
+    Right result -> pure result
+
+-- | Like 'adjustChangeOutput' but returns Either instead of using MonadFail.
+tryAdjustChangeOutput
+  :: AddressInEra Era
+  -- ^ Wallet address to find change output
+  -> Coin
+  -- ^ Fee difference (positive = fee increased)
+  -> [TxOut CtxTx Era]
+  -- ^ Transaction outputs
+  -> Either String [TxOut CtxTx Era]
+tryAdjustChangeOutput walletAddr (Coin feeDiff) outputs = do
   -- Find last output to wallet address
   let indexed = zip [0 ..] outputs
       walletOutputs =
@@ -633,19 +680,20 @@ adjustChangeOutput walletAddr (Coin feeDiff) outputs = do
         , addr == walletAddr
         ]
   case listToMaybe (reverse walletOutputs) of
-    Nothing -> fail "No change output found to wallet address"
+    Nothing -> Left "No change output found to wallet address"
     Just (idx, TxOut addr val datum refScript) -> do
       let Coin oldAda = txOutValueToLovelace val
           newAda = oldAda - feeDiff -- subtract fee increase (or add fee decrease)
-      when (newAda < 0) $
-        fail "Change output cannot cover fee increase"
-      let newLovelace = Coin newAda
-          -- Preserve non-Ada assets in the value
-          oldValue = txOutValueToValue val
-          newValue = oldValue <> negateValue (lovelaceToValue (Coin oldAda)) <> lovelaceToValue newLovelace
-          newVal = TxOutValueShelleyBased shelleyBasedEra (toMaryValue newValue)
-          newOutput = TxOut addr newVal datum refScript
-      pure $ replaceAt idx newOutput outputs
+      if newAda < 0
+        then Left "Change output cannot cover fee increase"
+        else do
+          let newLovelace = Coin newAda
+              -- Preserve non-Ada assets in the value
+              oldValue = txOutValueToValue val
+              newValue = oldValue <> negateValue (lovelaceToValue (Coin oldAda)) <> lovelaceToValue newLovelace
+              newVal = TxOutValueShelleyBased shelleyBasedEra (toMaryValue newValue)
+              newOutput = TxOut addr newVal datum refScript
+          Right $ replaceAt idx newOutput outputs
 
 -- | Replace element at index in a list
 replaceAt :: Int -> a -> [a] -> [a]

@@ -520,11 +520,16 @@ applyTxMod tx utxos (ChangeScriptInput txIn mvalue mdatum mredeemer mrscript) =
       (addr', value', utxoDatum', rscript')
     Nothing -> error $ "The index " ++ show txIn ++ " doesn't exist."
 
+  -- Try TxDats first (maintains consistency for redeemer substitution attacks), fall back to inline datum
   (datum, (redeemer, exunits)) = case scriptData of
     TxBodyNoScriptData -> error "No script data available"
     TxBodyScriptData _ (Ledger.TxDats dats) (Ledger.Redeemers rdmrs) ->
-      ( fromJust $ Map.lookup utxoDatumHash dats
-      , fromJust $ Map.lookup (Conway.ConwaySpending (Ledger.AsIx idx)) rdmrs
+      ( case Map.lookup utxoDatumHash dats of
+          Just d -> d -- Datum found in TxDats map (original behavior)
+          Nothing -> case utxoDatum of
+            TxOutDatumInline _ d -> toAlonzoData d -- Fallback: use inline datum from UTxO
+            _ -> error $ "Datum hash " ++ show utxoDatumHash ++ " not found in transaction datum map"
+      , fromMaybe (error $ "Redeemer for spending input at index " ++ show idx ++ " not found in transaction redeemers") $ Map.lookup (Conway.ConwaySpending (Ledger.AsIx idx)) rdmrs
       )
 
   utxoDatumHash = case utxoDatum of
@@ -554,11 +559,17 @@ applyTxMod tx utxos (ChangeScriptInput txIn mvalue mdatum mredeemer mrscript) =
     _ -> error "The impossible happened!"
 
   scriptData' =
-    addScriptData
-      idx
-      adatum
-      (maybe redeemer (toAlonzoData . unsafeHashableScriptData) mredeemer, exunits)
-      scriptData
+    let newRdmr = (maybe redeemer (toAlonzoData . unsafeHashableScriptData) mredeemer, exunits)
+        -- Check if the original UTxO uses an inline datum
+        isInlineDatum = case utxoDatum of
+          TxOutDatumInline{} -> True
+          _ -> False
+     in -- If the original is inline and we're NOT changing the datum, only update the redeemer
+        -- (avoid adding orphaned datums to TxDats which causes NotAllowedSupplementalDatums)
+        -- Otherwise, add the datum to TxDats as needed for spending
+        if isInlineDatum && isNothing mdatum
+          then updateRedeemer idx newRdmr scriptData
+          else addScriptData idx adatum newRdmr scriptData
 applyTxMod tx utxos (AddPlutusScriptMint script assetName quantity redeemer) =
   ( Tx (ShelleyTxBody era body{Conway.ctbMint = mint'} scripts' scriptData' auxData validity) wits
   , utxos

@@ -76,7 +76,7 @@ This catches a vulnerability where different parsers may interpret the same
 on-chain data differently, leading to potential exploits.
 -}
 largeDataAttackWith :: Int -> ThreatModel ()
-largeDataAttackWith n = do
+largeDataAttackWith n = Named ("Large Data Attack (max " ++ show n ++ " fields)") $ do
   -- Get all outputs from the transaction
   outputs <- getTxOutputs
 
