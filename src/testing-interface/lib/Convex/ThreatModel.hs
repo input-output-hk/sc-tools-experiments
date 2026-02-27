@@ -60,11 +60,15 @@ module Convex.ThreatModel (
   replaceTx,
 
   -- * Threat models
-  ThreatModel,
+  ThreatModel (Named),
   ThreatModelEnv (..),
+  ThreatModelOutcome (..),
   runThreatModel,
   runThreatModelM,
+  runThreatModelMQuiet,
+  runThreatModelCheck,
   assertThreatModel,
+  getThreatModelName,
 
   -- ** Preconditions
   threatPrecondition,
@@ -173,6 +177,18 @@ data ThreatModelEnv = ThreatModelEnv
   , pparams :: LedgerProtocolParameters Era
   }
 
+-- | Structured outcome of running a threat model against a transaction.
+data ThreatModelOutcome
+  = -- | At least one transaction was tested, all checks passed
+    TMPassed
+  | -- | A check failed, with error details
+    TMFailed String
+  | -- | Preconditions were never met (all transactions skipped)
+    TMSkipped
+  | -- | Threat model crashed with an exception
+    TMError String
+  deriving (Eq, Show)
+
 {- | The threat model monad is how you construct threat models. It works in the context of a given
   transaction and the UTxO set at the point where the transaction was validated (see
   `ThreatModelEnv`) and lets you construct properties about the validatity of modifications of
@@ -208,6 +224,12 @@ data ThreatModel a where
   Done
     :: a
     -> ThreatModel a
+  Named
+    :: String
+    -- ^ Threat model name
+    -> ThreatModel a
+    -- ^ The wrapped threat model
+    -> ThreatModel a
 
 instance Functor ThreatModel where
   fmap = liftM
@@ -226,6 +248,7 @@ instance Monad ThreatModel where
   Monitor m cont >>= k = Monitor m (cont >>= k)
   MonitorLocal m cont >>= k = MonitorLocal m (cont >>= k)
   Done a >>= k = k a
+  Named n m >>= k = Named n (m >>= k)
 
 instance MonadFail ThreatModel where
   fail = Fail
@@ -269,6 +292,7 @@ runThreatModel = go False
       Monitor m k -> m $ interp mon k
       MonitorLocal m k -> interp (mon . m) k
       Done{} -> go True model envs
+      Named _n k -> interp mon k
 
 -- | Evaluate a `ThreatModel` on a list of transactions.
 assertThreatModel
@@ -347,6 +371,102 @@ runThreatModelM wallet = go False
       Monitor m k -> m <$> interpM mon k
       MonitorLocal m k -> interpM (mon . m) k
       Done{} -> go True model envs
+      Named _n k -> interpM mon k
+
+{- | Like 'runThreatModelM' but suppresses verbose counterexample annotations.
+
+This is useful for 'expectFailure' tests where you want the test to fail
+(proving vulnerability exists) but don't want the lengthy counterexample
+output cluttering test results.
+
+The property still succeeds/fails correctly based on shouldValidate/shouldNotValidate
+checks, but Monitor/MonitorLocal annotations (counterexampleTM, etc.) are ignored.
+-}
+runThreatModelMQuiet
+  :: (MonadMockchain Era m, MonadFail m, MonadIO m)
+  => Wallet
+  -> ThreatModel a
+  -> [ThreatModelEnv]
+  -> m Property
+runThreatModelMQuiet wallet = go False
+ where
+  go b _model [] = pure $ b ==> property True
+  go b model (env : envs) = interpMQuiet model
+   where
+    -- Quiet interpreter: identical to interpM but ignores Monitor/MonitorLocal
+    interpMQuiet = \case
+      Validate mods k -> do
+        let (modifiedTx, modifiedUtxo) = applyTxModifier (currentTx env) (currentUTxOs env) mods
+        -- Re-balance and re-sign the modified transaction
+        params <- askNodeParams
+        rebalancedTx <- rebalanceAndSign wallet modifiedTx modifiedUtxo
+        -- Validate with full Phase 1 + Phase 2
+        (report, covData) <- validateTxM params rebalancedTx modifiedUtxo
+        -- Accumulate coverage into the running MockChainState
+        modifyMockChainState $ \s -> ((), s & coverageData %~ (<> covData))
+        interpMQuiet (k report)
+      Generate gen _shr k -> do
+        -- Use QuickCheck's generate in IO
+        a <- liftIO $ QC.generate gen
+        interpMQuiet (k a)
+      GetCtx k ->
+        interpMQuiet (k env)
+      Skip -> go b model envs
+      InPrecondition k -> interpMQuiet (k False)
+      Fail _err -> pure $ property False
+      -- Key difference: ignore Monitor/MonitorLocal transformations
+      Monitor _m k -> interpMQuiet k
+      MonitorLocal _m k -> interpMQuiet k
+      Done{} -> go True model envs
+      Named _n k -> interpMQuiet k
+
+-- | Extract the name from a threat model, if it was defined with 'Named'.
+getThreatModelName :: ThreatModel a -> Maybe String
+getThreatModelName (Named n _) = Just n
+getThreatModelName _ = Nothing
+
+{- | Run a threat model and return a structured outcome instead of a Property.
+  Coverage is still accumulated in MockChainState as a side effect.
+
+  Rebalancing failures (e.g., "No change output found") are treated as skipped
+  because they indicate the transaction modification cannot be applied to this
+  particular transaction, similar to a precondition failure.
+-}
+runThreatModelCheck
+  :: (MonadMockchain Era m, MonadFail m, MonadIO m)
+  => Wallet
+  -> ThreatModel a
+  -> [ThreatModelEnv]
+  -> m ThreatModelOutcome
+runThreatModelCheck wallet = go False
+ where
+  go b _model [] = pure $ if b then TMPassed else TMSkipped
+  go b model (env : envs) = checkInterp model
+   where
+    checkInterp = \case
+      Validate mods k -> do
+        let (modifiedTx, modifiedUtxo) = applyTxModifier (currentTx env) (currentUTxOs env) mods
+        params <- askNodeParams
+        -- Try rebalancing - failure means this modification can't be tested on this tx
+        rebalanceResult <- TM.tryRebalanceAndSign wallet modifiedTx modifiedUtxo
+        case rebalanceResult of
+          Left _err -> go b model envs -- Rebalancing failed, skip to next tx (like precondition failure)
+          Right rebalancedTx -> do
+            (report, covData) <- validateTxM params rebalancedTx modifiedUtxo
+            modifyMockChainState $ \s -> ((), s & coverageData %~ (<> covData))
+            checkInterp (k report)
+      Generate gen _shr k -> do
+        a <- liftIO $ QC.generate gen
+        checkInterp (k a)
+      GetCtx k ->
+        checkInterp (k env)
+      Skip -> go b model envs
+      InPrecondition k -> checkInterp (k False)
+      Fail err -> pure (TMFailed err)
+      Monitor _m k -> checkInterp k -- No Property to wrap; drop monitoring
+      MonitorLocal _m k -> checkInterp k -- No Property to wrap; drop monitoring
+      Done{} -> go True model envs
+      Named _n k -> checkInterp k
 
 {- | Check a precondition. If the argument threat model fails, the evaluation of the current
   transaction is skipped. If all transactions in an evaluation of `runThreatModel` are skipped
@@ -368,6 +488,7 @@ threatPrecondition = \case
   Monitor m k -> Monitor m (threatPrecondition k)
   MonitorLocal m k -> MonitorLocal m (threatPrecondition k)
   Done a -> Done a
+  Named n k -> Named n (threatPrecondition k)
 
 failPrecondition :: String -> ThreatModel a
 failPrecondition reason = Monitor (tabulate "Precondition failed with reason" [reason]) Skip

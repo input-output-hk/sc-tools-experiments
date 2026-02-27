@@ -39,7 +39,7 @@ This catches a common vulnerability pattern where scripts implement state
 machine logic but forget to enforce that outputs stay at the script address.
 -}
 unprotectedScriptOutput :: ThreatModel ()
-unprotectedScriptOutput = do
+unprotectedScriptOutput = Named "Unprotected Script Output" $ do
   -- The attacker is one of the transaction signers
   signer <- anySigner
 

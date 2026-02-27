@@ -32,6 +32,7 @@ import Control.Monad (unless, void)
 import Control.Monad.Except (MonadError, runExceptT)
 import Control.Monad.IO.Class (MonadIO (..))
 import Control.Monad.Trans (lift)
+
 import Convex.BuildTx (execBuildTx)
 import Convex.BuildTx qualified as BuildTx
 import Convex.Class (
@@ -61,14 +62,14 @@ import Convex.TestingInterface (
   propRunActionsWithOptions,
  )
 import Convex.ThreatModel (
-  ThreatModel,
+  ThreatModel (Named),
   ThreatModelEnv (..),
   counterexampleTM,
   ensure,
   getTxOutputs,
   paragraph,
   runThreatModel,
-  runThreatModelM,
+  runThreatModelMQuiet,
  )
 import Convex.ThreatModel.Cardano.Api (dummyTxId)
 import Convex.ThreatModel.LargeData (largeDataAttackWith)
@@ -83,6 +84,7 @@ import PlutusTx.IsData.Class (UnsafeFromData (unsafeFromBuiltinData))
 import Scripts qualified
 import Scripts.PingPong qualified as PingPong
 import Scripts.PingPong.Vulnerable qualified as VulnerablePingPong
+
 import Test.QuickCheck.Monadic (monadicIO, monitor, run)
 import Test.Tasty (TestTree, testGroup)
 import Test.Tasty.HUnit (testCase)
@@ -238,6 +240,7 @@ instance TestingInterface PingPongModel where
   monitoring _state _action prop = prop
 
   threatModels = [basicThreatModel, unprotectedScriptOutput, largeDataAttackWith 10, largeValueAttackWith 10]
+  expectedVulnerabilities = []
 
 plutusScript :: (C.IsPlutusScriptLanguage lang) => C.PlutusScript lang -> C.Script lang
 plutusScript = C.PlutusScript C.plutusScriptVersion
@@ -258,7 +261,7 @@ sophisticated scenarios where you need to test that scripts properly protect
 their outputs from being redirected.
 -}
 basicThreatModel :: ThreatModel ()
-basicThreatModel = do
+basicThreatModel = Named "Basic Threat Model" $ do
   -- Get transaction outputs to verify we can access transaction data
   outputs <- getTxOutputs
   -- Skip empty transactions (shouldn't happen, but be defensive)
@@ -355,15 +358,14 @@ propPingPongVulnerableToOutputRedirect opts = QC.expectFailure $ monadicIO $ do
             }
 
     -- Run the threat model INSIDE MockchainT with full Phase 1 + Phase 2 validation
-    lift $ runThreatModelM Wallet.w1 unprotectedScriptOutput [env]
+    -- Use runThreatModelMQuiet to suppress verbose counterexample output
+    lift $ runThreatModelMQuiet Wallet.w1 unprotectedScriptOutput [env]
 
   case result of
     (Left err, _) -> do
       monitor (counterexample $ "Mockchain error: " ++ show err)
       pure $ QC.property False
-    (Right prop, _finalState) -> do
-      monitor (counterexample "Testing VULNERABLE pingPong for unprotected script output vulnerability")
-      pure prop
+    (Right prop, _finalState) -> pure prop
  where
   vulnerablePingPongScenario
     :: ( MonadMockchain C.ConwayEra m
@@ -408,49 +410,6 @@ propPingPongVulnerableToOutputRedirect opts = QC.expectFailure $ monadicIO $ do
 
     pure (playTx, utxoBefore)
 
-pingPongMultipleRounds
-  :: forall era m
-   . ( MonadMockchain era m
-     , MonadError (BalanceTxError era) m
-     , MonadFail m
-     , C.IsBabbageBasedEra era
-     , C.HasScriptLanguageInEra C.PlutusScriptV3 era
-     )
-  => Scripts.PingPongState
-  -> [Scripts.PingPongRedeemer]
-  -> m ()
-pingPongMultipleRounds fstState redeemers = do
-  let value = 10_000_000
-  -- this is the inital state and will not be validated
-  -- we should prepare the state based on what we are about to play
-  let txBody =
-        execBuildTx
-          ( BuildTx.payToScriptInlineDatum
-              Defaults.networkId
-              (C.hashScript (plutusScript Scripts.pingPongValidatorScript))
-              -- we should start with Pinged if redeemer is Pong
-              -- and Ponged if redeemer is Ping
-              fstState
-              C.NoStakeAddress
-              (C.lovelaceToValue value)
-          )
-  tx <- tryBalanceAndSubmit mempty Wallet.w1 txBody TrailingChange []
-  _ <- play value tx redeemers
-  pure ()
- where
-  play _ tx [] = pure tx
-  play value tx (redeemer : xs) = do
-    newTx <-
-      tryBalanceAndSubmit
-        mempty
-        Wallet.w1
-        (execBuildTx $ Scripts.playPingPongRound Defaults.networkId value redeemer (getTxIn tx))
-        TrailingChange
-        []
-    play value newTx xs
-
-  getTxIn tx = C.TxIn (C.getTxId $ C.getTxBody tx) (C.TxIx 0)
-
 {- | Test that demonstrates the vulnerable PingPong script IS vulnerable to
 large data attacks. The 'largeDataAttackWith' threat model should find that
 bloated datums are accepted by the script.
@@ -475,15 +434,14 @@ propPingPongVulnerableToLargeData opts = QC.expectFailure $ monadicIO $ do
             }
 
     -- Run threat model inside MockchainT
-    lift $ runThreatModelM Wallet.w1 (largeDataAttackWith 10) [env]
+    -- Use runThreatModelMQuiet to suppress verbose counterexample output
+    lift $ runThreatModelMQuiet Wallet.w1 (largeDataAttackWith 10) [env]
 
   case result of
     (Left err, _) -> do
       monitor (counterexample $ "Mockchain error: " ++ show err)
       pure $ QC.property False
-    (Right prop, _finalState) -> do
-      monitor (counterexample "Testing VULNERABLE pingPong for large data attack vulnerability")
-      pure prop
+    (Right prop, _finalState) -> pure prop
  where
   vulnerablePingPongLargeDataScenario
     :: ( MonadMockchain C.ConwayEra m
@@ -556,15 +514,14 @@ propPingPongVulnerableToLargeValue opts = QC.expectFailure $ monadicIO $ do
             }
 
     -- Run threat model inside MockchainT
-    lift $ runThreatModelM Wallet.w1 (largeValueAttackWith 10) [env]
+    -- Use runThreatModelMQuiet to suppress verbose counterexample output
+    lift $ runThreatModelMQuiet Wallet.w1 (largeValueAttackWith 10) [env]
 
   case result of
     (Left err, _) -> do
       monitor (counterexample $ "Mockchain error: " ++ show err)
       pure $ QC.property False
-    (Right prop, _finalState) -> do
-      monitor (counterexample "Testing VULNERABLE pingPong for large value attack vulnerability")
-      pure prop
+    (Right prop, _finalState) -> pure prop
  where
   vulnerablePingPongLargeValueScenario
     :: ( MonadMockchain C.ConwayEra m
@@ -608,6 +565,49 @@ propPingPongVulnerableToLargeValue opts = QC.expectFailure $ monadicIO $ do
         []
 
     pure (playTx, utxoBefore)
+
+pingPongMultipleRounds
+  :: forall era m
+   . ( MonadMockchain era m
+     , MonadError (BalanceTxError era) m
+     , MonadFail m
+     , C.IsBabbageBasedEra era
+     , C.HasScriptLanguageInEra C.PlutusScriptV3 era
+     )
+  => Scripts.PingPongState
+  -> [Scripts.PingPongRedeemer]
+  -> m ()
+pingPongMultipleRounds fstState redeemers = do
+  let value = 10_000_000
+  -- this is the inital state and will not be validated
+  -- we should prepare the state based on what we are about to play
+  let txBody =
+        execBuildTx
+          ( BuildTx.payToScriptInlineDatum
+              Defaults.networkId
+              (C.hashScript (plutusScript Scripts.pingPongValidatorScript))
+              -- we should start with Pinged if redeemer is Pong
+              -- and Ponged if redeemer is Ping
+              fstState
+              C.NoStakeAddress
+              (C.lovelaceToValue value)
+          )
+  tx <- tryBalanceAndSubmit mempty Wallet.w1 txBody TrailingChange []
+  _ <- play value tx redeemers
+  pure ()
+ where
+  play _ tx [] = pure tx
+  play value tx (redeemer : xs) = do
+    newTx <-
+      tryBalanceAndSubmit
+        mempty
+        Wallet.w1
+        (execBuildTx $ Scripts.playPingPongRound Defaults.networkId value redeemer (getTxIn tx))
+        TrailingChange
+        []
+    play value newTx xs
+
+  getTxIn tx = C.TxIn (C.getTxId $ C.getTxBody tx) (C.TxIx 0)
 
 -- | All PingPong tests grouped together
 pingPongTests :: Options C.ConwayEra -> RunOptions -> TestTree

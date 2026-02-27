@@ -99,7 +99,7 @@ selfReferenceInjectionWith False -- Standard mode
 @
 -}
 selfReferenceInjectionWith :: Bool -> ThreatModel ()
-selfReferenceInjectionWith verbose = do
+selfReferenceInjectionWith verbose = Named "Self-Reference Injection" $ do
   -- Get all inputs and outputs
   inputs <- getTxInputs
   outputs <- getTxOutputs

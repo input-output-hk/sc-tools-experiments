@@ -57,7 +57,7 @@ module Convex.ThreatModel.SignatoryRemoval (
 ) where
 
 import Convex.ThreatModel (
-  ThreatModel,
+  ThreatModel (Named),
   failPrecondition,
   getTxRequiredSigners,
   pickAny,
@@ -86,7 +86,7 @@ Note: This threat model requires at least one required signer in the
 transaction. Transactions with no required signers will be skipped.
 -}
 signatoryRemoval :: ThreatModel ()
-signatoryRemoval = do
+signatoryRemoval = Named "Signatory Removal" $ do
   signers <- getTxRequiredSigners
   -- Precondition: there must be at least one required signer to remove
   threatPrecondition $ do

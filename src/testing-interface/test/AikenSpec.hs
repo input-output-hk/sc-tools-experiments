@@ -107,9 +107,11 @@ aikenTests opts =
               aikenSpendTest script 0 43
       , testCase "Aiken check-answer: wrong answer (10 + 99 != 43) fails" $ do
           script <- getScript
+          -- Note: Don't use failOnError here - we want the BalanceTxError to propagate
+          -- through ExceptT so mockchainFailsWithOptions can catch it
           mockchainFailsWithOptions
             opts
-            (failOnError $ aikenSpendTest script 10 99)
+            (aikenSpendTest script 10 99)
             (\_ -> pure ())
       , testCase "Aiken check-answer: edge case negative datum (-4 + 47 = 43) succeeds" $ do
           script <- getScript

@@ -80,7 +80,7 @@ duplicateListEntryAttack  -- Duplicate first entry in all lists
 @
 -}
 duplicateListEntryAttack :: ThreatModel ()
-duplicateListEntryAttack = do
+duplicateListEntryAttack = Named "Duplicate List Entry Attack" $ do
   -- Get all outputs from the transaction
   outputs <- getTxOutputs
 

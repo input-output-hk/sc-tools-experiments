@@ -28,38 +28,32 @@ module AikenTipJarSpec (
 
   -- * Test tree
   aikenTipJarTests,
-
-  -- * Standalone threat model tests
-  propTipJarVulnerableToByteBloat,
-  propTipJarVulnerableToLargeValue,
 ) where
 
 import Cardano.Api qualified as C
-import Control.Lens ((^.))
 import Control.Monad (void)
-import Control.Monad.Except (MonadError, runExceptT)
+import Control.Monad.Except (runExceptT)
 import Control.Monad.IO.Class (MonadIO (..))
 import Control.Monad.Trans (lift)
 import Convex.Aiken.Blueprint (Blueprint (..))
 import Convex.Aiken.Blueprint qualified as Blueprint
 import Convex.BuildTx (MonadBuildTx, execBuildTx)
 import Convex.BuildTx qualified as BuildTx
-import Convex.Class (MonadMockchain, getUtxo)
-import Convex.CoinSelection (BalanceTxError, ChangeOutputPosition (TrailingChange))
+import Convex.Class (getUtxo)
+import Convex.CoinSelection (ChangeOutputPosition (TrailingChange))
 import Convex.MockChain (fromLedgerUTxO, runMockchain0IOWith)
 import Convex.MockChain.CoinSelection (balanceAndSubmit, tryBalanceAndSubmit)
 import Convex.MockChain.Defaults qualified as Defaults
 import Convex.MockChain.Utils (mockchainSucceeds)
-import Convex.NodeParams (ledgerProtocolParameters)
 import Convex.TestingInterface (
-  Options (Options, params),
-  RunOptions (mcOptions),
+  RunOptions,
   TestingInterface (..),
   propRunActionsWithOptions,
  )
-import Convex.ThreatModel (ThreatModelEnv (..), runThreatModelM)
 import Convex.ThreatModel.Cardano.Api (dummyTxId)
 import Convex.ThreatModel.DatumBloat (datumByteBloatAttackWith)
+import Convex.ThreatModel.LargeData (largeDataAttackWith)
+import Convex.ThreatModel.LargeValue (largeValueAttackWith)
 import Convex.ThreatModel.UnprotectedScriptOutput (unprotectedScriptOutput)
 import Convex.Utils (failOnError)
 import Convex.Wallet (Wallet, addressInEra, verificationKeyHash)
@@ -72,17 +66,9 @@ import PlutusTx qualified
 import PlutusTx.Builtins qualified as PlutusTx
 import PlutusTx.IsData.Class (UnsafeFromData (unsafeFromBuiltinData))
 
-import Convex.ThreatModel.LargeData (largeDataAttackWith)
-import Convex.ThreatModel.LargeValue (largeValueAttackWith)
 import System.IO.Unsafe (unsafePerformIO)
-import Test.QuickCheck.Monadic (monadicIO, monitor, run)
 import Test.Tasty (TestTree, testGroup)
 import Test.Tasty.HUnit (Assertion, assertFailure, testCase)
-import Test.Tasty.QuickCheck (
-  Property,
-  counterexample,
-  testProperty,
- )
 import Test.Tasty.QuickCheck qualified as QC
 
 -- ----------------------------------------------------------------------------
@@ -423,118 +409,6 @@ hugeMessagePermanentlyLocksTipjar = do
   pure ()
 
 -- ----------------------------------------------------------------------------
--- Standalone Threat Model Tests
--- ----------------------------------------------------------------------------
-
-{- | Run a tipjar scenario: initialize + add one tip.
-
-Returns the last transaction (the tip transaction) and the UTxO state
-captured BEFORE that transaction executed, for threat model testing.
-
-This follows the same pattern as BountySpec's bountyVulnerableScenario.
--}
-tipJarScenario
-  :: ( MonadMockchain C.ConwayEra m
-     , MonadError (BalanceTxError C.ConwayEra) m
-     , MonadFail m
-     )
-  => m (C.Tx C.ConwayEra, C.UTxO C.ConwayEra)
-tipJarScenario = do
-  -- Initialize the tipjar with wallet 1 as owner
-  let initTxBody = execBuildTx $ initTipJar Defaults.networkId Wallet.w1 10_000_000
-  initTx <- tryBalanceAndSubmit mempty Wallet.w1 initTxBody TrailingChange []
-
-  -- Find the tipjar UTxO
-  let initTxIn = C.TxIn (C.getTxId (C.getTxBody initTx)) (C.TxIx 0)
-      initialDatum =
-        TipJarDatum
-          { tjOwner = PlutusTx.toBuiltin $ C.serialiseToRawBytes (verificationKeyHash Wallet.w1)
-          , tjMessages = []
-          }
-      message = PlutusTx.toBuiltin ("Hello" :: BS.ByteString)
-
-  -- Capture UTxO BEFORE adding the tip (for threat model)
-  utxoBefore <- fromLedgerUTxO C.shelleyBasedEra <$> getUtxo
-
-  -- Add a tip - using w1 because threat model re-balancer uses w1 for re-signing
-  let tipTxBody = execBuildTx $ addTip Defaults.networkId initTxIn initialDatum 10_000_000 5_000_000 message
-  tipTx <- tryBalanceAndSubmit mempty Wallet.w1 tipTxBody TrailingChange []
-
-  pure (tipTx, utxoBefore)
-
-{- | Test that the tipjar is vulnerable to datum byte bloat attack.
-
-This test runs the datumByteBloatAttackWith threat model against a tipjar
-transaction. The threat model attempts to inflate ByteString fields in the
-datum (like the message) to detect if the validator limits field sizes.
-
-Since the tipjar validator does NOT limit message sizes, this test will
-FAIL - proving the vulnerability exists.
-
-This test currently FAILS (the threat model detects the vulnerability).
-Once verified, wrap in QC.expectFailure to mark it as expected behavior.
-
-NOTE: This uses runThreatModelM which runs INSIDE MockchainT for full
-Phase 1 + Phase 2 validation with re-balancing and re-signing.
--}
-propTipJarVulnerableToByteBloat :: RunOptions -> Property
-propTipJarVulnerableToByteBloat opts = monadicIO $ do
-  let Options{params} = mcOptions opts
-
-  -- Run the scenario AND the threat model INSIDE MockchainT
-  result <- run $ runMockchain0IOWith Wallet.initialUTxOs params $ runExceptT $ do
-    (tx, utxo) <- tipJarScenario
-
-    let pparams' = params ^. ledgerProtocolParameters
-        env =
-          ThreatModelEnv
-            { currentTx = tx
-            , currentUTxOs = utxo
-            , pparams = pparams'
-            }
-
-    -- Run the threat model INSIDE MockchainT with full Phase 1 + Phase 2 validation
-    -- Using 1000 bytes to match the original threatModels configuration
-    lift $ runThreatModelM Wallet.w1 (datumByteBloatAttackWith 1000) [env]
-
-  case result of
-    (Left err, _) -> do
-      monitor (counterexample $ "Mockchain error: " ++ show err)
-      pure $ QC.property False
-    (Right prop, _finalState) -> do
-      monitor (counterexample "Testing tipjar for datum byte bloat vulnerability")
-      pure prop
-
-{- | Test that the tipjar is vulnerable to large value attack.
-The validator doesn't check the output value structure, so junk tokens
-can be minted and added to the script output.
--}
-propTipJarVulnerableToLargeValue :: RunOptions -> Property
-propTipJarVulnerableToLargeValue opts = monadicIO $ do
-  let Options{params} = mcOptions opts
-
-  result <- run $ runMockchain0IOWith Wallet.initialUTxOs params $ runExceptT $ do
-    (tx, utxo) <- tipJarScenario
-
-    let pparams' = params ^. ledgerProtocolParameters
-        env =
-          ThreatModelEnv
-            { currentTx = tx
-            , currentUTxOs = utxo
-            , pparams = pparams'
-            }
-
-    lift $ runThreatModelM Wallet.w1 (largeValueAttackWith 10) [env]
-
-  case result of
-    (Left err, _) -> do
-      monitor (counterexample $ "Mockchain error: " ++ show err)
-      pure $ QC.property False
-    (Right prop, _finalState) -> do
-      monitor (counterexample "Testing tipjar for large value attack vulnerability")
-      pure prop
-
--- ----------------------------------------------------------------------------
 -- TestingInterface instance
 -- ----------------------------------------------------------------------------
 
@@ -628,9 +502,7 @@ instance TestingInterface TipJarModel where
     InitTipJar -> do
       -- liftIO $ putStrLn "[TipJar] Initializing tipjar"
       let txBody = execBuildTx $ initTipJar @C.ConwayEra Defaults.networkId Wallet.w1 10_000_000
-      runExceptT (balanceAndSubmit mempty Wallet.w1 txBody TrailingChange []) >>= \case
-        Left err -> fail $ "Failed to initialize tipjar: " ++ show err
-        Right _ -> pure ()
+      void $ balanceAndSubmit mempty Wallet.w1 txBody TrailingChange []
     Tip msg -> do
       -- liftIO $ putStrLn $ "[TipJar] Adding tip with message length: " ++ show (PlutusTx.lengthOfByteString msg)
       -- Find the UTxO at the script address
@@ -652,9 +524,7 @@ instance TestingInterface TipJarModel where
           -- NOTE: Using w1 for tips because the threat model re-balancer uses w1 for re-signing.
           -- The threat model's rebalanceAndSignTx looks for a change output to the wallet address.
           -- If we used w2 here, the threat model would fail with "No change output found".
-          runExceptT (balanceAndSubmit mempty Wallet.w1 txBody TrailingChange []) >>= \case
-            Left err -> fail $ "Failed to add tip: " ++ show err
-            Right _ -> pure ()
+          void $ balanceAndSubmit mempty Wallet.w1 txBody TrailingChange []
     OwnerClaim -> do
       -- liftIO $ putStrLn "[TipJar] Owner claiming tipjar"
       -- Find the UTxO at the script address
@@ -666,9 +536,7 @@ instance TestingInterface TipJarModel where
         ((txIn, C.TxOut _ (C.TxOutValueShelleyBased _ val) _ _) : _) -> do
           let tipJarValue = C.fromMaryValue val
               txBody = execBuildTx $ claimJar @C.ConwayEra Defaults.networkId txIn tipJarValue Wallet.w1
-          runExceptT (balanceAndSubmit mempty Wallet.w1 txBody TrailingChange []) >>= \case
-            Left err -> fail $ "Failed to claim tipjar: " ++ show err
-            Right _ -> pure ()
+          void $ balanceAndSubmit mempty Wallet.w1 txBody TrailingChange []
 
   validate model = case tmTxIn model of
     Nothing -> pure True -- No tipjar deployed
@@ -715,6 +583,10 @@ instance TestingInterface TipJarModel where
   -- all FAIL (detecting vulnerabilities), so only unprotectedScriptOutput is included.
   threatModels = [unprotectedScriptOutput, largeDataAttackWith 10]
 
+  -- Expected vulnerabilities: threat models that SHOULD find vulnerabilities.
+  -- These are run with inverted pass/fail semantics.
+  expectedVulnerabilities = [datumByteBloatAttackWith 1000, largeValueAttackWith 10]
+
 -- ----------------------------------------------------------------------------
 -- Test tree
 -- ----------------------------------------------------------------------------
@@ -728,14 +600,4 @@ aikenTipJarTests runOpts =
     , propRunActionsWithOptions @TipJarModel
         "property-based testing"
         runOpts
-    , testProperty
-        "vulnerable to datum byte bloat"
-        -- The tipjar IS vulnerable (doesn't limit message sizes), but the threat model
-        -- test fails because the validator's datum structure checks fail when the
-        -- threat model modifies the datum. We use expectFailure to document this.
-        -- See 'hugeMessagePermanentlyLocksTipjar' for a clearer demonstration.
-        (QC.expectFailure $ propTipJarVulnerableToByteBloat runOpts)
-    , testProperty
-        "vulnerable to large value attack"
-        (QC.expectFailure $ propTipJarVulnerableToLargeValue runOpts)
     ]

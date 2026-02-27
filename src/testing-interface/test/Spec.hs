@@ -9,6 +9,7 @@ import Convex.TestingInterface (
   mockchainSucceedsWithOptions,
   modifyTransactionLimits,
   printCoverageReport,
+  silentCoverageReport,
   withCoverage,
  )
 import Convex.Utils (failOnError)
@@ -48,7 +49,7 @@ main = withCoverage config $ \opts0 runOpts0 ->
   config =
     CoverageConfig
       { coverageIndices = [pingPongCovIdx]
-      , coverageReport = printCoverageReport
+      , coverageReport = silentCoverageReport
       }
 
 tests :: Options C.ConwayEra -> RunOptions -> TestTree

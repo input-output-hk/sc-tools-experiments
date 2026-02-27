@@ -77,7 +77,7 @@ account inputs can cross-match outputs because the validator uses list.find
 without enforcing uniqueness.
 -}
 mutualExclusionAttack :: ThreatModel ()
-mutualExclusionAttack = do
+mutualExclusionAttack = Named "Mutual Exclusion Attack" $ do
   -- Get all outputs from the transaction
   outputs <- getTxOutputs
 

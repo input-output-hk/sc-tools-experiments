@@ -88,7 +88,7 @@ For a transaction with script outputs:
 The attack ensures at least 'minOutputAda' remains to avoid min-UTxO failures.
 -}
 valueUnderpaymentAttackWith :: Double -> ThreatModel ()
-valueUnderpaymentAttackWith reductionFactor = do
+valueUnderpaymentAttackWith reductionFactor = Named ("Value Underpayment Attack (" ++ show (reductionFactor * 100) ++ "% reduction)") $ do
   -- Get all outputs from the transaction
   outputs <- getTxOutputs
 

@@ -1,6 +1,5 @@
 {-# LANGUAGE DeriveAnyClass #-}
 {-# LANGUAGE DerivingStrategies #-}
-{-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE NamedFieldPuns #-}
 {-# LANGUAGE NumericUnderscores #-}
 {-# LANGUAGE OverloadedStrings #-}
@@ -57,26 +56,22 @@ module AikenMultisigTreasuryV2Spec (
 
   -- * Standalone threat model tests
   propMultisigV2TokenForgeryExploit,
-  propMultisigV2TokenForgeryThreatModel,
 ) where
 
 import Cardano.Api qualified as C
-import Control.Lens ((^.))
 import Control.Monad (void)
-import Control.Monad.Except (MonadError, runExceptT)
+import Control.Monad.Except (runExceptT)
 import Control.Monad.IO.Class (MonadIO (..))
-import Control.Monad.Trans (lift)
 import Convex.Aiken.Blueprint (Blueprint (..))
 import Convex.Aiken.Blueprint qualified as Blueprint
 import Convex.BuildTx (MonadBuildTx, execBuildTx)
 import Convex.BuildTx qualified as BuildTx
 import Convex.Class (MonadMockchain, getUtxo)
-import Convex.CoinSelection (BalanceTxError, ChangeOutputPosition (TrailingChange))
+import Convex.CoinSelection (ChangeOutputPosition (TrailingChange))
 import Convex.MockChain (fromLedgerUTxO, runMockchain0IOWith)
 import Convex.MockChain.CoinSelection (balanceAndSubmit, tryBalanceAndSubmit)
 import Convex.MockChain.Defaults qualified as Defaults
 import Convex.MockChain.Utils (mockchainSucceeds)
-import Convex.NodeParams (ledgerProtocolParameters)
 import Convex.PlutusLedger.V1 (transAddressInEra)
 import Convex.TestingInterface (
   Options (Options, params),
@@ -84,7 +79,6 @@ import Convex.TestingInterface (
   TestingInterface (..),
   propRunActionsWithOptions,
  )
-import Convex.ThreatModel (ThreatModelEnv (..), runThreatModelM)
 import Convex.ThreatModel.Cardano.Api (dummyTxId)
 
 import Convex.ThreatModel.TokenForgery (tokenForgeryAttackV3)
@@ -107,7 +101,6 @@ import Test.Tasty.HUnit (assertFailure, testCase)
 import Test.Tasty.QuickCheck (
   Property,
   counterexample,
-  testProperty,
  )
 import Test.Tasty.QuickCheck qualified as QC
 
@@ -633,105 +626,6 @@ propMultisigV2TokenForgeryExploit opts = monadicIO $ do
       -- The exploit SUCCEEDED - vulnerability confirmed!
       pure $ QC.property True
 
-{- | Run a scenario for threat model testing with continuation output.
-
-This creates a proper Sign transaction that has a continuation output.
--}
-multisigV2ContinuationScenario
-  :: ( MonadMockchain C.ConwayEra m
-     , MonadError (BalanceTxError C.ConwayEra) m
-     , MonadFail m
-     )
-  => m (C.Tx C.ConwayEra, C.UTxO C.ConwayEra)
-multisigV2ContinuationScenario = do
-  -- Initialize multisig
-  let initTxBody = execBuildTx $ initMultisigV2 @C.ConwayEra Defaults.networkId Wallet.w1 20_000_000
-  _ <- tryBalanceAndSubmit mempty Wallet.w1 initTxBody TrailingChange []
-
-  -- Capture UTxO BEFORE signing (for threat model)
-  utxoBefore <- fromLedgerUTxO C.shelleyBasedEra <$> getUtxo
-
-  -- Sign with w1 (creating continuation)
-  result <- findMultisigV2Utxos
-  case result of
-    [] -> fail "Expected UTxO at script address"
-    ((txIn, value, datum) : _) -> do
-      let signTxBody = execBuildTx $ signMultisigV2 @C.ConwayEra Defaults.networkId txIn datum value Wallet.w1
-      signTx <- tryBalanceAndSubmit mempty Wallet.w1 signTxBody TrailingChange []
-      pure (signTx, utxoBefore)
-
-{- | Test unprotectedScriptOutput threat model on the multisig v2.
-
-The Sign action creates a continuation output.
--}
-propMultisigV2UnprotectedOutput :: RunOptions -> Property
-propMultisigV2UnprotectedOutput opts = QC.expectFailure $ monadicIO $ do
-  let Options{params} = mcOptions opts
-
-  result <- run $ runMockchain0IOWith Wallet.initialUTxOs params $ runExceptT $ do
-    (tx, utxo) <- multisigV2ContinuationScenario
-
-    let pparams' = params ^. ledgerProtocolParameters
-        env =
-          ThreatModelEnv
-            { currentTx = tx
-            , currentUTxOs = utxo
-            , pparams = pparams'
-            }
-
-    -- Run the threat model INSIDE MockchainT with full Phase 1 + Phase 2 validation
-    lift $ runThreatModelM Wallet.w1 unprotectedScriptOutput [env]
-
-  case result of
-    (Left err, _) -> do
-      monitor (counterexample $ "Mockchain error: " ++ show err)
-      pure $ QC.property False
-    (Right prop, _finalState) -> do
-      monitor (counterexample "Testing multisig v2 for unprotected script output vulnerability")
-      pure prop
-
-{- | Test tokenForgeryAttackV3 threat model on the multisig v2.
-
-The V2 minting policy only checks that SOMEONE signed the transaction:
-@list.length(self.extra_signatories) > 0@
-
-This means any signed transaction can mint additional validation tokens.
-The threat model should detect this by trying to mint extra tokens with
-the same minting policy.
-
-This test uses expectFailure because the contract IS vulnerable - the
-threat model's shouldNotValidate will fail (i.e., the extra minting
-will succeed), causing the test to fail normally. We expect this failure.
--}
-propMultisigV2TokenForgeryThreatModel :: RunOptions -> Property
-propMultisigV2TokenForgeryThreatModel opts = QC.expectFailure $ monadicIO $ do
-  let Options{params} = mcOptions opts
-
-  result <- run $ runMockchain0IOWith Wallet.initialUTxOs params $ runExceptT $ do
-    -- Use the same scenario that creates a Sign transaction
-    -- This transaction already has minting (the validation token)
-    (tx, utxo) <- multisigV2ContinuationScenario
-
-    let pparams' = params ^. ledgerProtocolParameters
-        env =
-          ThreatModelEnv
-            { currentTx = tx
-            , currentUTxOs = utxo
-            , pparams = pparams'
-            }
-
-    -- Run the token forgery threat model
-    -- It will try to mint extra tokens using the V2 minting policy
-    lift $ runThreatModelM Wallet.w1 (tokenForgeryAttackV3 multisigV2MintScript validationTokenName) [env]
-
-  case result of
-    (Left err, _) -> do
-      monitor (counterexample $ "Mockchain error: " ++ show err)
-      pure $ QC.property False
-    (Right prop, _finalState) -> do
-      monitor (counterexample "Testing multisig v2 for token forgery vulnerability via threat model")
-      pure prop
-
 -- ----------------------------------------------------------------------------
 -- TestingInterface instance
 -- ----------------------------------------------------------------------------
@@ -875,9 +769,7 @@ instance TestingInterface MultisigV2Model where
   perform _model action = case action of
     InitMultisigV2 -> do
       let txBody = execBuildTx $ initMultisigV2 @C.ConwayEra Defaults.networkId Wallet.w1 20_000_000
-      runExceptT (balanceAndSubmit mempty Wallet.w1 txBody TrailingChange []) >>= \case
-        Left err -> fail $ "Failed to initialize multisig v2: " ++ show err
-        Right _ -> pure ()
+      void $ balanceAndSubmit mempty Wallet.w1 txBody TrailingChange []
     SignMultisigV2 sc -> do
       let w = signerToWallet sc
       result <- findMultisigV2Utxos
@@ -889,9 +781,7 @@ instance TestingInterface MultisigV2Model where
               additionalWitnesses = case sc of
                 Signer1 -> []
                 Signer2 -> [C.WitnessPaymentKey (getWallet w)]
-          runExceptT (balanceAndSubmit mempty Wallet.w1 txBody TrailingChange additionalWitnesses) >>= \case
-            Left err -> fail $ "Failed to sign multisig v2: " ++ show err
-            Right _ -> pure ()
+          void $ balanceAndSubmit mempty Wallet.w1 txBody TrailingChange additionalWitnesses
     UseMultisigV2 -> do
       result <- findMultisigV2Utxos
       case result of
@@ -904,9 +794,7 @@ instance TestingInterface MultisigV2Model where
               txBody = execBuildTx $ useMultisigV2 @C.ConwayEra txIn beneficiaryAddr releaseVal signer
               -- If signer is not w1, we need to provide their witness since w1 is used for balancing
               additionalWitnesses = if w1IsSigner then [] else [C.WitnessPaymentKey (getWallet signer)]
-          runExceptT (balanceAndSubmit mempty Wallet.w1 txBody TrailingChange additionalWitnesses) >>= \case
-            Left err -> fail $ "Failed to use multisig v2: " ++ show err
-            Right _ -> pure ()
+          void $ balanceAndSubmit mempty Wallet.w1 txBody TrailingChange additionalWitnesses
     ForgeTokenAndUse -> do
       -- For the property test, we need a simplified approach.
       -- The attacker will use w3 and create their own UTxO first.
@@ -932,9 +820,7 @@ instance TestingInterface MultisigV2Model where
 
       -- First, create attacker's UTxO (w3)
       let createTxBody = execBuildTx $ createAttackerDatum @C.ConwayEra Defaults.networkId Wallet.w3 20_000_000
-      runExceptT (balanceAndSubmit mempty Wallet.w3 createTxBody TrailingChange []) >>= \case
-        Left err -> fail $ "Failed to create attacker UTxO: " ++ show err
-        Right _ -> pure ()
+      void $ balanceAndSubmit mempty Wallet.w3 createTxBody TrailingChange []
 
       -- Now find the attacker's UTxO (it'll be one with w3 in signed_users)
       allUtxos <- findMultisigV2Utxos
@@ -943,9 +829,7 @@ instance TestingInterface MultisigV2Model where
         [] -> fail "No attacker UTxO found"
         ((txIn, value, _) : _) -> do
           let exploitTxBody = execBuildTx $ createFakeDatumAndUse @C.ConwayEra Defaults.networkId txIn value Wallet.w3
-          runExceptT (balanceAndSubmit mempty Wallet.w3 exploitTxBody TrailingChange []) >>= \case
-            Left err -> fail $ "Token forgery exploit failed: " ++ show err
-            Right _ -> pure ()
+          void $ balanceAndSubmit mempty Wallet.w3 exploitTxBody TrailingChange []
 
   validate _model = pure True
 
@@ -953,6 +837,13 @@ instance TestingInterface MultisigV2Model where
 
   -- Note: threatModels empty for same reasons as v1
   threatModels = []
+
+  -- Expected vulnerabilities: these threat models SHOULD find issues
+  -- (inverted pass/fail, quiet output)
+  expectedVulnerabilities =
+    [ unprotectedScriptOutput
+    , tokenForgeryAttackV3 multisigV2MintScript validationTokenName
+    ]
 
 -- ----------------------------------------------------------------------------
 -- Test tree
@@ -969,14 +860,8 @@ aikenMultisigTreasuryV2Tests runOpts =
         [ propRunActionsWithOptions @MultisigV2Model
             "property-based testing"
             runOpts{disableNegativeTesting = Just "CTF vulnerability: token forgery allows unauthorized treasury access without valid governance token"}
-        , testProperty
+        , QC.testProperty
             "vulnerable to token forgery"
             (propMultisigV2TokenForgeryExploit runOpts)
-        , testProperty
-            "vulnerable to unprotected script output (expectFailure)"
-            (propMultisigV2UnprotectedOutput runOpts)
-        , testProperty
-            "vulnerable to token forgery threat model (expectFailure)"
-            (propMultisigV2TokenForgeryThreatModel runOpts)
         ]
     ]

@@ -35,36 +35,28 @@ module AikenVestingSpec (
 
   -- * Test tree
   aikenVestingTests,
-
-  -- * Standalone threat model tests
-  propVestingVulnerableToTimeBound,
 ) where
 
 import Cardano.Api qualified as C
-import Control.Lens ((%~), (^.))
+import Control.Lens ((%~))
 import Control.Monad (void)
-import Control.Monad.Except (MonadError, runExceptT)
 import Control.Monad.IO.Class (MonadIO (..))
-import Control.Monad.Trans (lift)
 import Convex.Aiken.Blueprint (Blueprint (..))
 import Convex.Aiken.Blueprint qualified as Blueprint
 import Convex.BuildTx (MonadBuildTx, execBuildTx)
 import Convex.BuildTx qualified as BuildTx
 import Convex.CardanoApi.Lenses (txValidityLowerBound, txValidityUpperBound)
 import Convex.Class (MonadMockchain, getUtxo, setSlot)
-import Convex.CoinSelection (BalanceTxError, ChangeOutputPosition (TrailingChange))
-import Convex.MockChain (fromLedgerUTxO, runMockchain0IOWith)
+import Convex.CoinSelection (ChangeOutputPosition (TrailingChange))
+import Convex.MockChain (fromLedgerUTxO)
 import Convex.MockChain.CoinSelection (balanceAndSubmit, tryBalanceAndSubmit)
 import Convex.MockChain.Defaults qualified as Defaults
 import Convex.MockChain.Utils (mockchainSucceeds)
-import Convex.NodeParams (ledgerProtocolParameters)
 import Convex.TestingInterface (
-  Options (Options, params),
-  RunOptions (mcOptions),
+  RunOptions,
   TestingInterface (..),
   propRunActionsWithOptions,
  )
-import Convex.ThreatModel (ThreatModelEnv (..), runThreatModelM)
 import Convex.ThreatModel.Cardano.Api (dummyTxId)
 import Convex.ThreatModel.TimeBoundManipulation (timeBoundManipulation)
 import Convex.Utils (failOnError)
@@ -78,14 +70,8 @@ import PlutusTx qualified
 import PlutusTx.Builtins qualified as PlutusTx
 
 import System.IO.Unsafe (unsafePerformIO)
-import Test.QuickCheck.Monadic (monadicIO, monitor, run)
 import Test.Tasty (TestTree, testGroup)
 import Test.Tasty.HUnit (assertFailure, testCase)
-import Test.Tasty.QuickCheck (
-  Property,
-  counterexample,
-  testProperty,
- )
 import Test.Tasty.QuickCheck qualified as QC
 
 -- ----------------------------------------------------------------------------
@@ -382,91 +368,6 @@ aikenVestingUnitTests =
     ]
 
 -- ----------------------------------------------------------------------------
--- Standalone Threat Model Tests
--- ----------------------------------------------------------------------------
-
-{- | Run a vesting scenario: lock funds, advance past deadline, create unlock tx.
-
-Returns the unlock transaction and the UTxO state captured BEFORE the unlock,
-for threat model testing.
-
-The unlock transaction has a validity range [deadline, deadline+margin].
-The threat model will widen this to [0, deadline+margin] to test vulnerability.
--}
-vestingScenario
-  :: ( MonadMockchain C.ConwayEra m
-     , MonadError (BalanceTxError C.ConwayEra) m
-     , MonadFail m
-     )
-  => m (C.Tx C.ConwayEra, C.UTxO C.ConwayEra)
-vestingScenario = do
-  -- Lock until slot 500
-  let lockSlot = C.SlotNo 500
-      lockTime = slotToPosixMs lockSlot
-
-  -- w1 locks funds
-  let lockTxBody = execBuildTx $ lockVesting @C.ConwayEra Defaults.networkId Wallet.w1 lockTime 10_000_000
-  _ <- tryBalanceAndSubmit mempty Wallet.w1 lockTxBody TrailingChange []
-
-  -- Advance to slot 600 (past the deadline)
-  setSlot (C.SlotNo 600)
-
-  -- Capture UTxO BEFORE unlocking (for threat model)
-  utxoBefore <- fromLedgerUTxO C.shelleyBasedEra <$> getUtxo
-
-  -- Find the locked UTxO
-  result <- findVestingUtxos
-  case result of
-    [] -> fail "Expected UTxO at script address"
-    ((txIn, _, _) : _) -> do
-      -- Create unlock with proper validity range [500, 700]
-      let lowerSlot = C.SlotNo 500
-          upperSlot = C.SlotNo 700
-          unlockTxBody = execBuildTx $ unlockVesting @C.ConwayEra txIn Wallet.w1 lowerSlot upperSlot
-      unlockTx <- tryBalanceAndSubmit mempty Wallet.w1 unlockTxBody TrailingChange []
-      pure (unlockTx, utxoBefore)
-
-{- | Test that the vesting contract is vulnerable to time bound manipulation.
-
-This test runs the timeBoundManipulation threat model against the vesting
-validator. The threat model attempts to widen the validity range's lower bound
-to slot 0, making the transaction valid at times before the deadline.
-
-Since the vesting validator only checks upper_bound (not lower_bound), the
-threat model WILL find the vulnerability - the modified transaction still validates.
-
-We use 'expectFailure' because finding the vulnerability means the
-QuickCheck property fails (which is expected for a vulnerable script).
--}
-propVestingVulnerableToTimeBound :: RunOptions -> Property
-propVestingVulnerableToTimeBound opts = QC.expectFailure $ monadicIO $ do
-  let Options{params} = mcOptions opts
-
-  -- Run the scenario AND the threat model INSIDE MockchainT
-  result <- run $ runMockchain0IOWith Wallet.initialUTxOs params $ runExceptT $ do
-    (tx, utxo) <- vestingScenario
-
-    let pparams' = params ^. ledgerProtocolParameters
-        env =
-          ThreatModelEnv
-            { currentTx = tx
-            , currentUTxOs = utxo
-            , pparams = pparams'
-            }
-
-    -- Run the threat model INSIDE MockchainT with full Phase 1 + Phase 2 validation
-    -- Use w1 (the beneficiary/signer) for re-balancing
-    lift $ runThreatModelM Wallet.w1 timeBoundManipulation [env]
-
-  case result of
-    (Left err, _) -> do
-      monitor (counterexample $ "Mockchain error: " ++ show err)
-      pure $ QC.property False
-    (Right prop, _finalState) -> do
-      monitor (counterexample "Testing vesting for time bound manipulation vulnerability")
-      pure prop
-
--- ----------------------------------------------------------------------------
 -- TestingInterface instance
 -- ----------------------------------------------------------------------------
 
@@ -563,9 +464,7 @@ instance TestingInterface VestingModel where
       setSlot (C.SlotNo 0)
       let lockTime = slotToPosixMs lockSlot
           txBody = execBuildTx $ lockVesting @C.ConwayEra Defaults.networkId Wallet.w1 lockTime amount
-      runExceptT (balanceAndSubmit mempty Wallet.w1 txBody TrailingChange []) >>= \case
-        Left err -> fail $ "Failed to lock vesting: " ++ show err
-        Right _ -> pure ()
+      void $ balanceAndSubmit mempty Wallet.w1 txBody TrailingChange []
     UnlockAfterDeadline -> do
       result <- findVestingUtxos
       case result of
@@ -582,9 +481,7 @@ instance TestingInterface VestingModel where
           let lowerSlot = lockSlot
               upperSlot = C.SlotNo (lockSlotNum + 100)
               txBody = execBuildTx $ unlockVesting @C.ConwayEra txIn Wallet.w1 lowerSlot upperSlot
-          runExceptT (balanceAndSubmit mempty Wallet.w1 txBody TrailingChange []) >>= \case
-            Left err -> fail $ "Failed to unlock vesting: " ++ show err
-            Right _ -> pure ()
+          void $ balanceAndSubmit mempty Wallet.w1 txBody TrailingChange []
     UnlockBeforeDeadline -> do
       result <- findVestingUtxos
       case result of
@@ -599,9 +496,7 @@ instance TestingInterface VestingModel where
           let lowerSlot = C.SlotNo 0
               upperSlot = C.SlotNo (lockSlotNum + 1)
               txBody = execBuildTx $ unlockVesting @C.ConwayEra txIn Wallet.w1 lowerSlot upperSlot
-          runExceptT (balanceAndSubmit mempty Wallet.w1 txBody TrailingChange []) >>= \case
-            Left err -> fail $ "Exploit failed (expected to succeed due to vulnerability): " ++ show err
-            Right _ -> pure ()
+          void $ balanceAndSubmit mempty Wallet.w1 txBody TrailingChange []
 
   validate model = do
     result <- findVestingUtxos
@@ -615,9 +510,6 @@ instance TestingInterface VestingModel where
 
   monitoring _state _action prop = prop
 
-  -- NOTE: timeBoundManipulation is tested separately with expectFailure
-  -- (propVestingVulnerableToTimeBound) since it's a KNOWN vulnerability.
-  --
   -- Threat models are empty because vesting is a one-shot spend contract:
   -- - Lock: Creates script output with inline datum
   -- - Unlock: Spends script output, funds go to beneficiary (NO continuation)
@@ -630,8 +522,11 @@ instance TestingInterface VestingModel where
   --
   -- Since action sequences alternate Lock→Unlock→Lock→Unlock..., the final
   -- transaction (Unlock) never has script outputs, causing 100% test discard.
-  -- The vulnerability (timeBoundManipulation) is tested as a standalone test.
   threatModels = []
+
+  -- timeBoundManipulation is a KNOWN vulnerability in this contract.
+  -- It's run as an expected vulnerability (inverted pass/fail).
+  expectedVulnerabilities = [timeBoundManipulation]
 
 -- ----------------------------------------------------------------------------
 -- Test tree
@@ -648,8 +543,5 @@ aikenVestingTests runOpts =
         [ propRunActionsWithOptions @VestingModel
             "property-based testing"
             runOpts
-        , testProperty
-            "vulnerable to time bound manipulation (expectFailure)"
-            (propVestingVulnerableToTimeBound runOpts)
         ]
     ]

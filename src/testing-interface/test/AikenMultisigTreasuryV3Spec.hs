@@ -1,6 +1,5 @@
 {-# LANGUAGE DeriveAnyClass #-}
 {-# LANGUAGE DerivingStrategies #-}
-{-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE NamedFieldPuns #-}
 {-# LANGUAGE NumericUnderscores #-}
 {-# LANGUAGE OverloadedStrings #-}
@@ -56,26 +55,22 @@ module AikenMultisigTreasuryV3Spec (
 
   -- * Standalone threat model tests
   propMultisigV3SignReplayExploit,
-  propMultisigV3VulnerableToDuplicateListEntry,
 ) where
 
 import Cardano.Api qualified as C
-import Control.Lens ((^.))
 import Control.Monad (void)
-import Control.Monad.Except (MonadError, runExceptT)
+import Control.Monad.Except (runExceptT)
 import Control.Monad.IO.Class (MonadIO (..))
-import Control.Monad.Trans (lift)
 import Convex.Aiken.Blueprint (Blueprint (..))
 import Convex.Aiken.Blueprint qualified as Blueprint
 import Convex.BuildTx (MonadBuildTx, execBuildTx)
 import Convex.BuildTx qualified as BuildTx
 import Convex.Class (MonadMockchain, getUtxo)
-import Convex.CoinSelection (BalanceTxError, ChangeOutputPosition (TrailingChange))
+import Convex.CoinSelection (ChangeOutputPosition (TrailingChange))
 import Convex.MockChain (fromLedgerUTxO, runMockchain0IOWith)
 import Convex.MockChain.CoinSelection (balanceAndSubmit, tryBalanceAndSubmit)
 import Convex.MockChain.Defaults qualified as Defaults
 import Convex.MockChain.Utils (mockchainSucceeds)
-import Convex.NodeParams (ledgerProtocolParameters)
 import Convex.PlutusLedger.V1 (transAddressInEra)
 import Convex.TestingInterface (
   Options (Options, params),
@@ -83,7 +78,6 @@ import Convex.TestingInterface (
   TestingInterface (..),
   propRunActionsWithOptions,
  )
-import Convex.ThreatModel (ThreatModelEnv (..), runThreatModelM)
 import Convex.ThreatModel.Cardano.Api (dummyTxId)
 
 import Convex.ThreatModel.DuplicateListEntry (duplicateListEntryAttack)
@@ -106,7 +100,6 @@ import Test.Tasty.HUnit (assertFailure, testCase)
 import Test.Tasty.QuickCheck (
   Property,
   counterexample,
-  testProperty,
  )
 import Test.Tasty.QuickCheck qualified as QC
 
@@ -651,105 +644,6 @@ propMultisigV3SignReplayExploit opts = monadicIO $ do
       -- The exploit SUCCEEDED - vulnerability confirmed!
       pure $ QC.property True
 
-{- | Run a scenario for threat model testing with continuation output.
-
-This creates a proper Sign transaction that has a continuation output.
--}
-multisigV3ContinuationScenario
-  :: ( MonadMockchain C.ConwayEra m
-     , MonadError (BalanceTxError C.ConwayEra) m
-     , MonadFail m
-     )
-  => m (C.Tx C.ConwayEra, C.UTxO C.ConwayEra)
-multisigV3ContinuationScenario = do
-  -- Initialize multisig
-  let initTxBody = execBuildTx $ initMultisigV3 @C.ConwayEra Defaults.networkId Wallet.w1 20_000_000
-  _ <- tryBalanceAndSubmit mempty Wallet.w1 initTxBody TrailingChange []
-
-  -- Capture UTxO BEFORE signing (for threat model)
-  utxoBefore <- fromLedgerUTxO C.shelleyBasedEra <$> getUtxo
-
-  -- Sign with w1 (creating continuation)
-  result <- findMultisigV3Utxos
-  case result of
-    [] -> fail "Expected UTxO at script address"
-    ((txIn, value, datum) : _) -> do
-      let signTxBody = execBuildTx $ signMultisigV3 @C.ConwayEra Defaults.networkId txIn datum value Wallet.w1
-      signTx <- tryBalanceAndSubmit mempty Wallet.w1 signTxBody TrailingChange []
-      pure (signTx, utxoBefore)
-
-{- | Test unprotectedScriptOutput threat model on the multisig v3.
-
-The Sign action creates a continuation output.
--}
-propMultisigV3UnprotectedOutput :: RunOptions -> Property
-propMultisigV3UnprotectedOutput opts = QC.expectFailure $ monadicIO $ do
-  let Options{params} = mcOptions opts
-
-  result <- run $ runMockchain0IOWith Wallet.initialUTxOs params $ runExceptT $ do
-    (tx, utxo) <- multisigV3ContinuationScenario
-
-    let pparams' = params ^. ledgerProtocolParameters
-        env =
-          ThreatModelEnv
-            { currentTx = tx
-            , currentUTxOs = utxo
-            , pparams = pparams'
-            }
-
-    -- Run the threat model INSIDE MockchainT with full Phase 1 + Phase 2 validation
-    lift $ runThreatModelM Wallet.w1 unprotectedScriptOutput [env]
-
-  case result of
-    (Left err, _) -> do
-      monitor (counterexample $ "Mockchain error: " ++ show err)
-      pure $ QC.property False
-    (Right prop, _finalState) -> do
-      monitor (counterexample "Testing multisig v3 for unprotected script output vulnerability")
-      pure prop
-
-{- | Test that the multisig v3 contract is vulnerable to duplicate list entry attack.
-
-The Sign action creates a continuation output with @signed_users = [signer_pkh]@.
-The validator doesn't check for duplicate entries in this list.
-
-An attacker can:
-1. Intercept a valid Sign transaction
-2. Duplicate the first entry in @signed_users@ to fill multiple signature slots
-3. The validator only checks length, not uniqueness
-
-This test uses expectFailure because the vulnerability SHOULD be detected
-(the modified transaction should NOT validate, but it does).
--}
-propMultisigV3VulnerableToDuplicateListEntry :: RunOptions -> Property
-propMultisigV3VulnerableToDuplicateListEntry opts = QC.expectFailure $ monadicIO $ do
-  let Options{params} = mcOptions opts
-
-  result <- run $ runMockchain0IOWith Wallet.initialUTxOs params $ runExceptT $ do
-    -- Create a Sign transaction (w1 signs, creating continuation with signed_users = [w1_pkh])
-    (tx, utxo) <- multisigV3ContinuationScenario
-
-    let pparams' = params ^. ledgerProtocolParameters
-        env =
-          ThreatModelEnv
-            { currentTx = tx
-            , currentUTxOs = utxo
-            , pparams = pparams'
-            }
-
-    -- Run the duplicate list entry threat model
-    -- This will try to duplicate the first entry in signed_users
-    -- If the validator is vulnerable, the modified tx will still validate
-    lift $ runThreatModelM Wallet.w1 duplicateListEntryAttack [env]
-
-  case result of
-    (Left err, _) -> do
-      monitor (counterexample $ "Mockchain error: " ++ show err)
-      pure $ QC.property False
-    (Right prop, _finalState) -> do
-      monitor (counterexample "Testing multisig v3 for duplicate list entry vulnerability")
-      pure prop
-
 -- ----------------------------------------------------------------------------
 -- TestingInterface instance
 -- ----------------------------------------------------------------------------
@@ -906,9 +800,7 @@ instance TestingInterface MultisigV3Model where
   perform _model action = case action of
     InitMultisigV3 -> do
       let txBody = execBuildTx $ initMultisigV3 @C.ConwayEra Defaults.networkId Wallet.w1 20_000_000
-      runExceptT (balanceAndSubmit mempty Wallet.w1 txBody TrailingChange []) >>= \case
-        Left err -> fail $ "Failed to initialize multisig v3: " ++ show err
-        Right _ -> pure ()
+      void $ balanceAndSubmit mempty Wallet.w1 txBody TrailingChange []
     SignMultisigV3 sc -> do
       let w = signerToWallet sc
       result <- findMultisigV3Utxos
@@ -916,15 +808,11 @@ instance TestingInterface MultisigV3Model where
         [] -> fail "No UTxO found at multisig v3 script address"
         ((txIn, value, datum) : _) -> do
           let txBody = execBuildTx $ signMultisigV3 @C.ConwayEra Defaults.networkId txIn datum value w
-          runExceptT (balanceAndSubmit mempty Wallet.w1 txBody TrailingChange []) >>= \case
-            Left err -> fail $ "Failed to sign multisig v3: " ++ show err
-            Right _ -> pure ()
+          void $ balanceAndSubmit mempty Wallet.w1 txBody TrailingChange []
     MintValidationToken -> do
       let w1Addr = addressInEra Defaults.networkId Wallet.w1
           txBody = execBuildTx $ mintValidationTokenV3WithCollateral @C.ConwayEra w1Addr Wallet.w1
-      runExceptT (balanceAndSubmit mempty Wallet.w1 txBody TrailingChange []) >>= \case
-        Left err -> fail $ "Failed to mint validation token: " ++ show err
-        Right _ -> pure ()
+      void $ balanceAndSubmit mempty Wallet.w1 txBody TrailingChange []
     UseMultisigV3 -> do
       result <- findMultisigV3Utxos
       case result of
@@ -937,9 +825,7 @@ instance TestingInterface MultisigV3Model where
               beneficiaryAddr = addressInEra Defaults.networkId Wallet.w1
               releaseVal = fromInteger (mv3ReleaseValue datum) :: C.Lovelace
               txBody = execBuildTx $ useMultisigV3 @C.ConwayEra txIn beneficiaryAddr releaseVal signer
-          runExceptT (balanceAndSubmit mempty Wallet.w1 txBody TrailingChange []) >>= \case
-            Left err -> fail $ "Failed to use multisig v3: " ++ show err
-            Right _ -> pure ()
+          void $ balanceAndSubmit mempty Wallet.w1 txBody TrailingChange []
     SignReplayExploit -> do
       -- w1 signs twice
       result1 <- findMultisigV3Utxos
@@ -948,9 +834,7 @@ instance TestingInterface MultisigV3Model where
         ((txIn1, value1, datum1) : _) -> do
           -- First sign
           let sign1TxBody = execBuildTx $ signMultisigV3 @C.ConwayEra Defaults.networkId txIn1 datum1 value1 Wallet.w1
-          runExceptT (balanceAndSubmit mempty Wallet.w1 sign1TxBody TrailingChange []) >>= \case
-            Left err -> fail $ "Sign replay first sign failed: " ++ show err
-            Right _ -> pure ()
+          void $ balanceAndSubmit mempty Wallet.w1 sign1TxBody TrailingChange []
 
           -- Second sign (replay!)
           result2 <- findMultisigV3Utxos
@@ -958,16 +842,12 @@ instance TestingInterface MultisigV3Model where
             [] -> fail "No UTxO after first sign"
             ((txIn2, value2, datum2) : _) -> do
               let sign2TxBody = execBuildTx $ signMultisigV3 @C.ConwayEra Defaults.networkId txIn2 datum2 value2 Wallet.w1
-              runExceptT (balanceAndSubmit mempty Wallet.w1 sign2TxBody TrailingChange []) >>= \case
-                Left err -> fail $ "Sign replay second sign failed: " ++ show err
-                Right _ -> pure ()
+              void $ balanceAndSubmit mempty Wallet.w1 sign2TxBody TrailingChange []
 
               -- Mint token (with collateral output)
               let w1Addr = addressInEra Defaults.networkId Wallet.w1
                   mintTxBody = execBuildTx $ mintValidationTokenV3WithCollateral @C.ConwayEra w1Addr Wallet.w1
-              runExceptT (balanceAndSubmit mempty Wallet.w1 mintTxBody TrailingChange []) >>= \case
-                Left err -> fail $ "Sign replay mint failed: " ++ show err
-                Right _ -> pure ()
+              void $ balanceAndSubmit mempty Wallet.w1 mintTxBody TrailingChange []
 
               -- Drain
               result3 <- findMultisigV3Utxos
@@ -976,9 +856,7 @@ instance TestingInterface MultisigV3Model where
                 ((txIn3, _, _) : _) -> do
                   let beneficiaryAddr = addressInEra Defaults.networkId Wallet.w1
                       useTxBody = execBuildTx $ useMultisigV3 @C.ConwayEra txIn3 beneficiaryAddr 10_000_000 Wallet.w1
-                  runExceptT (balanceAndSubmit mempty Wallet.w1 useTxBody TrailingChange []) >>= \case
-                    Left err -> fail $ "Sign replay use failed: " ++ show err
-                    Right _ -> pure ()
+                  void $ balanceAndSubmit mempty Wallet.w1 useTxBody TrailingChange []
 
   validate _model = pure True
 
@@ -986,6 +864,10 @@ instance TestingInterface MultisigV3Model where
 
   -- Note: threatModels empty for same reasons as v1/v2
   threatModels = []
+
+  -- Expected vulnerabilities: these threat models SHOULD find issues
+  -- (inverted pass/fail, quiet output)
+  expectedVulnerabilities = [unprotectedScriptOutput, duplicateListEntryAttack]
 
 -- ----------------------------------------------------------------------------
 -- Test tree
@@ -1002,14 +884,8 @@ aikenMultisigTreasuryV3Tests runOpts =
         [ propRunActionsWithOptions @MultisigV3Model
             "property-based testing"
             runOpts{disableNegativeTesting = Just "CTF vulnerability: sign replay allows duplicate signatures and unauthorized validation token minting"}
-        , testProperty
+        , QC.testProperty
             "vulnerable to sign replay (duplicate signatures)"
             (propMultisigV3SignReplayExploit runOpts)
-        , testProperty
-            "vulnerable to unprotected script output (expectFailure)"
-            (propMultisigV3UnprotectedOutput runOpts)
-        , testProperty
-            "vulnerable to duplicate list entry (expectFailure)"
-            (propMultisigV3VulnerableToDuplicateListEntry runOpts)
         ]
     ]

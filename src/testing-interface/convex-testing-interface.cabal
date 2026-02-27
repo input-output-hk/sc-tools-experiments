@@ -81,6 +81,7 @@ library
     , QuickCheck
     , tasty
     , tasty-expected-failure
+    , tasty-hunit
     , tasty-quickcheck
 
   -- cardano dependencies for ThreatModel

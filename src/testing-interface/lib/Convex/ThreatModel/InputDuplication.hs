@@ -47,7 +47,7 @@ script address in the UTxO set. The test will be skipped if no additional
 UTxOs are available.
 -}
 inputDuplication :: ThreatModel ()
-inputDuplication = do
+inputDuplication = Named "Input Duplication" $ do
   -- Get the environment to access the full UTxO set
   ThreatModelEnv _tx (C.UTxO utxoMap) _ <- getThreatModelEnv
 

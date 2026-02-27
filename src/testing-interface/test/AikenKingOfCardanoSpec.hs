@@ -1,6 +1,5 @@
 {-# LANGUAGE DeriveAnyClass #-}
 {-# LANGUAGE DerivingStrategies #-}
-{-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE NamedFieldPuns #-}
 {-# LANGUAGE NumericUnderscores #-}
 {-# LANGUAGE OverloadedStrings #-}
@@ -42,7 +41,6 @@ module AikenKingOfCardanoSpec (
 
   -- * Standalone threat model tests
   propKingVulnerableToSelfReference,
-  propKingVulnerableToSelfReferenceInjection,
 ) where
 
 import Cardano.Api qualified as C
@@ -71,7 +69,6 @@ import Convex.TestingInterface (
  )
 import Convex.ThreatModel (ThreatModelEnv (..), runThreatModelM)
 import Convex.ThreatModel.Cardano.Api (dummyTxId)
-
 import Convex.ThreatModel.LargeData (largeDataAttackWith)
 import Convex.ThreatModel.SelfReferenceInjection (selfReferenceInjection)
 import Convex.ThreatModel.UnprotectedScriptOutput (unprotectedScriptOutput)
@@ -707,45 +704,6 @@ propKingUnprotectedOutput opts = monadicIO $ do
       monitor (counterexample "Testing king_of_cardano for unprotected script output vulnerability")
       pure prop
 
-{- | Test selfReferenceInjection threat model on the king_of_cardano contract.
-
-This test detects the self-reference vulnerability using the generic threat model:
-1. Sets up a normal overthrow transaction (w2 overthrows w1)
-2. The threat model modifies the datum, replacing the current_king address
-   with the script's own address
-3. If the modified transaction still validates, the vulnerability exists
-
-This test is wrapped with expectFailure because king_of_cardano IS vulnerable
-to this attack - the threat model should detect the vulnerability (i.e., the
-shouldNotValidate check will fail, meaning the modified tx DOES validate).
--}
-propKingVulnerableToSelfReferenceInjection :: RunOptions -> Property
-propKingVulnerableToSelfReferenceInjection opts = QC.expectFailure $ monadicIO $ do
-  let Options{params} = mcOptions opts
-
-  result <- run $ runMockchain0IOWith Wallet.initialUTxOs params $ runExceptT $ do
-    (tx, utxo) <- kingScenario
-
-    let pparams' = params ^. ledgerProtocolParameters
-        env =
-          ThreatModelEnv
-            { currentTx = tx
-            , currentUTxOs = utxo
-            , pparams = pparams'
-            }
-
-    -- Run the self-reference injection threat model
-    -- This will try to replace address fields with the script's own address
-    lift $ runThreatModelM Wallet.w1 selfReferenceInjection [env]
-
-  case result of
-    (Left err, _) -> do
-      monitor (counterexample $ "Mockchain error: " ++ show err)
-      pure $ QC.property False
-    (Right prop, _finalState) -> do
-      monitor (counterexample "Testing king_of_cardano for self-reference injection vulnerability")
-      pure prop
-
 -- ----------------------------------------------------------------------------
 -- TestingInterface instance
 -- ----------------------------------------------------------------------------
@@ -840,9 +798,7 @@ instance TestingInterface KingModel where
   perform _model action = case action of
     InitCompetition -> do
       let txBody = execBuildTx $ initCompetition @C.ConwayEra Defaults.networkId Wallet.w1 20_000_000
-      runExceptT (balanceAndSubmit mempty Wallet.w1 txBody TrailingChange []) >>= \case
-        Left err -> fail $ "Failed to initialize competition: " ++ show err
-        Right _ -> pure ()
+      void $ balanceAndSubmit mempty Wallet.w1 txBody TrailingChange []
     OverthrowKingAction newVal -> do
       result <- findKingUtxos
       case result of
@@ -858,18 +814,14 @@ instance TestingInterface KingModel where
               currentValLov = maybe 20_000_000 id currentVal
               txBody = execBuildTx $ overthrowKing @C.ConwayEra Defaults.networkId txIn datum currentValLov challenger newVal
           -- Use w1 for balance because threat model rebalancer uses w1
-          runExceptT (balanceAndSubmit mempty Wallet.w1 txBody TrailingChange []) >>= \case
-            Left err -> fail $ "Failed to overthrow king: " ++ show err
-            Right _ -> pure ()
+          void $ balanceAndSubmit mempty Wallet.w1 txBody TrailingChange []
     CloseCompetitionAction -> do
       result <- findKingUtxos
       case result of
         [] -> fail "No UTxO found at king script address for close"
         ((txIn, value, datum) : _) -> do
           let txBody = execBuildTx $ closeCompetition @C.ConwayEra Defaults.networkId txIn datum value
-          runExceptT (balanceAndSubmit mempty Wallet.w1 txBody TrailingChange []) >>= \case
-            Left err -> fail $ "Failed to close competition: " ++ show err
-            Right _ -> pure ()
+          void $ balanceAndSubmit mempty Wallet.w1 txBody TrailingChange []
    where
     headMay [] = Nothing
     headMay (x : _) = Just x
@@ -881,6 +833,10 @@ instance TestingInterface KingModel where
 
   -- Threat models: OverthrowKing creates a continuation output
   threatModels = [unprotectedScriptOutput, largeDataAttackWith 10]
+
+  -- selfReferenceInjection is a KNOWN vulnerability in this contract.
+  -- It's run as an expected vulnerability (inverted pass/fail).
+  expectedVulnerabilities = [selfReferenceInjection]
 
 -- ----------------------------------------------------------------------------
 -- Test tree
@@ -903,8 +859,5 @@ aikenKingOfCardanoTests runOpts =
         , testProperty
             "protected script output (no redirect vulnerability)"
             (propKingUnprotectedOutput runOpts)
-        , testProperty
-            "vulnerable to self-reference injection (threat model)"
-            (propKingVulnerableToSelfReferenceInjection runOpts)
         ]
     ]

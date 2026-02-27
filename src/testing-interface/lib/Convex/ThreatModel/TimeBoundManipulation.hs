@@ -98,7 +98,7 @@ You can also use a specific slot to test if the script would accept
 a transaction valid at that earlier time.
 -}
 timeBoundManipulationWith :: SlotNo -> ThreatModel ()
-timeBoundManipulationWith earlySlot = do
+timeBoundManipulationWith earlySlot@(C.SlotNo slotNum) = Named ("Time Bound Manipulation (slot " ++ show slotNum ++ ")") $ do
   counterexampleTM $
     paragraph
       [ "Testing for Time Bound Manipulation vulnerability."
@@ -106,7 +106,6 @@ timeBoundManipulationWith earlySlot = do
       , "ensuring the transaction cannot be submitted before the deadline."
       ]
 
-  let C.SlotNo slotNum = earlySlot
   counterexampleTM $
     paragraph
       [ "We widen the validity range's lower bound to slot"

@@ -36,38 +36,31 @@ module AikenTipJarV2Spec (
 
   -- * Test tree
   aikenTipJarV2Tests,
-
-  -- * Standalone threat model tests
-  propTipJarV2StillVulnerableToByteBloat,
-  propTipJarV2StillVulnerableToLargeValue,
 ) where
 
 import Cardano.Api qualified as C
-import Control.Lens ((^.))
 import Control.Monad (void)
-import Control.Monad.Except (MonadError, runExceptT)
+import Control.Monad.Except (runExceptT)
 import Control.Monad.IO.Class (MonadIO (..))
 import Control.Monad.Trans (lift)
 import Convex.Aiken.Blueprint (Blueprint (..))
 import Convex.Aiken.Blueprint qualified as Blueprint
 import Convex.BuildTx (MonadBuildTx, execBuildTx)
 import Convex.BuildTx qualified as BuildTx
-import Convex.Class (MonadMockchain, getUtxo)
-import Convex.CoinSelection (BalanceTxError, ChangeOutputPosition (TrailingChange))
+import Convex.Class (getUtxo)
+import Convex.CoinSelection (ChangeOutputPosition (TrailingChange))
 import Convex.MockChain (fromLedgerUTxO, runMockchain0IOWith)
 import Convex.MockChain.CoinSelection (balanceAndSubmit, tryBalanceAndSubmit)
 import Convex.MockChain.Defaults qualified as Defaults
 import Convex.MockChain.Utils (mockchainSucceeds)
-import Convex.NodeParams (ledgerProtocolParameters)
 import Convex.TestingInterface (
-  Options (Options, params),
-  RunOptions (mcOptions),
+  RunOptions,
   TestingInterface (..),
   propRunActionsWithOptions,
  )
-import Convex.ThreatModel (ThreatModelEnv (..), runThreatModelM)
 import Convex.ThreatModel.Cardano.Api (dummyTxId)
 import Convex.ThreatModel.DatumBloat (datumByteBloatAttackWith)
+import Convex.ThreatModel.LargeData (largeDataAttackWith)
 import Convex.ThreatModel.LargeValue (largeValueAttackWith)
 import Convex.ThreatModel.UnprotectedScriptOutput (unprotectedScriptOutput)
 import Convex.Utils (failOnError)
@@ -81,16 +74,9 @@ import PlutusTx qualified
 import PlutusTx.Builtins qualified as PlutusTx
 import PlutusTx.IsData.Class (UnsafeFromData (unsafeFromBuiltinData))
 
-import Convex.ThreatModel.LargeData (largeDataAttackWith)
 import System.IO.Unsafe (unsafePerformIO)
-import Test.QuickCheck.Monadic (monadicIO, monitor, run)
 import Test.Tasty (TestTree, testGroup)
 import Test.Tasty.HUnit (Assertion, assertFailure, testCase)
-import Test.Tasty.QuickCheck (
-  Property,
-  counterexample,
-  testProperty,
- )
 import Test.Tasty.QuickCheck qualified as QC
 
 -- ----------------------------------------------------------------------------
@@ -408,126 +394,6 @@ hugeMessagePermanentlyLocksTipjarV2 = do
   pure ()
 
 -- ----------------------------------------------------------------------------
--- Standalone Threat Model Tests
--- ----------------------------------------------------------------------------
-
-{- | Run a tipjar v2 scenario: initialize + add one tip.
-
-Returns the last transaction (the tip transaction) and the UTxO state
-captured BEFORE that transaction executed, for threat model testing.
--}
-tipJarV2Scenario
-  :: ( MonadMockchain C.ConwayEra m
-     , MonadError (BalanceTxError C.ConwayEra) m
-     , MonadFail m
-     )
-  => m (C.Tx C.ConwayEra, C.UTxO C.ConwayEra)
-tipJarV2Scenario = do
-  -- Initialize the tipjar v2 with wallet 1 as owner
-  let initTxBody = execBuildTx $ initTipJarV2 Defaults.networkId Wallet.w1 10_000_000
-  initTx <- tryBalanceAndSubmit mempty Wallet.w1 initTxBody TrailingChange []
-
-  -- Find the tipjar UTxO
-  let initTxIn = C.TxIn (C.getTxId (C.getTxBody initTx)) (C.TxIx 0)
-      initialDatum =
-        TipJarDatum
-          { tjOwner = PlutusTx.toBuiltin $ C.serialiseToRawBytes (verificationKeyHash Wallet.w1)
-          , tjMessages = []
-          }
-      message = PlutusTx.toBuiltin ("Hello" :: BS.ByteString)
-
-  -- Capture UTxO BEFORE adding the tip (for threat model)
-  utxoBefore <- fromLedgerUTxO C.shelleyBasedEra <$> getUtxo
-
-  -- Add a tip - using w1 because threat model re-balancer uses w1 for re-signing
-  let tipTxBody = execBuildTx $ addTipV2 Defaults.networkId initTxIn initialDatum 10_000_000 5_000_000 message
-  tipTx <- tryBalanceAndSubmit mempty Wallet.w1 tipTxBody TrailingChange []
-
-  pure (tipTx, utxoBefore)
-
-{- | Test that the tipjar v2 is STILL vulnerable to datum byte bloat attack.
-
-This test runs the datumByteBloatAttackWith threat model against a tipjar v2
-transaction. The threat model attempts to inflate ByteString fields in the
-datum (like the message) to detect if the validator limits field sizes.
-
-Since the tipjar v2 validator STILL does NOT limit message sizes (only adds
-value preservation), this test will FAIL - proving the vulnerability REMAINS.
-
-Use QC.expectFailure to mark this as expected behavior.
--}
-propTipJarV2StillVulnerableToByteBloat :: RunOptions -> Property
-propTipJarV2StillVulnerableToByteBloat opts = monadicIO $ do
-  let Options{params} = mcOptions opts
-
-  result <- run $ runMockchain0IOWith Wallet.initialUTxOs params $ runExceptT $ do
-    (tx, utxo) <- tipJarV2Scenario
-
-    let pparams' = params ^. ledgerProtocolParameters
-        env =
-          ThreatModelEnv
-            { currentTx = tx
-            , currentUTxOs = utxo
-            , pparams = pparams'
-            }
-
-    -- Run the threat model INSIDE MockchainT with full Phase 1 + Phase 2 validation
-    lift $ runThreatModelM Wallet.w1 (datumByteBloatAttackWith 1000) [env]
-
-  case result of
-    (Left err, _) -> do
-      monitor (counterexample $ "Mockchain error: " ++ show err)
-      pure $ QC.property False
-    (Right prop, _finalState) -> do
-      monitor (counterexample "Testing tipjar v2 for datum byte bloat vulnerability (STILL VULNERABLE)")
-      pure prop
-
-{- | Test that the tipjar v2 is STILL vulnerable to large value attack.
-
-IMPORTANT: The V2 validator's value_preserved check only ensures no tokens can be
-REMOVED from the script (all value differences must be >= 0). However, the
-largeValueAttack ADDS new junk tokens to the output - it doesn't try to remove
-existing tokens. Since value_preserved allows additions (output >= input), this
-attack still works!
-
-The value preservation check prevents:
-- Stealing existing tokens (output value < input value for some asset)
-
-But it does NOT prevent:
-- Adding new junk tokens (output has more assets than input)
-- Datum bloat attacks
-
-So V2 is still vulnerable to large value attacks because the threat model
-mints and adds new tokens rather than trying to steal existing ones.
-
-Use QC.expectFailure because the threat model WILL detect the vulnerability.
--}
-propTipJarV2StillVulnerableToLargeValue :: RunOptions -> Property
-propTipJarV2StillVulnerableToLargeValue opts = monadicIO $ do
-  let Options{params} = mcOptions opts
-
-  result <- run $ runMockchain0IOWith Wallet.initialUTxOs params $ runExceptT $ do
-    (tx, utxo) <- tipJarV2Scenario
-
-    let pparams' = params ^. ledgerProtocolParameters
-        env =
-          ThreatModelEnv
-            { currentTx = tx
-            , currentUTxOs = utxo
-            , pparams = pparams'
-            }
-
-    lift $ runThreatModelM Wallet.w1 (largeValueAttackWith 10) [env]
-
-  case result of
-    (Left err, _) -> do
-      monitor (counterexample $ "Mockchain error: " ++ show err)
-      pure $ QC.property False
-    (Right prop, _finalState) -> do
-      monitor (counterexample "Testing tipjar v2 for large value attack (STILL VULNERABLE - adds tokens, doesn't remove)")
-      pure prop
-
--- ----------------------------------------------------------------------------
 -- TestingInterface instance
 -- ----------------------------------------------------------------------------
 
@@ -620,9 +486,7 @@ instance TestingInterface TipJarV2Model where
   perform _model action = case action of
     InitTipJarV2 -> do
       let txBody = execBuildTx $ initTipJarV2 @C.ConwayEra Defaults.networkId Wallet.w1 10_000_000
-      runExceptT (balanceAndSubmit mempty Wallet.w1 txBody TrailingChange []) >>= \case
-        Left err -> fail $ "Failed to initialize tipjar v2: " ++ show err
-        Right _ -> pure ()
+      void $ balanceAndSubmit mempty Wallet.w1 txBody TrailingChange []
     TipV2 msg -> do
       -- Find the UTxO at the script address
       utxoSet <- fromLedgerUTxO C.shelleyBasedEra <$> getUtxo
@@ -640,9 +504,7 @@ instance TestingInterface TipJarV2Model where
                   (PlutusTx.dataToBuiltinData $ C.toPlutusData $ C.getScriptData scriptData)
             _ -> fail "Expected inline datum"
           let txBody = execBuildTx $ addTipV2 @C.ConwayEra Defaults.networkId txIn currentDatum lovelace 5_000_000 msg
-          runExceptT (balanceAndSubmit mempty Wallet.w1 txBody TrailingChange []) >>= \case
-            Left err -> fail $ "Failed to add tip: " ++ show err
-            Right _ -> pure ()
+          void $ balanceAndSubmit mempty Wallet.w1 txBody TrailingChange []
     OwnerClaimV2 -> do
       -- Find the UTxO at the script address
       utxoSet <- fromLedgerUTxO C.shelleyBasedEra <$> getUtxo
@@ -653,9 +515,7 @@ instance TestingInterface TipJarV2Model where
         ((txIn, C.TxOut _ (C.TxOutValueShelleyBased _ val) _ _) : _) -> do
           let tipJarValue = C.fromMaryValue val
               txBody = execBuildTx $ claimJarV2 @C.ConwayEra Defaults.networkId txIn tipJarValue Wallet.w1
-          runExceptT (balanceAndSubmit mempty Wallet.w1 txBody TrailingChange []) >>= \case
-            Left err -> fail $ "Failed to claim tipjar v2: " ++ show err
-            Right _ -> pure ()
+          void $ balanceAndSubmit mempty Wallet.w1 txBody TrailingChange []
 
   validate model = case tmTxIn model of
     Nothing -> pure True -- No tipjar deployed
@@ -699,9 +559,13 @@ instance TestingInterface TipJarV2Model where
   -- Threat models to test vulnerability detection.
   -- Note: We intentionally exclude datumByteBloatAttackWith and largeValueAttackWith here
   -- because they WOULD find vulnerabilities (which is expected for this contract).
-  -- Those vulnerability tests are run separately with expectFailure in the standalone tests.
   -- Including unprotectedScriptOutput and largeDataAttackWith for basic coverage.
   threatModels = [unprotectedScriptOutput, largeDataAttackWith 10]
+
+  -- Expected vulnerabilities: threat models that SHOULD find vulnerabilities.
+  -- V2 is STILL vulnerable to datum bloat (no message size limit) and large value
+  -- attacks (value_preserved only prevents REMOVAL, not ADDITION of tokens).
+  expectedVulnerabilities = [datumByteBloatAttackWith 1000, largeValueAttackWith 10]
 
 -- ----------------------------------------------------------------------------
 -- Test tree
@@ -713,20 +577,7 @@ aikenTipJarV2Tests runOpts =
   testGroup
     "aiken tip-jar-v2 (partial patch)"
     [ aikenTipJarV2UnitTests
-    , testGroup
-        "property tests"
-        [ propRunActionsWithOptions @TipJarV2Model
-            "property-based testing"
-            runOpts
-        , testProperty
-            "STILL vulnerable to datum byte bloat (expectFailure)"
-            -- The tipjar v2 IS STILL vulnerable to datum bloat (doesn't limit message sizes)
-            -- We use expectFailure because the threat model WILL detect the vulnerability
-            (QC.expectFailure $ propTipJarV2StillVulnerableToByteBloat runOpts)
-        , testProperty
-            "STILL vulnerable to large value attack (v2 only prevents removal, not addition)"
-            -- The tipjar v2 value_preserved check only prevents token REMOVAL
-            -- The large value attack ADDS new tokens, so it still works!
-            (QC.expectFailure $ propTipJarV2StillVulnerableToLargeValue runOpts)
-        ]
+    , propRunActionsWithOptions @TipJarV2Model
+        "property-based testing"
+        runOpts
     ]

@@ -103,7 +103,7 @@ datumListBloatAttackWith 10 500 -- More aggressive: 10 items of 500 bytes
 @
 -}
 datumListBloatAttackWith :: Int -> Int -> ThreatModel ()
-datumListBloatAttackWith numItems itemSize = do
+datumListBloatAttackWith numItems itemSize = Named ("Datum List Bloat Attack (" ++ show numItems ++ " items, " ++ show itemSize ++ " bytes)") $ do
   -- Get all outputs from the transaction
   outputs <- getTxOutputs
 
@@ -259,7 +259,7 @@ datumByteBloatAttackWith 50000   -- More aggressive: 50KB
 @
 -}
 datumByteBloatAttackWith :: Int -> ThreatModel ()
-datumByteBloatAttackWith inflatedSize = do
+datumByteBloatAttackWith inflatedSize = Named ("Datum Byte Bloat Attack (" ++ show inflatedSize ++ " bytes)") $ do
   outputs <- getTxOutputs
   let scriptOutputsWithDatum = filter isScriptOutputWithInlineDatum outputs
   threatPrecondition $ ensure (not $ null scriptOutputsWithDatum)

@@ -125,7 +125,7 @@ tokenForgeryAttackWith
   -> C.AssetName
   -- ^ The asset name to mint
   -> ThreatModel ()
-tokenForgeryAttackWith redeemer mintScript assetName = do
+tokenForgeryAttackWith redeemer mintScript assetName = Named "Token Forgery Attack (V2)" $ do
   -- Find an output to add the minted tokens to
   -- Prefer a key address output (like the change output)
   output <- anyOutputSuchThat (isKeyAddressAny . addressOf)
@@ -178,7 +178,7 @@ tokenForgeryAttackWithV3
   -> C.AssetName
   -- ^ The asset name to mint
   -> ThreatModel ()
-tokenForgeryAttackWithV3 redeemer mintScript assetName = do
+tokenForgeryAttackWithV3 redeemer mintScript assetName = Named "Token Forgery Attack (V3)" $ do
   -- Find an output to add the minted tokens to
   -- Prefer a key address output (like the change output)
   output <- anyOutputSuchThat (isKeyAddressAny . addressOf)
