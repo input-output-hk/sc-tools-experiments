@@ -1,5 +1,8 @@
+{-# LANGUAGE DataKinds #-}
+{-# LANGUAGE GADTs #-}
 {-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE OverloadedStrings #-}
+{-# LANGUAGE ScopedTypeVariables #-}
 
 {- | Threat model for detecting input ordering bypass vulnerabilities.
 
@@ -25,10 +28,18 @@ module Convex.ThreatModel.InputDuplication (
 ) where
 
 import Cardano.Api qualified as C
+import Cardano.Ledger.Alonzo.Scripts qualified as Ledger
+import Cardano.Ledger.Plutus.Language qualified as Plutus
 import Data.Map qualified as Map
+import Data.Maybe (mapMaybe)
 
 import Convex.ThreatModel
-import Convex.ThreatModel.Cardano.Api (datumOfTxOut, toScriptData)
+import Convex.ThreatModel.Cardano.Api (Era)
+
+-- | A Plutus script that can be either V2 or V3
+data SomePlutusScript
+  = PlutusV2Script (C.PlutusScript C.PlutusScriptV2)
+  | PlutusV3Script (C.PlutusScript C.PlutusScriptV3)
 
 {- | Check for input duplication / input ordering bypass vulnerabilities.
 
@@ -48,8 +59,8 @@ UTxOs are available.
 -}
 inputDuplication :: ThreatModel ()
 inputDuplication = Named "Input Duplication" $ do
-  -- Get the environment to access the full UTxO set
-  ThreatModelEnv _tx (C.UTxO utxoMap) _ <- getThreatModelEnv
+  -- Get the environment to access the full UTxO set and the original transaction
+  ThreatModelEnv tx (C.UTxO utxoMap) _ <- getThreatModelEnv
 
   -- Find a script input (non-key address = script address)
   scriptInput <- anyInputSuchThat (not . isKeyAddressAny . addressOf)
@@ -104,13 +115,35 @@ inputDuplication = Named "Input Duplication" $ do
   let newValue = valueOfTxOut' newTxOut
       newDatum = extractDatum newTxOut
 
-  -- Add the new script input with the same redeemer
-  -- We use addReferenceScriptInput since we're referencing an existing script
-  -- that should already be in the transaction
+  -- Extract the script hash from the address
   let scriptHash = extractScriptHash scriptAddr
 
-  shouldNotValidate $
-    addReferenceScriptInput scriptHash newValue newDatum redeemer
+  -- Extract the actual script from the transaction's witness set
+  -- This is needed to properly add the script to the new input's witness
+  let scripts = extractTxScripts tx
+
+  -- Get attacker address (one of the transaction signers) to receive stolen value
+  signer <- anySigner
+  let attackerAddr = keyAddressAny signer
+      -- Add output to attacker's address to conserve value (real attack scenario)
+      attackerOutput = addOutput attackerAddr newValue C.TxOutDatumNone C.ReferenceScriptNone
+
+  -- Try to find a Plutus script (V2 or V3) with the matching hash
+  case findPlutusScriptByHash scriptHash scripts of
+    Just (PlutusV2Script plutusScript) -> do
+      -- Add the new script input with the V2 script, plus attacker output
+      shouldNotValidate $
+        addPlutusScriptInput plutusScript newValue newDatum redeemer C.ReferenceScriptNone
+          <> attackerOutput
+    Just (PlutusV3Script plutusScript) -> do
+      -- Add the new script input with the V3 script, plus attacker output
+      shouldNotValidate $
+        addPlutusScriptInputV3 plutusScript newValue newDatum redeemer C.ReferenceScriptNone
+          <> attackerOutput
+    Nothing ->
+      -- Script not found in witness set - this shouldn't happen for a valid tx
+      -- but if it does, we skip this test as a precondition failure
+      failPrecondition "Script not found in transaction witness set"
  where
   -- Helper to get address from TxOut CtxUTxO
   addressOfTxOut' :: C.TxOut C.CtxUTxO C.ConwayEra -> AddressAny
@@ -144,3 +177,45 @@ inputDuplication = Named "Input Duplication" $ do
               C.PaymentCredentialByKey _ -> error "Expected script address"
       Just _ -> error "Expected script address, got key address"
   extractScriptHash _ = error "Expected Shelley address"
+
+  -- Extract the list of scripts from a transaction's witness set
+  extractTxScripts :: C.Tx Era -> [Ledger.AlonzoScript (C.ShelleyLedgerEra Era)]
+  extractTxScripts (C.Tx (C.ShelleyTxBody _ _ scripts _ _ _) _) = scripts
+
+  -- Find a Plutus script (V2 or V3) by its hash in the list of ledger scripts
+  findPlutusScriptByHash
+    :: C.ScriptHash
+    -> [Ledger.AlonzoScript (C.ShelleyLedgerEra Era)]
+    -> Maybe SomePlutusScript
+  findPlutusScriptByHash targetHash scripts =
+    case mapMaybe (tryConvertScript targetHash) scripts of
+      (s : _) -> Just s
+      [] -> Nothing
+
+  -- Try to convert a ledger script to a SomePlutusScript if the hash matches
+  tryConvertScript
+    :: C.ScriptHash
+    -> Ledger.AlonzoScript (C.ShelleyLedgerEra Era)
+    -> Maybe SomePlutusScript
+  tryConvertScript targetHash (Ledger.PlutusScript ps) =
+    -- Use withPlutusScript to get the language at runtime
+    Ledger.withPlutusScript ps $ \(plutus :: Plutus.Plutus l) ->
+      let binaryBytes = Plutus.unPlutusBinary (Plutus.plutusBinary plutus)
+       in case Plutus.plutusLanguage plutus of
+            Plutus.PlutusV2 ->
+              let serialisedV2 :: C.PlutusScript C.PlutusScriptV2
+                  serialisedV2 = C.PlutusScriptSerialised binaryBytes
+                  cardanoScript = C.PlutusScript C.PlutusScriptV2 serialisedV2
+               in if C.hashScript cardanoScript == targetHash
+                    then Just (PlutusV2Script serialisedV2)
+                    else Nothing
+            Plutus.PlutusV3 ->
+              let serialisedV3 :: C.PlutusScript C.PlutusScriptV3
+                  serialisedV3 = C.PlutusScriptSerialised binaryBytes
+                  cardanoScript = C.PlutusScript C.PlutusScriptV3 serialisedV3
+               in if C.hashScript cardanoScript == targetHash
+                    then Just (PlutusV3Script serialisedV3)
+                    else Nothing
+            -- V1 scripts are not supported for new inputs in Conway era
+            Plutus.PlutusV1 -> Nothing
+  tryConvertScript _ (Ledger.TimelockScript _) = Nothing

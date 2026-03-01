@@ -197,6 +197,14 @@ data TxMod where
     -> Quantity -- Amount (positive = mint, negative = burn)
     -> ScriptData -- Redeemer for the minting policy
     -> TxMod
+  -- | Add a plutus V3 script input
+  AddPlutusScriptInputV3
+    :: PlutusScript PlutusScriptV3
+    -> Value
+    -> Datum
+    -> Redeemer
+    -> ReferenceScript Era
+    -> TxMod
   -- | Remove a required signer from the transaction
   RemoveRequiredSigner
     :: Hash PaymentKey
@@ -406,6 +414,44 @@ applyTxMod tx utxos (AddPlutusScriptInput script value datum redeemer rscript) =
       recomputeScriptData Nothing idxUpdate scriptData
 
   hash = hashScript $ PlutusScript PlutusScriptV2 script
+  addr = scriptAddressAny hash
+applyTxMod tx utxos (AddPlutusScriptInputV3 script value datum redeemer rscript) =
+  ( Tx (ShelleyTxBody era body{Conway.ctbSpendInputs = inputs'} scripts' scriptData' auxData validity) wits
+  , utxos'
+  )
+ where
+  Tx (ShelleyTxBody era body@Conway.ConwayTxBody{..} scripts scriptData auxData validity) wits = tx
+
+  txIn = mkNewTxIn utxos
+  input = toShelleyTxIn txIn
+  inputs' = Set.insert input ctbSpendInputs
+
+  txOut = makeTxOut addr value datum rscript
+  utxos' = UTxO . Map.insert txIn txOut . unUTxO $ utxos
+
+  scriptInEra =
+    ScriptInEra
+      PlutusScriptV3InConway
+      (PlutusScript PlutusScriptV3 script)
+  newScript = toShelleyScript @Era scriptInEra
+  scripts' = scripts ++ [newScript]
+
+  SJust (Ledger.AsIx idx) = Ledger.indexOf (Ledger.AsItem input) inputs'
+  idxUpdate idx'
+    | idx' >= idx = idx' + 1
+    | otherwise = idx'
+
+  datum' = case datum of
+    TxOutDatumNone -> error "Bad test!"
+    TxOutDatumHash{} -> error "Bad test!"
+    TxOutSupplementalDatum _ d -> toAlonzoData d
+    TxOutDatumInline _ d -> toAlonzoData d
+
+  scriptData' =
+    addScriptData idx datum' (toAlonzoData $ unsafeHashableScriptData redeemer, toAlonzoExUnits $ ExecutionUnits 0 0) $
+      recomputeScriptData Nothing idxUpdate scriptData
+
+  hash = hashScript $ PlutusScript PlutusScriptV3 script
   addr = scriptAddressAny hash
 applyTxMod tx utxos (AddSimpleScriptInput script value rscript False) =
   ( Tx (ShelleyTxBody era body{Conway.ctbSpendInputs = inputs'} scripts' scriptData' auxData validity) wits
@@ -705,9 +751,13 @@ removeInput inp = txMod $ RemoveInput $ inputTxIn inp
 addReferenceScriptInput :: ScriptHash -> Value -> Datum -> Redeemer -> TxModifier
 addReferenceScriptInput script value datum redeemer = txMod $ AddReferenceScriptInput script value datum redeemer
 
--- | Add a plutus script input.
+-- | Add a plutus V2 script input.
 addPlutusScriptInput :: PlutusScript PlutusScriptV2 -> Value -> Datum -> Redeemer -> ReferenceScript Era -> TxModifier
 addPlutusScriptInput script value datum redeemer rscript = txMod $ AddPlutusScriptInput script value datum redeemer rscript
+
+-- | Add a plutus V3 script input.
+addPlutusScriptInputV3 :: PlutusScript PlutusScriptV3 -> Value -> Datum -> Redeemer -> ReferenceScript Era -> TxModifier
+addPlutusScriptInputV3 script value datum redeemer rscript = txMod $ AddPlutusScriptInputV3 script value datum redeemer rscript
 
 -- | Add a plutus script reference input.
 addPlutusScriptReferenceInput :: PlutusScript PlutusScriptV2 -> Value -> Datum -> ReferenceScript Era -> TxModifier

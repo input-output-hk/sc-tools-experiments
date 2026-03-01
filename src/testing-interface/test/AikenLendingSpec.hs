@@ -77,12 +77,13 @@ import Convex.TestingInterface (
   propRunActionsWithOptions,
  )
 import Convex.ThreatModel (ThreatModelEnv (..), runThreatModelM)
-import Convex.ThreatModel.Cardano.Api (dummyTxId)
+import Convex.ThreatModel.Cardano.Api ()
 import Convex.ThreatModel.InputDuplication (inputDuplication)
 import Convex.ThreatModel.UnprotectedScriptOutput (unprotectedScriptOutput)
 import Convex.Utils (failOnError)
 import Convex.Wallet (Wallet, addressInEra, verificationKeyHash)
 import Convex.Wallet.MockWallet qualified as Wallet
+import Data.List (find)
 import Data.Map qualified as Map
 import Data.Maybe (mapMaybe)
 
@@ -431,10 +432,11 @@ repayLoan
   -> m ()
 repayLoan txIn datum borrower = do
   let borrowerPkh = verificationKeyHash borrower
-      -- Lender must be set
+      borrowerAddrC = plutusToCardanoAddress (ldBorrower datum)
+      -- Use lender address if set, else borrower address (will fail on-chain)
       lenderAddrC = case ldLender datum of
         Just a -> plutusToCardanoAddress a
-        Nothing -> error "Cannot repay: loan not yet funded"
+        Nothing -> borrowerAddrC -- Placeholder - script will reject unfunded repay
       repaymentAmount = fromInteger (ldBorrowedAmount datum + ldInterest datum) :: C.Lovelace
       witness _ =
         C.ScriptWitness C.ScriptWitnessForSpending $
@@ -722,132 +724,237 @@ propLendingVulnerableToInputDuplication opts = monadicIO $ do
 -- TestingInterface instance
 -- ----------------------------------------------------------------------------
 
--- | Model state for the CTF Lending contract
-data LendingModel = LendingModel
-  { lmInitialized :: Bool
-  -- ^ Whether a loan request has been created
-  , lmTxIn :: Maybe C.TxIn
-  -- ^ The UTxO at the script (simplified - only track one loan)
-  , lmValue :: C.Lovelace
-  -- ^ Value locked in the loan
-  , lmBorrower :: Maybe PV1.Address
+-- | State of an individual loan
+data LoanState = LoanState
+  { lsTxIn :: Maybe C.TxIn
+  -- ^ The UTxO at the script (set after perform)
+  , lsBorrower :: PV1.Address
   -- ^ Borrower address
-  , lmLender :: Maybe PV1.Address
-  -- ^ Lender address (Nothing if unfunded)
-  , lmBorrowedAmount :: C.Lovelace
+  , lsBorrowedAmount :: C.Lovelace
   -- ^ Amount requested
-  , lmInterest :: C.Lovelace
+  , lsInterest :: C.Lovelace
   -- ^ Interest amount
-  , lmRepaid :: Bool
+  , lsCollateralValue :: C.Lovelace
+  -- ^ Collateral locked at script
+  , lsFunded :: Bool
+  -- ^ Whether a lender has funded this loan
+  , lsRepaid :: Bool
   -- ^ Whether the loan has been repaid
   }
   deriving stock (Show, Eq)
 
+-- | Model state for the CTF Lending contract (supports multiple loans)
+data LendingModel = LendingModel
+  { lmLoans :: [LoanState]
+  -- ^ All active loans
+  }
+  deriving stock (Show, Eq)
+
+{- | Map wallet index (1-based) to Wallet
+Invalid indices (outside 1-5) will cause perform to fail (negative testing)
+-}
+indexToWallet :: Int -> Wallet
+indexToWallet 1 = Wallet.w1
+indexToWallet 2 = Wallet.w2
+indexToWallet 3 = Wallet.w4 -- w3 is lender, so skip to w4 for borrower 3
+indexToWallet 4 = Wallet.w5
+indexToWallet 5 = Wallet.w6
+indexToWallet n = error $ "Invalid wallet index: " ++ show n
+
+-- | Find wallet corresponding to a Plutus address
+plutusAddressToWallet :: PV1.Address -> Wallet
+plutusAddressToWallet addr
+  | addr == walletPlutusAddress Wallet.w1 = Wallet.w1
+  | addr == walletPlutusAddress Wallet.w2 = Wallet.w2
+  | addr == walletPlutusAddress Wallet.w4 = Wallet.w4
+  | addr == walletPlutusAddress Wallet.w5 = Wallet.w5
+  | addr == walletPlutusAddress Wallet.w6 = Wallet.w6
+  | otherwise = Wallet.w1 -- Default
+
+-- | Update the first element matching a predicate
+updateFirst :: (a -> Bool) -> (a -> a) -> [a] -> [a]
+updateFirst _ _ [] = []
+updateFirst p f (x : xs)
+  | p x = f x : xs
+  | otherwise = x : updateFirst p f xs
+
 instance TestingInterface LendingModel where
-  -- Actions for Lending: request, lend, repay
+  -- Actions for Lending: request (from any wallet), lend, repay
   data Action LendingModel
-    = RequestLoanAction C.Lovelace C.Lovelace
-    | -- \^ Request loan with borrowed_amount and interest
+    = RequestLoanAction Int C.Lovelace C.Lovelace
+    | -- \^ Request loan: borrower wallet index (1-5), borrowed_amount, interest
       LendAction
-    | -- \^ Lender funds the loan
+    | -- \^ Lender funds the first unfunded loan
       RepayAction
-    -- \^ Borrower repays the loan
+    -- \^ Borrower repays the first funded-but-not-repaid loan
     deriving stock (Show, Eq)
 
   initialState =
     LendingModel
-      { lmInitialized = False
-      , lmTxIn = Nothing
-      , lmValue = 0
-      , lmBorrower = Nothing
-      , lmLender = Nothing
-      , lmBorrowedAmount = 0
-      , lmInterest = 0
-      , lmRepaid = False
+      { lmLoans = []
       }
 
-  -- Generate actions based on state
-  -- Init-type actions (RequestLoanAction): TIGHT - only when not initialized
-  -- Non-init actions (LendAction, RepayAction): BROAD - for negative testing
+  -- Generate actions to create multiple loans, then fund/repay
+  -- Key: we want at least 2 unfunded loans before LendAction for inputDuplication
+  -- Generator sometimes produces invalid actions for negative testing
   arbitraryAction model
-    | not (lmInitialized model) && not (lmRepaid model) =
+    | length (lmLoans model) < 2 =
+        -- First, ensure we have at least 2 loans for inputDuplication threat model
+        -- Occasionally generate invalid wallet index (0 or 6+) for negative testing
         RequestLoanAction
-          <$> (fromInteger <$> QC.choose (10_000_000, 100_000_000))
-          <*> (fromInteger <$> QC.choose (1_000_000, 10_000_000))
-    | otherwise =
+          <$> QC.chooseInt (0, 6) -- 0 and 6 fail precondition
+          <*> chooseLovelace
+          <*> chooseInterest
+    | hasUnfundedLoans && hasFundedLoans =
+        -- Mixed state: both unfunded and funded loans exist
         QC.frequency
-          [ (5, pure LendAction)
-          , (5, pure RepayAction)
+          [ (2, RequestLoanAction <$> QC.chooseInt (0, 6) <*> chooseLovelace <*> chooseInterest)
+          , (5, pure LendAction)
+          , (3, pure RepayAction)
           ]
+    | hasUnfundedLoans =
+        -- Only unfunded loans: Lend to fund them
+        -- Generate RepayAction frequently which fails precondition (for negative testing)
+        QC.frequency
+          [ (2, RequestLoanAction <$> QC.chooseInt (0, 6) <*> chooseLovelace <*> chooseInterest)
+          , (5, pure LendAction)
+          , (3, pure RepayAction) -- Fails precondition (negative testing)
+          ]
+    | hasFundedLoans =
+        -- Any funded loan can be repaid (consumes the UTxO)
+        -- Also allow LendAction for re-funding existing loans
+        QC.frequency
+          [ (2, RequestLoanAction <$> QC.chooseInt (0, 6) <*> chooseLovelace <*> chooseInterest)
+          , (2, pure LendAction)
+          , (6, pure RepayAction)
+          ]
+    | hasLoans =
+        -- Loans exist (could be repaid): Lend or Repay
+        QC.frequency
+          [ (2, RequestLoanAction <$> QC.chooseInt (0, 6) <*> chooseLovelace <*> chooseInterest)
+          , (4, pure LendAction)
+          , (4, pure RepayAction) -- May fail precondition if no funded loans
+          ]
+    | otherwise =
+        RequestLoanAction
+          <$> QC.chooseInt (0, 6)
+          <*> chooseLovelace
+          <*> chooseInterest
+   where
+    chooseLovelace = fromInteger <$> QC.choose (10_000_000, 100_000_000)
+    chooseInterest = fromInteger <$> QC.choose (1_000_000, 10_000_000)
+    hasUnfundedLoans = any (\l -> not (lsFunded l) && not (lsRepaid l)) (lmLoans model)
+    hasFundedLoans = any lsFunded (lmLoans model)
+    hasLoans = not (null (lmLoans model))
 
-  precondition model (RequestLoanAction _ _) = not (lmInitialized model) && not (lmRepaid model)
-  precondition model LendAction = lmInitialized model && lmLender model == Nothing
-  precondition model RepayAction = lmInitialized model && lmLender model /= Nothing && not (lmRepaid model)
+  precondition _model (RequestLoanAction walletIdx _ _) =
+    walletIdx >= 1 && walletIdx <= 5
+  precondition model LendAction =
+    -- Contract accepts Lend on any existing loan (funded or not, repaid or not).
+    -- The Lend handler only checks: own_ref != first_script_input_ref OR loans_paid_to_borrowers(...)
+    not (null (lmLoans model))
+  precondition model RepayAction =
+    -- Contract requires lender to be set (expect Some(lender_addr) in Repay handler)
+    any lsFunded (lmLoans model)
 
   nextState model action = case action of
-    RequestLoanAction borrowed interest ->
+    RequestLoanAction walletIdx borrowedAmt interest ->
       model
-        { lmInitialized = True
-        , lmTxIn = Just (C.TxIn dummyTxId (C.TxIx 0))
-        , lmValue = 10_000_000 -- Collateral
-        , lmBorrower = Just (walletPlutusAddress Wallet.w1)
-        , lmLender = Nothing
-        , lmBorrowedAmount = borrowed
-        , lmInterest = interest
-        , lmRepaid = False
+        { lmLoans =
+            lmLoans model
+              ++ [ LoanState
+                     { lsTxIn = Nothing -- Set by perform (we don't track exact TxIn in model)
+                     , lsBorrower = walletPlutusAddress (indexToWallet walletIdx)
+                     , lsBorrowedAmount = borrowedAmt
+                     , lsInterest = interest
+                     , lsCollateralValue = 10_000_000 -- Fixed collateral
+                     , lsFunded = False
+                     , lsRepaid = False
+                     }
+                 ]
         }
     LendAction ->
-      model
-        { lmLender = Just (walletPlutusAddress Wallet.w2)
-        }
+      let loans = lmLoans model
+       in if any (\l -> not (lsFunded l) && not (lsRepaid l)) loans
+            then -- Normal path: fund first unfunded loan
+              model
+                { lmLoans =
+                    updateFirst
+                      (\l -> not (lsFunded l) && not (lsRepaid l))
+                      (\l -> l{lsFunded = True})
+                      loans
+                }
+            else -- Re-fund: pick first loan (contract allows this)
+              model
+                { lmLoans =
+                    updateFirst
+                      (const True)
+                      (\l -> l{lsFunded = True})
+                      loans
+                }
     RepayAction ->
-      model
-        { lmInitialized = False
-        , lmTxIn = Nothing
-        , lmValue = 0
-        , lmBorrower = Nothing
-        , lmLender = Nothing
-        , lmBorrowedAmount = 0
-        , lmInterest = 0
-        , lmRepaid = True
-        }
+      -- Repay consumes the loan UTxO (no continuation), so remove from model
+      let loans = lmLoans model
+          removeFirst _ [] = []
+          removeFirst p (x : xs)
+            | p x = xs
+            | otherwise = x : removeFirst p xs
+       in if any (\l -> lsFunded l && not (lsRepaid l)) loans
+            then -- Normal path: remove first funded-but-not-repaid loan
+              model{lmLoans = removeFirst (\l -> lsFunded l && not (lsRepaid l)) loans}
+            else -- Remove first funded loan
+              model{lmLoans = removeFirst lsFunded loans}
 
   perform _model action = case action of
-    RequestLoanAction borrowed interest -> do
-      let txBody = execBuildTx $ requestLoan @C.ConwayEra Defaults.networkId Wallet.w1 borrowed interest 10_000_000
-      void $ balanceAndSubmit mempty Wallet.w1 txBody TrailingChange []
+    RequestLoanAction walletIdx borrowed interest -> do
+      let wallet = indexToWallet walletIdx
+          txBody = execBuildTx $ requestLoan @C.ConwayEra Defaults.networkId wallet borrowed interest 10_000_000
+      void $ balanceAndSubmit mempty wallet txBody TrailingChange []
     LendAction -> do
       result <- findLendingUtxos
-      case result of
-        [] -> fail "No loan request found"
-        ((txIn, value, datum) : _) -> do
-          let txBody = execBuildTx $ lendFunds Defaults.networkId txIn datum value Wallet.w2
+      -- Try unfunded first (normal path), then any loan (re-fund)
+      let target = case find (\(_, _, d) -> ldLender d == Nothing) result of
+            Just x -> Just x
+            Nothing -> case result of
+              (x : _) -> Just x
+              [] -> Nothing
+      case target of
+        Nothing -> fail "No loan UTxO found"
+        Just (txIn, value, datum) -> do
+          let txBody = execBuildTx $ lendFunds Defaults.networkId txIn datum value Wallet.w3
           -- Use w1 for balance because threat model rebalancer uses w1
           void $ balanceAndSubmit mempty Wallet.w1 txBody TrailingChange []
     RepayAction -> do
       result <- findLendingUtxos
-      case result of
-        [] -> fail "No loan found for repayment"
-        ((txIn, _, datum) : _) -> do
-          let txBody = execBuildTx $ repayLoan txIn datum Wallet.w1
-          void $ balanceAndSubmit mempty Wallet.w1 txBody TrailingChange []
+      -- Try funded first, then any loan (unfunded will fail on-chain)
+      let target = case find (\(_, _, d) -> ldLender d /= Nothing && not (ldRepaid d)) result of
+            Just x -> Just x
+            Nothing -> case find (\(_, _, d) -> ldLender d /= Nothing) result of
+              Just x -> Just x
+              Nothing -> case result of
+                (x : _) -> Just x -- Pick unfunded loan
+                [] -> Nothing
+      case target of
+        Nothing -> fail "No loan found to repay"
+        Just (txIn, _, datum) -> do
+          let borrowerWallet = plutusAddressToWallet (ldBorrower datum)
+              txBody = execBuildTx $ repayLoan txIn datum borrowerWallet
+          void $ balanceAndSubmit mempty borrowerWallet txBody TrailingChange []
 
   -- Simplified validation
   validate _model = pure True
 
   monitoring _state _action prop = prop
 
-  -- NOTE: threatModels is empty for lending because RepayAction consumes the script
-  -- UTxO without creating a new one. This causes 100% test discard since threat
-  -- models require a script output.
-  --
-  -- The vulnerabilities are tested separately with standalone tests:
-  -- - propLendingVulnerableToInputOrdering (input ordering bypass)
+  -- threatModels is empty - vulnerabilities are tested via expectedVulnerabilities
+  -- or via standalone tests.
   threatModels = []
 
-  -- unprotectedScriptOutput is a KNOWN vulnerability in this contract.
-  -- It's run as an expected vulnerability (inverted pass/fail).
-  expectedVulnerabilities = [unprotectedScriptOutput]
+  -- These are KNOWN vulnerabilities in this contract.
+  -- They are run as expected vulnerabilities (inverted pass/fail).
+  -- - unprotectedScriptOutput: Anyone can spend without proper authorization
+  -- - inputDuplication: Multiple loans can be exploited via input duplication
+  expectedVulnerabilities = [unprotectedScriptOutput, inputDuplication]
 
 -- ----------------------------------------------------------------------------
 -- Test tree

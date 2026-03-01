@@ -667,7 +667,12 @@ printCoverageReport = print . Pretty.pretty
 
 -- | Write a coverage report to a file.
 writeCoverageReport :: FilePath -> CoverageReport -> IO ()
-writeCoverageReport fp = writeFile fp . show . Pretty.pretty
+writeCoverageReport fp cr = do
+  writeFile fp (show (Pretty.pretty cr))
+  printCoveragePath fp
+
+printCoveragePath :: FilePath -> IO ()
+printCoveragePath fp = putStrLn $ "Coverage report available at: " <> fp
 
 -- | Collect coverage data but discard the report.
 silentCoverageReport :: CoverageReport -> IO ()
@@ -781,7 +786,9 @@ printCoverageJSON = LBS.putStrLn . Aeson.encode . coverageSummary
 
 -- | Write a coverage report as compact JSON to a file.
 writeCoverageJSON :: FilePath -> CoverageReport -> IO ()
-writeCoverageJSON fp = LBS.writeFile fp . Aeson.encode . coverageSummary
+writeCoverageJSON fp report = do
+  LBS.writeFile fp $ Aeson.encode $ coverageSummary report
+  printCoveragePath fp
 
 -- | Print a coverage report as pretty-printed JSON to stdout.
 printCoverageJSONPretty :: CoverageReport -> IO ()
@@ -789,7 +796,9 @@ printCoverageJSONPretty = LBS.putStrLn . Aeson.encodePretty . coverageSummary
 
 -- | Write a coverage report as pretty-printed JSON to a file.
 writeCoverageJSONPretty :: FilePath -> CoverageReport -> IO ()
-writeCoverageJSONPretty fp = LBS.writeFile fp . Aeson.encodePretty . coverageSummary
+writeCoverageJSONPretty fp report = do
+  LBS.writeFile fp $ Aeson.encodePretty $ coverageSummary report
+  printCoveragePath fp
 
 {- | Run a test suite with Plutus script coverage collection.
 

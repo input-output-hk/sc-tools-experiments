@@ -279,6 +279,15 @@ prettyTxModifier (TxModifier txmod) = vcat [prettyMod m | m <- txmod]
       , prettyScriptData redeemer
       , prettyRefScript rscript
       ]
+  prettyMod (AddPlutusScriptInputV3 script value datum redeemer rscript) =
+    fblock
+      (text "addPlutusScriptInputV3")
+      [ prettyPlutusV3Script script
+      , prettyValue value
+      , prettyDatum datum
+      , prettyScriptData redeemer
+      , prettyRefScript rscript
+      ]
   prettyMod (AddReferenceScriptInput script value datum redeemer) =
     fblock
       (text "addReferenceScriptInput")

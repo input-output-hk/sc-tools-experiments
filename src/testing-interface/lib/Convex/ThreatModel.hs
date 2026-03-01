@@ -47,6 +47,7 @@ module Convex.ThreatModel (
   removeOutput,
   addKeyInput,
   addPlutusScriptInput,
+  addPlutusScriptInputV3,
   addSimpleScriptInput,
   addReferenceScriptInput,
   addKeyReferenceInput,
@@ -450,7 +451,8 @@ runThreatModelCheck wallet = go False
         -- Try rebalancing - failure means this modification can't be tested on this tx
         rebalanceResult <- TM.tryRebalanceAndSign wallet modifiedTx modifiedUtxo
         case rebalanceResult of
-          Left _err -> go b model envs -- Rebalancing failed, skip to next tx (like precondition failure)
+          Left _err ->
+            go b model envs -- Rebalancing failed, skip to next tx (like precondition failure)
           Right rebalancedTx -> do
             (report, covData) <- validateTxM params rebalancedTx modifiedUtxo
             modifyMockChainState $ \s -> ((), s & coverageData %~ (<> covData))
