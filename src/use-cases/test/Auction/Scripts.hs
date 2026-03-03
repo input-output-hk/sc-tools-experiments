@@ -4,12 +4,12 @@
 {-# OPTIONS_GHC -fplugin-opt PlutusTx.Plugin:defer-errors #-}
 
 -- | Scripts used for testing
-module Scripts.AuctionScript (
+module Auction.Scripts (
   auctionValidatorScript,
 ) where
 
+import Auction.Validator qualified as Auction
 import Cardano.Api qualified as C
-import Contracts.AuctionValidator qualified as Auction
 import Convex.PlutusTx (compiledCodeToScript)
 import PlutusTx (BuiltinData, CompiledCode)
 import PlutusTx qualified

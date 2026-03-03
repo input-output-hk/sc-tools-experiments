@@ -46,10 +46,11 @@ library
     , cardano-ledger-core
     , cardano-ledger-shelley
     , cardano-slotting
-    , mtl
-    , transformers
 
-test-suite convex-use-cases-test
+-- , mtl
+-- , transformers
+
+test-suite convex-vesting-test
   import:         lang
   type:           exitcode-stdio-1.0
   hs-source-dirs: test
@@ -57,13 +58,14 @@ test-suite convex-use-cases-test
     -fobject-code -fno-ignore-interface-pragmas
     -fno-omit-interface-pragmas -fno-specialise -Wno-unused-packages
 
-  main-is:        Spec.hs
+  main-is:        Vesting/Spec/Spec.hs
   other-modules:
-    Contracts.Vesting
-    Model.VestingModel
-    Scripts.VestingScript
-    Specs.VestingSpec
-    Utils.VestingUtils
+    Vesting.Model
+    Vesting.Scripts
+    Vesting.Spec.Prop
+    Vesting.Spec.Unit
+    Vesting.Utils
+    Vesting.Validator
 
   build-depends:
     , base                                         >=4.14.0
@@ -72,7 +74,6 @@ test-suite convex-use-cases-test
     , cardano-ledger-conway
     , cardano-ledger-core
     , cardano-ledger-shelley
-    , containers
     , convex-base
     , convex-coin-selection
     , convex-mockchain
@@ -92,6 +93,7 @@ test-suite convex-use-cases-test
     , tasty-hunit
     , tasty-quickcheck
 
+-- , containers
 test-suite convex-auction-test
   import:         lang
   type:           exitcode-stdio-1.0
@@ -100,11 +102,13 @@ test-suite convex-auction-test
     -fobject-code -fno-ignore-interface-pragmas
     -fno-omit-interface-pragmas -fno-specialise -Wno-unused-packages
 
-  main-is:        Specs/AuctionSpec.hs
+  main-is:        Auction/Spec/Spec.hs
   other-modules:
-    Contracts.AuctionValidator
-    Scripts.AuctionScript
-    Utils.AuctionUtils
+    Auction.Scripts
+    Auction.Spec.Attacks
+    Auction.Spec.Unit
+    Auction.Utils
+    Auction.Validator
 
   build-depends:
     , base                                         >=4.14.0
@@ -114,13 +118,13 @@ test-suite convex-auction-test
     , cardano-ledger-conway
     , cardano-ledger-core
     , cardano-ledger-shelley
-    , containers
     , convex-base
     , convex-coin-selection
     , convex-mockchain
     , convex-optics
     , convex-testing-interface
     , convex-wallet
+    , katip
     , lens
     , mtl
     , plutus-ledger-api
@@ -133,3 +137,5 @@ test-suite convex-auction-test
     , tasty
     , tasty-hunit
     , tasty-quickcheck
+
+-- , containers

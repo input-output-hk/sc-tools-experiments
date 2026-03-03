@@ -2,24 +2,27 @@
 {-# LANGUAGE TypeApplications #-}
 {-# LANGUAGE TypeFamilies #-}
 
-module Model.VestingModel (
+module Vesting.Model (
   VestingModel,
 ) where
 
 import Cardano.Api qualified as C
-import Contracts.Vesting qualified as Vesting
-import Control.Monad.Except (runExceptT)
+import Control.Monad (void, when)
+import Control.Monad.Except (MonadError, runExceptT)
+import Convex.Class (MonadMockchain, setSlot)
+import Convex.CoinSelection (BalanceTxError)
 import Convex.MockChain.Defaults qualified as Defaults
 import Convex.PlutusLedger.V1 (transPubKeyHash)
 import Convex.TestingInterface (TestingInterface (..))
-import Convex.Utils (slotToUtcTime, utcTimeToPosixTime)
+import Convex.Utils (inBabbage, slotToUtcTime, utcTimeToPosixTime)
 import Convex.Wallet (Wallet, verificationKeyHash)
 import Convex.Wallet.MockWallet qualified as MockWallet
 import GHC.Generics (Generic)
 import PlutusLedgerApi.V1 (lovelaceValue)
 import Test.QuickCheck.Gen qualified as Gen
 import Test.Tasty.QuickCheck qualified as QC
-import Utils.VestingUtils qualified as Utils
+import Vesting.Utils (VestingState (..), findVestingUtxos, lockVesting, mkScriptHash, mkVestingParams, slotToPosixTime, submitAndGetScriptTxIn, withdrawStep)
+import Vesting.Validator qualified as Vesting
 
 -------------------------------------------------------------------------------
 -- Vesting Testing Interface
@@ -144,16 +147,16 @@ instance TestingInterface VestingModel where
     do
       C.liftIO $ putStrLn $ ">>> Vesting " ++ show amt ++ " lovelace from " ++ show w
       runExceptT $
-        Utils.lockVestingPBT @C.ConwayEra (_t1Slot vm) w amt
+        lockVestingPBT @C.ConwayEra (_t1Slot vm) w amt
       >>= \case
         Left err -> fail $ "Vest failed: " <> show err
         Right _txId -> pure ()
   perform vm (Retrieve amt) =
     do
       C.liftIO $ putStrLn $ ">>> Withdrawing " ++ show amt ++ " lovelace at slot " ++ show (_curSlot vm)
-      let vestingParams = mkVestingParams vm
+      let vestingParams = paramsFromModel vm
       runExceptT $
-        Utils.retrieveFundsPBT @C.ConwayEra
+        retrieveFundsPBT @C.ConwayEra
           vestingParams
           (_curSlot vm) -- lowerSlot: current time
           (_curSlot vm + 100) -- upperSlot: give some validity range
@@ -179,13 +182,13 @@ wallets :: [Wallet]
 wallets = [MockWallet.w1, MockWallet.w2, MockWallet.w3]
 
 -- | Create VestingParams matching the model state.
-mkVestingParams :: VestingModel -> Vesting.VestingParams
-mkVestingParams vm =
+paramsFromModel :: VestingModel -> Vesting.VestingParams
+paramsFromModel vm =
   let dt1 = case slotToUtcTime Defaults.eraHistory Defaults.systemStart (_t1Slot vm) of
-        Left err -> error $ "mkVestingParams: cannot convert slot to utc time: " ++ show err
+        Left err -> error $ "paramsFromModel: cannot convert slot to utc time: " ++ show err
         Right t -> t
       dt2 = case slotToUtcTime Defaults.eraHistory Defaults.systemStart (_t2Slot vm) of
-        Left err -> error $ "mkVestingParams: cannot convert slot to utc time: " ++ show err
+        Left err -> error $ "paramsFromModel: cannot convert slot to utc time: " ++ show err
         Right t -> t
    in Vesting.VestingParams
         { Vesting.vpOwner = transPubKeyHash $ verificationKeyHash (_owner vm)
@@ -219,3 +222,71 @@ validChangeOutput vm withdrawAmount =
       minUtxo = 1_000_000 -- 1 ADA
    in remaining == 0 -- OK: retrieves everything
         || remaining >= minUtxo -- OK: leaves at least 1 ADA
+
+-------------------------------------------------------------------------------
+-- Property-Based Testing Functions
+-------------------------------------------------------------------------------
+
+-- | Lock funds in vesting contract for property-based testing.
+lockVestingPBT
+  :: forall era m
+   . (MonadMockchain era m, MonadError (BalanceTxError era) m, MonadFail m, C.IsBabbageBasedEra era)
+  => C.SlotNo
+  -- ^ Deadline for first tranche
+  -> Wallet
+  -- ^ Wallet funding the vesting (not necessarily the owner)
+  -> C.Lovelace
+  -- ^ Amount to lock
+  -> m ()
+lockVestingPBT dl w amt = inBabbage @era $ do
+  deadline <- slotToPosixTime dl
+  -- Owner is always w1 in our tests
+  let ownerPKH = verificationKeyHash MockWallet.w1
+      params = mkVestingParams ownerPKH deadline 20_000_000 (deadline + 10_000) 40_000_000
+
+  void $
+    submitAndGetScriptTxIn w (mkScriptHash params) $
+      lockVesting (mkScriptHash params) amt
+
+-- | Retrieve funds from vesting contract for property-based testing.
+retrieveFundsPBT
+  :: forall era m
+   . (MonadMockchain era m, MonadError (BalanceTxError era) m, MonadFail m, C.IsBabbageBasedEra era, C.HasScriptLanguageInEra C.PlutusScriptV3 era)
+  => Vesting.VestingParams
+  -- ^ Vesting parameters
+  -> C.SlotNo
+  -- ^ Lower validity bound
+  -> C.SlotNo
+  -- ^ Upper validity bound
+  -> C.SlotNo
+  -- ^ Current slot (set chain to this)
+  -> C.Lovelace
+  -- ^ Amount to withdraw
+  -> m ()
+retrieveFundsPBT params lowerSlot upperSlot curSlot amt = inBabbage @era $ do
+  let scriptHash = mkScriptHash params
+      ownerPKH = verificationKeyHash MockWallet.w1
+
+  -- Set blockchain time
+  setSlot curSlot
+
+  -- Query blockchain for vesting UTxOs
+  utxos <- findVestingUtxos scriptHash
+
+  when (null utxos) $ fail "No vesting UTxOs found on chain"
+
+  -- Calculate total locked amount from UTxOs
+  let txIns = map fst utxos
+      totalLocked =
+        sum
+          [ C.txOutValueToLovelace val
+          | (_, C.TxOut _ val _ _) <- utxos
+          ]
+
+  let vestingState =
+        VestingState
+          { vsInputs = txIns
+          , vsLocked = totalLocked
+          }
+
+  void $ withdrawStep MockWallet.w1 lowerSlot upperSlot ownerPKH params vestingState amt

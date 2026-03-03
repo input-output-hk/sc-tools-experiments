@@ -1,3 +1,4 @@
+{-# LANGUAGE DataKinds #-}
 {-# LANGUAGE DeriveAnyClass #-}
 {-# LANGUAGE DerivingStrategies #-}
 {-# LANGUAGE FlexibleInstances #-}
@@ -7,25 +8,28 @@
 {-# LANGUAGE NoImplicitPrelude #-}
 {-# OPTIONS_GHC -Wno-unrecognised-pragmas #-}
 
-module Contracts.AuctionValidator where
+module Auction.Validator where
 
+import Cardano.Api qualified as C
+import Convex.PlutusTx (compiledCodeToScript)
 import GHC.Generics (Generic)
 import GHC.Real (Integral (toInteger))
 import PlutusLedgerApi.V1 (Extended (..), Interval (..), LowerBound (..), POSIXTimeRange, UpperBound (..), lovelaceValueOf, toPubKeyHash, valueOf)
 import PlutusLedgerApi.V1.Interval (contains)
 import PlutusLedgerApi.V3 (CurrencySymbol, Datum (..), Lovelace, OutputDatum (..), POSIXTime, PubKeyHash, ScriptContext (..), ScriptInfo (..), TokenName, TxInfo (..), TxOut (..), from, getRedeemer, to)
-import PlutusLedgerApi.V3.Contexts (findOwnInput, getContinuingOutputs, txInInfoResolved)
+import PlutusLedgerApi.V3.Contexts (getContinuingOutputs)
 import PlutusTx qualified
 import PlutusTx.Blueprint (HasBlueprintDefinition, definitionRef)
 import PlutusTx.Bool (Bool (..))
+import PlutusTx.Builtins.Internal (BuiltinByteString (..))
 import PlutusTx.Eq ((==))
 import PlutusTx.List qualified as List
 import PlutusTx.Maybe (Maybe (..))
 import PlutusTx.Ord ((>), (>=))
-import PlutusTx.Prelude (BuiltinString, (&&), (+), (<>))
+import PlutusTx.Prelude (BuiltinString, (&&), (.), (<>))
 import PlutusTx.Prelude qualified as PlutusTx
 import PlutusTx.Show qualified as PlutusTx
-import Prelude (($))
+import Prelude (error, ($))
 
 data AuctionParams = AuctionParams
   { apSeller :: PubKeyHash
@@ -163,47 +167,34 @@ auctionTypedValidator params ctx@(ScriptContext txInfo scriptRedeemer scriptInfo
   tokenName = apTokenName params
 
   correctOutput :: Bid -> Bool
-  correctOutput bid =
-    case (findOwnInput ctx, getContinuingOutputs ctx) of
-      (Just ownInput, [o]) ->
-        let correctOutputDatum = case txOutDatum o of
-              OutputDatum (Datum newDatum) ->
-                case PlutusTx.fromBuiltinData newDatum of
-                  Just (AuctionDatum (Just bid')) ->
-                    PlutusTx.traceIfFalse
-                      "Invalid output datum: contains a different Bid than expected"
-                      (bid PlutusTx.== bid')
-                  Just (AuctionDatum Nothing) ->
-                    PlutusTx.traceError "Invalid output datum: expected Just Bid, got Nothing"
-                  Nothing ->
-                    PlutusTx.traceError "Failed to decode output datum"
-              OutputDatumHash _ ->
-                PlutusTx.traceError "Expected OutputDatum, got OutputDatumHash"
-              NoOutputDatum ->
-                PlutusTx.traceError "Expected OutputDatum, got NoOutputDatum"
+  correctOutput bid = case getContinuingOutputs ctx of
+    [o] ->
+      let correctOutputDatum = case txOutDatum o of
+            OutputDatum (Datum newDatum) -> case PlutusTx.fromBuiltinData newDatum of
+              Just (AuctionDatum (Just bid')) ->
+                PlutusTx.traceIfFalse
+                  "Invalid output datum: contains a different Bid than expected"
+                  (bid PlutusTx.== bid')
+              Just (AuctionDatum Nothing) ->
+                PlutusTx.traceError "Invalid output datum: expected Just Bid, got Nothing"
+              Nothing ->
+                PlutusTx.traceError "Failed to decode output datum"
+            OutputDatumHash _ ->
+              PlutusTx.traceError "Expected OutputDatum, got OutputDatumHash"
+            NoOutputDatum ->
+              PlutusTx.traceError "Expected OutputDatum, got NoOutputDatum"
 
-            inValue = txOutValue (txInInfoResolved ownInput)
-            outValue = txOutValue o
+          outValue = txOutValue o
 
-            inLovelace = lovelaceValueOf inValue
-            outLovelace = lovelaceValueOf outValue
-
-            correctOutputValue =
-              PlutusTx.traceIfFalse
-                "Incorrect lovelace transition"
-                -- The new output should contain the previous lovelace (including fees) plus the new bid amount
-                (outLovelace == inLovelace + bAmount bid)
-                && PlutusTx.traceIfFalse
-                  "NFT missing from continuing output"
-                  (valueOf outValue currencySymbol tokenName == 1)
-         in correctOutputDatum PlutusTx.&& correctOutputValue
-      (Nothing, _) ->
-        PlutusTx.traceError "Validator input not found"
-      (_, os) ->
-        PlutusTx.traceError
-          ( "Expected exactly one continuing output, got "
-              PlutusTx.<> PlutusTx.show (List.length os)
-          )
+          correctOutputValue =
+            (lovelaceValueOf outValue PlutusTx.== bAmount bid)
+              PlutusTx.&& (valueOf outValue currencySymbol tokenName PlutusTx.== 1)
+       in correctOutputDatum PlutusTx.&& correctOutputValue
+    os ->
+      PlutusTx.traceError
+        ( "Expected exactly one continuing output, got "
+            PlutusTx.<> PlutusTx.show (List.length os)
+        )
 
   validPayoutTime :: Bool
   ~validPayoutTime = from (apEndTime params) `contains` txInfoValidRange txInfo
@@ -242,12 +233,46 @@ auctionUntypedValidator
   -> PlutusTx.BuiltinData
   -> PlutusTx.BuiltinUnit
 auctionUntypedValidator params ctx =
-  -- unitval
   PlutusTx.check
     ( auctionTypedValidator
         params
         (PlutusTx.unsafeFromBuiltinData ctx)
     )
+
+{-# INLINEABLE hugeValidator' #-}
+hugeValidator' :: AuctionParams -> PlutusTx.BuiltinData -> PlutusTx.BuiltinUnit
+hugeValidator' params ctx =
+  let big :: BuiltinByteString
+      big = PlutusTx.replicateByte 50_000 0x41 -- 200KB
+   in if PlutusTx.lengthOfByteString big >= 0
+        then PlutusTx.check (auctionTypedValidator params (PlutusTx.unsafeFromBuiltinData ctx))
+        else PlutusTx.traceError "impossible"
+
+{-# INLINEABLE hugeValidator #-}
+hugeValidator :: AuctionParams -> PlutusTx.BuiltinData -> PlutusTx.BuiltinUnit
+hugeValidator params ctx =
+  let _padding = hugePadding
+   in PlutusTx.check $
+        auctionTypedValidator params (PlutusTx.unsafeFromBuiltinData ctx)
+
+{-# INLINEABLE hugePadding #-}
+hugePadding :: BuiltinByteString
+hugePadding =
+  PlutusTx.appendByteString
+    (PlutusTx.replicateByte 1 65)
+    (PlutusTx.replicateByte 1 66)
+
+-- | Compiling a parameterized validator for 'Scripts.Auction.auctionUntypedValidator'
+hugeValidatorCompiled :: AuctionParams -> PlutusTx.CompiledCode (PlutusTx.BuiltinData -> PlutusTx.BuiltinUnit)
+hugeValidatorCompiled params =
+  case $$(PlutusTx.compile [||hugeValidator||])
+    `PlutusTx.applyCode` PlutusTx.liftCodeDef params of
+    PlutusTx.Left err -> error err
+    PlutusTx.Right cc -> cc
+
+-- | Serialized validator for 'Scripts.Auction.auctionUntypedValidator'
+hugeValidatorScript :: AuctionParams -> C.PlutusScript C.PlutusScriptV3
+hugeValidatorScript = compiledCodeToScript . hugeValidatorCompiled
 
 -------------------------------------------------------------------------------
 -- The functions below are used only for debugging purposes
