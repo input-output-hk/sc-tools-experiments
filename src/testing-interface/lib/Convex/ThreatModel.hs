@@ -1,7 +1,6 @@
 {-# LANGUAGE FlexibleInstances #-}
 {-# LANGUAGE GADTs #-}
 {-# LANGUAGE LambdaCase #-}
-{-# LANGUAGE NumericUnderscores #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# OPTIONS_GHC -Wno-unused-matches -Wno-name-shadowing #-}
 
@@ -330,11 +329,41 @@ runThreatModelM
   -> ThreatModel a
   -> [ThreatModelEnv]
   -> m Property
-runThreatModelM wallet = go False
+runThreatModelM = runThreatModelM' False
+
+{- | Like 'runThreatModelM' but suppresses verbose counterexample annotations.
+
+This is useful for 'expectFailure' tests where you want the test to fail
+(proving vulnerability exists) but don't want the lengthy counterexample
+output cluttering test results.
+
+The property still succeeds/fails correctly based on shouldValidate/shouldNotValidate
+checks, but Monitor/MonitorLocal annotations (counterexampleTM, etc.) are ignored.
+-}
+runThreatModelMQuiet
+  :: (MonadMockchain Era m, MonadFail m, MonadIO m)
+  => Wallet
+  -> ThreatModel a
+  -> [ThreatModelEnv]
+  -> m Property
+runThreatModelMQuiet = runThreatModelM' True
+
+-- | Internal shared implementation for 'runThreatModelM' and 'runThreatModelMQuiet'.
+runThreatModelM'
+  :: (MonadMockchain Era m, MonadFail m, MonadIO m)
+  => Bool
+  -- ^ quiet: suppress counterexample annotations
+  -> Wallet
+  -> ThreatModel a
+  -> [ThreatModelEnv]
+  -> m Property
+runThreatModelM' quiet wallet = go False
  where
-  go b model [] = pure $ b ==> property True
-  go b model (env : envs) = interpM (counterexample $ show info) model
+  go b _model [] = pure $ b ==> property True
+  go b model (env : envs) = interpM initialMon model
    where
+    initialMon = if quiet then id else counterexample (show info)
+
     info =
       vcat
         [ ""
@@ -354,7 +383,7 @@ runThreatModelM wallet = go False
         let (modifiedTx, modifiedUtxo) = applyTxModifier (currentTx env) (currentUTxOs env) mods
         -- Re-balance and re-sign the modified transaction
         params <- askNodeParams
-        rebalancedTx <- rebalanceAndSign wallet modifiedTx modifiedUtxo
+        rebalancedTx <- rebalanceAndSignM wallet modifiedTx modifiedUtxo
         -- Validate with full Phase 1 + Phase 2
         (report, covData) <- validateTxM params rebalancedTx modifiedUtxo
         -- Accumulate coverage into the running MockChainState
@@ -368,58 +397,11 @@ runThreatModelM wallet = go False
         interpM mon (k env)
       Skip -> go b model envs
       InPrecondition k -> interpM mon (k False)
-      Fail err -> pure $ mon $ counterexample err False
-      Monitor m k -> m <$> interpM mon k
-      MonitorLocal m k -> interpM (mon . m) k
+      Fail err -> pure $ if quiet then property False else mon $ counterexample err False
+      Monitor m k -> if quiet then interpM mon k else m <$> interpM mon k
+      MonitorLocal m k -> if quiet then interpM mon k else interpM (mon . m) k
       Done{} -> go True model envs
       Named _n k -> interpM mon k
-
-{- | Like 'runThreatModelM' but suppresses verbose counterexample annotations.
-
-This is useful for 'expectFailure' tests where you want the test to fail
-(proving vulnerability exists) but don't want the lengthy counterexample
-output cluttering test results.
-
-The property still succeeds/fails correctly based on shouldValidate/shouldNotValidate
-checks, but Monitor/MonitorLocal annotations (counterexampleTM, etc.) are ignored.
--}
-runThreatModelMQuiet
-  :: (MonadMockchain Era m, MonadFail m, MonadIO m)
-  => Wallet
-  -> ThreatModel a
-  -> [ThreatModelEnv]
-  -> m Property
-runThreatModelMQuiet wallet = go False
- where
-  go b _model [] = pure $ b ==> property True
-  go b model (env : envs) = interpMQuiet model
-   where
-    -- Quiet interpreter: identical to interpM but ignores Monitor/MonitorLocal
-    interpMQuiet = \case
-      Validate mods k -> do
-        let (modifiedTx, modifiedUtxo) = applyTxModifier (currentTx env) (currentUTxOs env) mods
-        -- Re-balance and re-sign the modified transaction
-        params <- askNodeParams
-        rebalancedTx <- rebalanceAndSign wallet modifiedTx modifiedUtxo
-        -- Validate with full Phase 1 + Phase 2
-        (report, covData) <- validateTxM params rebalancedTx modifiedUtxo
-        -- Accumulate coverage into the running MockChainState
-        modifyMockChainState $ \s -> ((), s & coverageData %~ (<> covData))
-        interpMQuiet (k report)
-      Generate gen _shr k -> do
-        -- Use QuickCheck's generate in IO
-        a <- liftIO $ QC.generate gen
-        interpMQuiet (k a)
-      GetCtx k ->
-        interpMQuiet (k env)
-      Skip -> go b model envs
-      InPrecondition k -> interpMQuiet (k False)
-      Fail _err -> pure $ property False
-      -- Key difference: ignore Monitor/MonitorLocal transformations
-      Monitor _m k -> interpMQuiet k
-      MonitorLocal _m k -> interpMQuiet k
-      Done{} -> go True model envs
-      Named _n k -> interpMQuiet k
 
 -- | Extract the name from a threat model, if it was defined with 'Named'.
 getThreatModelName :: ThreatModel a -> Maybe String
@@ -449,7 +431,7 @@ runThreatModelCheck wallet = go False
         let (modifiedTx, modifiedUtxo) = applyTxModifier (currentTx env) (currentUTxOs env) mods
         params <- askNodeParams
         -- Try rebalancing - failure means this modification can't be tested on this tx
-        rebalanceResult <- TM.tryRebalanceAndSign wallet modifiedTx modifiedUtxo
+        rebalanceResult <- TM.rebalanceAndSign wallet modifiedTx modifiedUtxo
         case rebalanceResult of
           Left _err ->
             go b model envs -- Rebalancing failed, skip to next tx (like precondition failure)
