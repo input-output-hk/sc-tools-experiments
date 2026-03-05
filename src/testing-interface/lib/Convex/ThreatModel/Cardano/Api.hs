@@ -3,7 +3,6 @@
 {-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE NamedFieldPuns #-}
 {-# LANGUAGE TypeApplications #-}
-{-# LANGUAGE ViewPatterns #-}
 
 module Convex.ThreatModel.Cardano.Api where
 
@@ -26,7 +25,7 @@ import Cardano.Ledger.Plutus.Language qualified as Plutus
 import Cardano.Slotting.Slot ()
 import Cardano.Slotting.Time (SlotLength, mkSlotLength)
 import Control.Lens ((&), (.~), (^.), _1)
-import Control.Monad (when)
+import Data.List (isPrefixOf)
 
 import Convex.CardanoApi.Lenses qualified as L
 import Convex.Class (
@@ -428,14 +427,14 @@ This function:
 3. Adjusts the change output (last output to wallet address) to compensate
 4. Re-signs the transaction with the wallet's key
 -}
-rebalanceAndSign
+rebalanceAndSignM
   :: (MonadMockchain Era m, MonadFail m)
   => Wallet
   -> Tx Era
   -> UTxO Era
   -> m (Tx Era)
-rebalanceAndSign wallet tx utxo = do
-  result <- tryRebalanceAndSign wallet tx utxo
+rebalanceAndSignM wallet tx utxo = do
+  result <- rebalanceAndSign wallet tx utxo
   case result of
     Left err -> fail err
     Right signedTx -> pure signedTx
@@ -445,13 +444,13 @@ rebalanceAndSign wallet tx utxo = do
 This is useful for threat model execution where we want to handle rebalancing
 failures (e.g., "No change output found") as skipped tests rather than errors.
 -}
-tryRebalanceAndSign
+rebalanceAndSign
   :: (MonadMockchain Era m)
   => Wallet
   -> Tx Era
   -> UTxO Era
   -> m (Either String (Tx Era))
-tryRebalanceAndSign wallet tx utxo = do
+rebalanceAndSign wallet tx utxo = do
   pparams <- Convex.Class.queryProtocolParameters
   networkId <- Convex.Class.queryNetworkId
   systemStart <- Convex.Class.querySystemStart
@@ -483,7 +482,7 @@ tryRebalanceAndSign wallet tx utxo = do
 
   -- Adjust the change output and set the new fee
   let currentOuts = txOutputs txWithUpdatedExUnits
-  case tryAdjustChangeOutput walletAddr feeDiff currentOuts of
+  case adjustChangeOutput walletAddr feeDiff currentOuts of
     Left err -> pure (Left err)
     Right adjustedOutputs -> do
       -- Apply the changes: new fee and adjusted outputs
@@ -552,10 +551,10 @@ updateScriptDataExUnits _ TxBodyNoScriptData = TxBodyNoScriptData
 updateScriptDataExUnits exUnitsMap (TxBodyScriptData eraWit dats (Ledger.Redeemers rdmrs)) =
   TxBodyScriptData eraWit dats (Ledger.Redeemers updatedRdmrs)
  where
-  updatedRdmrs = Map.mapWithKey updateRedeemer rdmrs
+  updatedRdmrs = Map.mapWithKey updateRedeemer' rdmrs
 
-  updateRedeemer :: Conway.ConwayPlutusPurpose Ledger.AsIx LedgerEra -> (Ledger.Data LedgerEra, Ledger.ExUnits) -> (Ledger.Data LedgerEra, Ledger.ExUnits)
-  updateRedeemer purpose (dat, _oldExUnits) =
+  updateRedeemer' :: Conway.ConwayPlutusPurpose Ledger.AsIx LedgerEra -> (Ledger.Data LedgerEra, Ledger.ExUnits) -> (Ledger.Data LedgerEra, Ledger.ExUnits)
+  updateRedeemer' purpose (dat, _oldExUnits) =
     case purposeToScriptWitnessIndex purpose of
       Just idx -> case Map.lookup idx exUnitsMap of
         Just newExUnits -> (dat, toAlonzoExUnits newExUnits)
@@ -564,12 +563,12 @@ updateScriptDataExUnits exUnitsMap (TxBodyScriptData eraWit dats (Ledger.Redeeme
 
   -- Convert Conway purpose to cardano-api ScriptWitnessIndex
   purposeToScriptWitnessIndex :: Conway.ConwayPlutusPurpose Ledger.AsIx LedgerEra -> Maybe ScriptWitnessIndex
-  purposeToScriptWitnessIndex (Conway.ConwaySpending (Ledger.AsIx ix)) = Just $ ScriptWitnessIndexTxIn (fromIntegral ix)
-  purposeToScriptWitnessIndex (Conway.ConwayMinting (Ledger.AsIx ix)) = Just $ ScriptWitnessIndexMint (fromIntegral ix)
-  purposeToScriptWitnessIndex (Conway.ConwayRewarding (Ledger.AsIx ix)) = Just $ ScriptWitnessIndexWithdrawal (fromIntegral ix)
-  purposeToScriptWitnessIndex (Conway.ConwayCertifying (Ledger.AsIx ix)) = Just $ ScriptWitnessIndexCertificate (fromIntegral ix)
-  purposeToScriptWitnessIndex (Conway.ConwayVoting (Ledger.AsIx ix)) = Just $ ScriptWitnessIndexVoting (fromIntegral ix)
-  purposeToScriptWitnessIndex (Conway.ConwayProposing (Ledger.AsIx ix)) = Just $ ScriptWitnessIndexProposing (fromIntegral ix)
+  purposeToScriptWitnessIndex (Conway.ConwaySpending (Ledger.AsIx ix)) = Just $ ScriptWitnessIndexTxIn ix
+  purposeToScriptWitnessIndex (Conway.ConwayMinting (Ledger.AsIx ix)) = Just $ ScriptWitnessIndexMint ix
+  purposeToScriptWitnessIndex (Conway.ConwayRewarding (Ledger.AsIx ix)) = Just $ ScriptWitnessIndexWithdrawal ix
+  purposeToScriptWitnessIndex (Conway.ConwayCertifying (Ledger.AsIx ix)) = Just $ ScriptWitnessIndexCertificate ix
+  purposeToScriptWitnessIndex (Conway.ConwayVoting (Ledger.AsIx ix)) = Just $ ScriptWitnessIndexVoting ix
+  purposeToScriptWitnessIndex (Conway.ConwayProposing (Ledger.AsIx ix)) = Just $ ScriptWitnessIndexProposing ix
 
 {- | Recalculate and update the script integrity hash in a transaction.
 
@@ -636,8 +635,8 @@ setTxOutputsList newOuts (Tx (ShelleyTxBody era body scripts scriptData auxData 
   let newOutsSeq =
         Seq.fromList
           [ CBOR.mkSized
-              (Ledger.eraProtVerLow @LedgerEra)
-              (toShelleyTxOut shelleyBasedEra (toCtxUTxOTxOut out))
+            (Ledger.eraProtVerLow @LedgerEra)
+            (toShelleyTxOut shelleyBasedEra (toCtxUTxOTxOut out))
           | out <- newOuts
           ]
       body' = body{Conway.ctbOutputs = newOutsSeq}
@@ -648,7 +647,7 @@ setTxOutputsList newOuts (Tx (ShelleyTxBody era body scripts scriptData auxData 
 If fee increased, we subtract from the change output.
 If fee decreased, we add to the change output.
 -}
-adjustChangeOutput
+adjustChangeOutputM
   :: (MonadFail m)
   => AddressInEra Era
   -- ^ Wallet address to find change output
@@ -657,13 +656,13 @@ adjustChangeOutput
   -> [TxOut CtxTx Era]
   -- ^ Transaction outputs
   -> m [TxOut CtxTx Era]
-adjustChangeOutput walletAddr feeDiff outputs =
-  case tryAdjustChangeOutput walletAddr feeDiff outputs of
+adjustChangeOutputM walletAddr feeDiff outputs =
+  case adjustChangeOutput walletAddr feeDiff outputs of
     Left err -> fail err
     Right result -> pure result
 
 -- | Like 'adjustChangeOutput' but returns Either instead of using MonadFail.
-tryAdjustChangeOutput
+adjustChangeOutput
   :: AddressInEra Era
   -- ^ Wallet address to find change output
   -> Coin
@@ -671,7 +670,7 @@ tryAdjustChangeOutput
   -> [TxOut CtxTx Era]
   -- ^ Transaction outputs
   -> Either String [TxOut CtxTx Era]
-tryAdjustChangeOutput walletAddr (Coin feeDiff) outputs = do
+adjustChangeOutput walletAddr (Coin feeDiff) outputs = do
   -- Find last output to wallet address
   let indexed = zip [0 ..] outputs
       walletOutputs =
@@ -700,3 +699,57 @@ replaceAt :: Int -> a -> [a] -> [a]
 replaceAt _ _ [] = []
 replaceAt 0 x (_ : xs) = x : xs
 replaceAt n x (y : ys) = y : replaceAt (n - 1) x ys
+
+{- | Extract coverage data from a ValidationError string containing CovLoc annotations.
+Handles the format found in Phase2 script evaluation errors where coverage
+annotations appear as "CoverLocation (CovLoc {...})" or "CoverBool (CovLoc {...}) Bool"
+-}
+extractCoverageFromValidationError :: String -> CoverageData
+extractCoverageFromValidationError errStr =
+  mconcat $ map (coverageDataFromLogMsg . unescapeHaskellString) $ extractCoverageAnnotations errStr
+
+-- | Unescape common Haskell string escapes (backslash-quote to quote, backslash-backslash to backslash)
+unescapeHaskellString :: String -> String
+unescapeHaskellString [] = []
+unescapeHaskellString ('\\' : '"' : xs) = '"' : unescapeHaskellString xs
+unescapeHaskellString ('\\' : '\\' : xs) = '\\' : unescapeHaskellString xs
+unescapeHaskellString (x : xs) = x : unescapeHaskellString xs
+
+{- | Extract all "CoverLocation (...)" and "CoverBool (...)" substrings from text.
+Uses bracket counting to properly match nested parentheses.
+-}
+extractCoverageAnnotations :: String -> [String]
+extractCoverageAnnotations [] = []
+extractCoverageAnnotations s = case findCoverageStart s of
+  Nothing -> []
+  Just (prefix, rest) ->
+    case extractBalancedParens rest of
+      Nothing -> extractCoverageAnnotations (drop 1 s) -- skip and continue
+      Just (content, remaining) ->
+        (prefix ++ "(" ++ content ++ ")") : extractCoverageAnnotations remaining
+ where
+  -- Find "CoverLocation (" or "CoverBool (" prefix
+  -- Returns the prefix and rest of string starting with '('
+  -- "CoverLocation " is 14 chars, "CoverBool " is 10 chars
+  findCoverageStart :: String -> Maybe (String, String)
+  findCoverageStart [] = Nothing
+  findCoverageStart str
+    | "CoverLocation (" `isPrefixOf` str = Just ("CoverLocation ", drop 14 str) -- keep "(CovLoc..."
+    | "CoverBool (" `isPrefixOf` str = Just ("CoverBool ", drop 10 str) -- keep "(CovLoc..."
+    | otherwise = findCoverageStart (drop 1 str)
+
+  -- Extract content within balanced parentheses
+  -- Expects the string to start with '(' and returns content between matching parens
+  extractBalancedParens :: String -> Maybe (String, String)
+  extractBalancedParens ('(' : xs) = go' 1 [] xs
+   where
+    go' :: Integer -> [Char] -> [Char] -> Maybe ([Char], [Char])
+    go' _ _ [] = Nothing
+    go' n acc (c : cs)
+      | c == '(' = go' (n + 1) (c : acc) cs
+      | c == ')' =
+          if n == 1
+            then Just (reverse acc, cs)
+            else go' (n - 1) (c : acc) cs
+      | otherwise = go' n (c : acc) cs
+  extractBalancedParens _ = Nothing

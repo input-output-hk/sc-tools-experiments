@@ -206,9 +206,7 @@ assetNameToBuiltin (C.UnsafeAssetName bs) = PlutusTx.toBuiltin bs
 -- | Mint tokens to a wallet (separate transaction for setup)
 mintTokensToWallet
   :: forall m
-   . ( C.HasScriptLanguageInEra C.PlutusScriptV1 C.ConwayEra
-     , MonadBuildTx C.ConwayEra m
-     )
+   . (MonadBuildTx C.ConwayEra m)
   => C.AddressInEra C.ConwayEra
   -- ^ Destination wallet address
   -> C.AssetName
@@ -226,9 +224,7 @@ will include both when coin selection finds one of them.
 -}
 mintBothTokensToWallet
   :: forall m
-   . ( C.HasScriptLanguageInEra C.PlutusScriptV1 C.ConwayEra
-     , MonadBuildTx C.ConwayEra m
-     )
+   . (MonadBuildTx C.ConwayEra m)
   => C.AddressInEra C.ConwayEra
   -- ^ Destination wallet address
   -> m ()

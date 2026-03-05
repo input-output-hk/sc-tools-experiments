@@ -437,7 +437,7 @@ positiveTest opts mGetTmResultsRef tms evs (Actions actions) = monadicIO $ do
             isTMFailed _ = False
             alreadyFailed name = any isTMFailed (fromMaybe [] (Map.lookup name existingResults))
             -- Only filter threat models (tms) for early-stop; expected vulnerabilities (evs) always run
-            tmsToRun = filter (\tm -> not (alreadyFailed (fromMaybe "Unnamed" (getThreatModelName tm)))) tms
+            tmsToRun = filter (not . alreadyFailed . fromMaybe "Unnamed" . getThreatModelName) tms
             allToRun = tmsToRun <> evs -- evs always run, no filtering
             -- Run each threat model in an isolated MockchainT context
         liftIO $ forM allToRun $ \tm -> do

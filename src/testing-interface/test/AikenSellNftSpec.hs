@@ -245,6 +245,7 @@ findSellNftUtxos = do
               (PlutusTx.dataToBuiltinData $ C.toPlutusData $ C.getScriptData scriptData)
           _ -> error "Expected inline datum"
      in (txIn, value, d)
+  extractData _ = error "Expected shelley-based TxOut with inline datum"
 
 -- ----------------------------------------------------------------------------
 -- Unit tests

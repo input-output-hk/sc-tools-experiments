@@ -1,3 +1,4 @@
+{-# LANGUAGE GADTs #-}
 {-# LANGUAGE OverloadedStrings #-}
 
 {- | Threat model for detecting Self-Reference Injection vulnerabilities.
@@ -67,7 +68,6 @@ module Convex.ThreatModel.SelfReferenceInjection (
   isAddressLikeStructure,
 ) where
 
-import Cardano.Ledger.Binary (DecodeAction (Fail))
 import Convex.ThreatModel
 import Data.ByteString qualified as BS
 
