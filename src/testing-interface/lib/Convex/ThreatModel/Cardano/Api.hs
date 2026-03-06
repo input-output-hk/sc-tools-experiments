@@ -43,8 +43,10 @@ import Convex.MockChain (applyTransaction, initialState)
 import Convex.NodeParams (NodeParams)
 import Convex.Wallet (Wallet)
 import Convex.Wallet qualified as Wallet
+import Convex.Wallet.MockWallet (mockWallets)
 import Data.ByteString.Short qualified as SBS
 import Data.Either (isRight)
+import Data.Foldable (foldrM)
 import Data.Map qualified as Map
 import Data.Maybe (listToMaybe)
 import Data.Maybe.Strict
@@ -254,6 +256,9 @@ txSigners (Tx _ wits) = [toHash wit | ShelleyKeyWitness _ (WitVKey wit _) <- wit
     PaymentKeyHash
       . hashKey
       . coerceKeyRole
+
+mockWalletHashes :: [(Hash PaymentKey, Wallet)]
+mockWalletHashes = map (\w -> (Wallet.verificationKeyHash w, w)) mockWallets
 
 -- | Get the required signers from the transaction body (not witnesses).
 txRequiredSigners :: Tx Era -> [Hash PaymentKey]
@@ -494,7 +499,11 @@ rebalanceAndSign wallet tx utxo = do
       -- Re-sign (strip old signatures and add new one)
       let Tx finalBody _ = finalTx
           unsignedTx = makeSignedTransaction [] finalBody
-      pure $ Right $ Wallet.signTx wallet unsignedTx
+          signers = txSigners tx
+          sign hash tx' = case lookup hash mockWalletHashes of
+            Just w -> Right $ Wallet.signTx w tx'
+            Nothing -> Left "Transaction was signed by an unknown wallet"
+      pure $ foldrM sign unsignedTx signers
 
 {- | Update execution units in a transaction by evaluating all scripts.
 
@@ -635,8 +644,8 @@ setTxOutputsList newOuts (Tx (ShelleyTxBody era body scripts scriptData auxData 
   let newOutsSeq =
         Seq.fromList
           [ CBOR.mkSized
-            (Ledger.eraProtVerLow @LedgerEra)
-            (toShelleyTxOut shelleyBasedEra (toCtxUTxOTxOut out))
+              (Ledger.eraProtVerLow @LedgerEra)
+              (toShelleyTxOut shelleyBasedEra (toCtxUTxOTxOut out))
           | out <- newOuts
           ]
       body' = body{Conway.ctbOutputs = newOutsSeq}
