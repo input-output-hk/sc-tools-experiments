@@ -77,12 +77,17 @@ library
     , convex-wallet
     , HUnit
     , lens
+    , mtl
+    , pretty
     , prettyprinter
     , QuickCheck
+    , sop-extras
     , tasty
     , tasty-expected-failure
     , tasty-hunit
     , tasty-quickcheck
+    , text
+    , time
 
   -- cardano dependencies for ThreatModel
   build-depends:
@@ -99,10 +104,6 @@ library
     , ouroboros-consensus-cardano
     , plutus-ledger-api:plutus-ledger-api-testlib
     , plutus-tx
-    , pretty
-    , sop-extras
-    , text
-    , time
 
 test-suite convex-testing-interface-test
   import:          lang
