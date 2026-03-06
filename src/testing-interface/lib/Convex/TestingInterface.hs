@@ -60,7 +60,7 @@ module Convex.TestingInterface (
 ) where
 
 import Control.Monad (foldM, forM, unless, when)
-import Control.Monad.IO.Class (liftIO)
+import Control.Monad.IO.Class (MonadIO, liftIO)
 import Test.HUnit (Assertion)
 import Test.QuickCheck (Arbitrary (..), Gen, Property, counterexample, discard, elements, frequency, oneof, property)
 import Test.QuickCheck.Monadic (monadicIO, monitor, run)
@@ -73,6 +73,7 @@ import Cardano.Api qualified as C
 import Cardano.Ledger.Core qualified as L
 import Control.Exception (SomeException, catch, throwIO, try)
 import Control.Lens ((&), (.~), (^.))
+import Control.Monad.Trans (MonadTrans (..))
 import Convex.Class (MonadBlockchain, MonadMockchain, coverageData, getMockChainState, getTxs, getUtxo)
 import Convex.CoinSelection (BalanceTxError, coverageFromBalanceTxError)
 import Convex.MockChain (MockChainState (MockChainState, mcsCoverageData), MockchainT, fromLedgerUTxO, runMockchain0IOWith, runMockchainIO)
@@ -118,74 +119,84 @@ correctly.
 Minimal complete definition: 'Action', 'initialState', 'arbitraryAction', 'nextState', 'perform'
 -}
 class (Show state, Eq state) => TestingInterface state where
-  -- | Actions that can be performed on the contract.
-  --   This is typically a data type with one constructor per contract operation.
+  {- | Actions that can be performed on the contract.
+  This is typically a data type with one constructor per contract operation.
+  -}
   data Action state
 
   -- | The initial state of the model, before any actions are performed.
   initialState :: state
 
-  -- | Generate a random action given the current state.
-  --   The generated action should be appropriate for the current state.
+  {- | Generate a random action given the current state.
+  The generated action should be appropriate for the current state.
+  -}
   arbitraryAction :: state -> Gen (Action state)
 
-  -- | Precondition that must hold before an action can be executed.
-  --   Return 'False' to indicate that an action is not valid in the current state.
-  --   Default: all actions are always valid.
+  {- | Precondition that must hold before an action can be executed.
+  Return 'False' to indicate that an action is not valid in the current state.
+  Default: all actions are always valid.
+  -}
   precondition :: state -> Action state -> Bool
   precondition _ _ = True
 
-  -- | Update the model state after an action is performed.
-  --   This should reflect the expected effect of the action on the contract state.
+  {- | Update the model state after an action is performed.
+  This should reflect the expected effect of the action on the contract state.
+  -}
   nextState :: state -> Action state -> state
 
-  -- | Perform the action on the real blockchain (mockchain).
-  --   This should execute the actual transaction(s) that implement the action.
-  --   The current model state is provided to allow access to tracked blockchain state.
-  perform :: state -> Action state -> TestingMonadT IO ()
+  {- | Perform the action on the real blockchain (mockchain).
+  This should execute the actual transaction(s) that implement the action.
+  The current model state is provided to allow access to tracked blockchain state.
+  -}
+  perform :: (MonadIO m) => state -> Action state -> TestingMonadT m ()
 
-  -- | Validate that the blockchain state matches the model state.
-  --   Default: no validation (always succeeds).
-  validate :: state -> TestingMonadT IO Bool
+  {- | Validate that the blockchain state matches the model state.
+  Default: no validation (always succeeds).
+  -}
+  validate :: (MonadIO m) => state -> TestingMonadT m Bool
   validate _ = pure True
 
-  -- | Called after each action to check custom properties.
-  --   Default: no additional checks.
+  {- | Called after each action to check custom properties.
+  Default: no additional checks.
+  -}
   monitoring :: state -> Action state -> Property -> Property
   monitoring _ _ = id
 
-  -- | Threat models to run against the last transaction.
-  --   Each threat model will be evaluated against the final transaction
-  --   with the UTxO state captured before that transaction executed.
-  --   Default: no threat models.
+  {- | Threat models to run against the last transaction.
+  Each threat model will be evaluated against the final transaction
+  with the UTxO state captured before that transaction executed.
+  Default: no threat models.
+  -}
   threatModels :: [ThreatModel ()]
   threatModels = []
 
-  -- | Threat models that are expected to find vulnerabilities.
-  --   These are run like 'threatModels' but with inverted pass/fail semantics:
-  --
-  --   * OK when a vulnerability IS detected
-  --   * FAIL when a vulnerability is NOT detected
-  --
-  --   Output is quiet — no verbose transaction dumps.
-  --   Default: empty, backward compatible.
+  {- | Threat models that are expected to find vulnerabilities.
+  These are run like 'threatModels' but with inverted pass/fail semantics:
+
+  * OK when a vulnerability IS detected
+  * FAIL when a vulnerability is NOT detected
+
+  Output is quiet — no verbose transaction dumps.
+  Default: empty, backward compatible.
+  -}
   expectedVulnerabilities :: [ThreatModel ()]
   expectedVulnerabilities = []
 
-  -- | Whether to discard (skip) test cases where the invalid action fails due to
-  --   a user-level error (e.g., off-chain balancing failure) rather than an
-  --   on-chain validator rejection during negative testing.
-  --
-  --   When 'True', negative tests that throw user exceptions are discarded
-  --   (via QuickCheck's 'discard'), so only on-chain rejections count as
-  --   successful negative tests.
-  --
-  --   When 'False' (the default), user exceptions also cause the test case
-  --   to be discarded — meaning both off-chain and on-chain failures are
-  --   treated the same way.
-  --
-  --   Override this in your 'TestingInterface' instance if you need finer
-  --   control over which failure modes are accepted in negative testing.
+  {- | Whether to discard (skip) test cases where the invalid action fails due to
+  a user-level error (e.g., off-chain balancing failure) rather than an
+  on-chain validator rejection during negative testing.
+
+  When 'True', negative tests that throw user exceptions are discarded
+  (via QuickCheck's 'discard'), so only on-chain rejections count as
+  successful negative tests.
+
+  When 'False' (the default), user exceptions also cause the test case
+  to be discarded — meaning both off-chain and on-chain failures are
+  treated the same way.
+
+  Override this in your 'TestingInterface' instance if you need finer
+  control over which failure modes are accepted in negative testing.
+  -}
   discarNegativeTestForUserExceptions :: Bool
   discarNegativeTestForUserExceptions = False
 
@@ -204,10 +215,16 @@ newtype TestingMonadT m a = TestingMonad
     , C.MonadError (BalanceTxError C.ConwayEra)
     , C.MonadIO
     , MonadLog
-    , MonadFail
     , MonadBlockchain C.ConwayEra
     , MonadMockchain C.ConwayEra
     )
+
+-- Let the TestingMonad fail in IO
+instance (MonadIO m) => MonadFail (TestingMonadT m) where
+  fail s = liftIO $ fail s
+
+instance MonadTrans TestingMonadT where
+  lift = TestingMonad . lift . lift
 
 -- | Opaque wrapper for model state
 newtype ModelState state = ModelState {unModelState :: state}
@@ -277,8 +294,9 @@ data RunOptions = RunOptions
   -- ^ Maximum number of actions to generate
   , mcOptions :: Options C.ConwayEra
   , disableNegativeTesting :: Maybe String
-  -- ^ If @Just reason@, negative tests are skipped (shown as IGNORED) with the given reason.
-  --   If @Nothing@, negative tests run normally. Default: @Nothing@.
+  {- ^ If @Just reason@, negative tests are skipped (shown as IGNORED) with the given reason.
+  If @Nothing@, negative tests run normally. Default: @Nothing@.
+  -}
   }
 
 defaultRunOptions :: RunOptions
@@ -619,11 +637,11 @@ expectedVulnTestCase getTmResultsRef idx tm =
 
 -- | Execute a single action and update the model state
 runAction
-  :: (TestingInterface state, Show (Action state))
+  :: (TestingInterface state, Show (Action state), MonadIO m)
   => RunOptions
   -> state
   -> Action state
-  -> TestingMonadT IO state
+  -> TestingMonadT m state
 runAction opts modelState action = do
   when (verbose opts) $
     liftIO $
@@ -654,11 +672,13 @@ Use with 'withCoverage' to set up coverage tracking for your test suite.
 -}
 data CoverageConfig = CoverageConfig
   { coverageIndices :: [CoverageIndex]
-  -- ^ Coverage indices from compiled scripts (obtained via @'PlutusTx.Code.getCovIdx'@).
-  --   Multiple indices are combined with @'<>'@.
+  {- ^ Coverage indices from compiled scripts (obtained via @'PlutusTx.Code.getCovIdx'@).
+  Multiple indices are combined with @'<>'@.
+  -}
   , coverageReport :: CoverageReport -> IO ()
-  -- ^ Action to perform with the final coverage report.
-  --   Use 'printCoverageReport', 'writeCoverageReport', or 'silentCoverageReport'.
+  {- ^ Action to perform with the final coverage report.
+  Use 'printCoverageReport', 'writeCoverageReport', or 'silentCoverageReport'.
+  -}
   }
 
 -- | Print a coverage report to stdout using prettyprinter.
