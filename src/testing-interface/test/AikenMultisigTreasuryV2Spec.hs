@@ -632,9 +632,7 @@ propMultisigV2TokenForgeryExploit opts = monadicIO $ do
 
 -- | Model state for the CTF Multisig Treasury V2 contract
 data MultisigV2Model = MultisigV2Model
-  { mmv2Initialized :: Bool
-  -- ^ Whether the multisig has been created
-  , mmv2TxIn :: Maybe C.TxIn
+  { mmv2TxIn :: C.TxIn
   -- ^ The UTxO at the script
   , mmv2Value :: C.Lovelace
   -- ^ Value locked in the multisig
@@ -642,7 +640,7 @@ data MultisigV2Model = MultisigV2Model
   -- ^ List of required signers
   , mmv2SignedUsers :: [PlutusTx.BuiltinByteString]
   -- ^ List of users who have signed
-  , mmv2Beneficiary :: Maybe PV1.Address
+  , mmv2Beneficiary :: PV1.Address
   -- ^ Beneficiary address
   , mmv2ReleaseValue :: Integer
   -- ^ Amount to release
@@ -662,9 +660,7 @@ signerToWallet Signer2 = Wallet.w2
 instance TestingInterface MultisigV2Model where
   -- Actions for Multisig V2
   data Action MultisigV2Model
-    = InitMultisigV2
-    | -- \^ Initialize the multisig (2-of-2 with w1, w2)
-      SignMultisigV2 SignerChoice
+    = SignMultisigV2 SignerChoice
     | -- \^ Sign with a wallet
       UseMultisigV2
     | -- \^ Use the multisig (release funds) - proper flow
@@ -672,16 +668,17 @@ instance TestingInterface MultisigV2Model where
     -- \^ EXPLOIT: attacker forges token and drains
     deriving stock (Show, Eq)
 
-  initialize =
+  initialize = do
+    let txBody = execBuildTx $ initMultisigV2 @C.ConwayEra Defaults.networkId Wallet.w1 20_000_000
+    void $ balanceAndSubmit mempty Wallet.w1 txBody TrailingChange []
     pure $
       MultisigV2Model
-        { mmv2Initialized = False
-        , mmv2TxIn = Nothing
-        , mmv2Value = 0
-        , mmv2RequiredSigners = []
+        { mmv2TxIn = C.TxIn dummyTxId (C.TxIx 0)
+        , mmv2Value = 20_000_000
+        , mmv2RequiredSigners = [walletPkhBytes Wallet.w1, walletPkhBytes Wallet.w2]
         , mmv2SignedUsers = []
-        , mmv2Beneficiary = Nothing
-        , mmv2ReleaseValue = 0
+        , mmv2Beneficiary = walletPlutusAddress Wallet.w1
+        , mmv2ReleaseValue = 10_000_000
         , mmv2HasBeenUsed = False
         }
 
@@ -695,7 +692,6 @@ instance TestingInterface MultisigV2Model where
           , (1, pure UseMultisigV2) -- Invalid: used
           , (1, pure ForgeTokenAndUse) -- Invalid: used
           ]
-    | not (mmv2Initialized model) && not (mmv2HasBeenUsed model) = pure InitMultisigV2
     | length (mmv2SignedUsers model) < 2 =
         QC.frequency
           [ (70, SignMultisigV2 <$> pickUnsignedSigner model)
@@ -719,58 +715,33 @@ instance TestingInterface MultisigV2Model where
       | walletPkhBytes Wallet.w2 `elem` mmv2SignedUsers m = pure Signer2
       | otherwise = QC.elements [Signer1, Signer2]
 
-  precondition model InitMultisigV2 = not (mmv2Initialized model) && not (mmv2HasBeenUsed model)
   precondition model (SignMultisigV2 sc) =
-    mmv2Initialized model && walletPkhBytes (signerToWallet sc) `notElem` mmv2SignedUsers model && not (mmv2HasBeenUsed model)
+    walletPkhBytes (signerToWallet sc) `notElem` mmv2SignedUsers model && not (mmv2HasBeenUsed model)
   precondition model UseMultisigV2 =
-    mmv2Initialized model && not (null (mmv2SignedUsers model)) && not (mmv2HasBeenUsed model)
+    not (null (mmv2SignedUsers model)) && not (mmv2HasBeenUsed model)
   precondition model ForgeTokenAndUse =
-    mmv2Initialized model && not (mmv2HasBeenUsed model)
+    not (mmv2HasBeenUsed model)
 
   nextState model action = case action of
-    InitMultisigV2 ->
-      model
-        { mmv2Initialized = True
-        , mmv2TxIn = Just (C.TxIn dummyTxId (C.TxIx 0))
-        , mmv2Value = 20_000_000
-        , mmv2RequiredSigners = [walletPkhBytes Wallet.w1, walletPkhBytes Wallet.w2]
-        , mmv2SignedUsers = []
-        , mmv2Beneficiary = Just (walletPlutusAddress Wallet.w1)
-        , mmv2ReleaseValue = 10_000_000
-        , mmv2HasBeenUsed = False
-        }
     SignMultisigV2 sc ->
       model
         { mmv2SignedUsers = walletPkhBytes (signerToWallet sc) : mmv2SignedUsers model
         }
     UseMultisigV2 ->
       model
-        { mmv2Initialized = False
-        , mmv2TxIn = Nothing
-        , mmv2Value = 0
-        , mmv2RequiredSigners = []
-        , mmv2SignedUsers = []
-        , mmv2Beneficiary = Nothing
-        , mmv2ReleaseValue = 0
-        , mmv2HasBeenUsed = True
+        { mmv2HasBeenUsed = True
         }
     ForgeTokenAndUse ->
       -- Exploit drains the treasury
       model
-        { mmv2Initialized = False
-        , mmv2TxIn = Nothing
-        , mmv2Value = 0
+        { mmv2Value = 0
         , mmv2RequiredSigners = []
         , mmv2SignedUsers = []
-        , mmv2Beneficiary = Nothing
         , mmv2ReleaseValue = 0
         , mmv2HasBeenUsed = True
         }
 
   perform _model action = case action of
-    InitMultisigV2 -> do
-      let txBody = execBuildTx $ initMultisigV2 @C.ConwayEra Defaults.networkId Wallet.w1 20_000_000
-      void $ balanceAndSubmit mempty Wallet.w1 txBody TrailingChange []
     SignMultisigV2 sc -> do
       let w = signerToWallet sc
       result <- findMultisigV2Utxos

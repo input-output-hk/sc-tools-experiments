@@ -39,7 +39,7 @@ module AikenTipJarV2Spec (
 ) where
 
 import Cardano.Api qualified as C
-import Control.Monad (void)
+import Control.Monad (unless, void)
 import Control.Monad.Except (runExceptT)
 import Control.Monad.IO.Class (MonadIO (..))
 import Control.Monad.Trans (lift)
@@ -399,74 +399,58 @@ hugeMessagePermanentlyLocksTipjarV2 = do
 
 -- | Model state for the TipJar V2 contract
 data TipJarV2Model = TipJarV2Model
-  { tmInitialized :: Bool
-  -- ^ Whether the tipjar has been created
-  , tmOwner :: Maybe PlutusTx.BuiltinByteString
+  { tmOwner :: PlutusTx.BuiltinByteString
   -- ^ Owner's pubkey hash
   , tmMessages :: [PlutusTx.BuiltinByteString]
   -- ^ Accumulated messages
   , tmValue :: C.Lovelace
   -- ^ Value locked in the tipjar
-  , tmTxIn :: Maybe C.TxIn
+  , tmTxIn :: C.TxIn
   -- ^ Number of tips added (used to prevent wallet fund exhaustion)
   , tmHasBeenClaimed :: Bool
-  -- ^ Once claimed, sequence is done - no re-initialization allowed
+  -- ^ Once claimed, sequence is done
   }
   deriving stock (Show, Eq)
 
 instance TestingInterface TipJarV2Model where
   -- Actions for TipJar V2: initialize, add tips, and owner claims
   data Action TipJarV2Model
-    = InitTipJarV2
-    | -- \^ Initialize the tipjar v2 (w1 as owner)
-      TipV2 PlutusTx.BuiltinByteString
+    = TipV2 PlutusTx.BuiltinByteString
     | -- \^ Add a tip with a message
       OwnerClaimV2
     -- \^ Owner claims all funds and closes the tipjar
     deriving stock (Show, Eq)
 
-  initialize =
-    pure $
-      TipJarV2Model
-        { tmInitialized = False
-        , tmOwner = Nothing
-        , tmMessages = []
-        , tmValue = 0
-        , tmTxIn = Nothing
-        , tmHasBeenClaimed = False
-        }
+  initialize = do
+    let txBody = execBuildTx $ initTipJarV2 @C.ConwayEra Defaults.networkId Wallet.w1 10_000_000
+    void $ balanceAndSubmit mempty Wallet.w1 txBody TrailingChange []
+    let ownerBytes = PlutusTx.toBuiltin $ C.serialiseToRawBytes (verificationKeyHash Wallet.w1)
+     in pure $
+          TipJarV2Model
+            { tmOwner = ownerBytes
+            , tmMessages = []
+            , tmValue = 10_000_000
+            , tmTxIn = C.TxIn dummyTxId (C.TxIx 0)
+            , tmHasBeenClaimed = False
+            }
 
   -- Generate actions: init-type actions TIGHT, spending actions BROAD.
   -- Init creates fresh UTxO (always succeeds on Cardano) - only when not initialized.
   -- Spending actions can fail on-chain - generate even when invalid for negative testing.
-  arbitraryAction model
-    | not (tmInitialized model) && not (tmHasBeenClaimed model) = pure InitTipJarV2
-    | otherwise =
-        QC.frequency
-          [ (17, TipV2 <$> genMessage)
-          , (3, pure OwnerClaimV2)
-          ]
+  arbitraryAction _model =
+    QC.frequency
+      [ (17, TipV2 <$> genMessage)
+      , (3, pure OwnerClaimV2)
+      ]
    where
     genMessage = do
       len <- QC.choose (1, 50)
       bytes <- BS.pack <$> QC.vectorOf len (QC.choose (0x20, 0x7E)) -- printable ASCII
       pure $ PlutusTx.toBuiltin bytes
 
-  precondition model InitTipJarV2 = not (tmInitialized model) && not (tmHasBeenClaimed model)
-  precondition model (TipV2 _) = tmInitialized model
-  precondition model OwnerClaimV2 = tmInitialized model
+  precondition model _ = not (tmHasBeenClaimed model)
 
   nextState model action = case action of
-    InitTipJarV2 ->
-      let ownerBytes = PlutusTx.toBuiltin $ C.serialiseToRawBytes (verificationKeyHash Wallet.w1)
-       in model
-            { tmInitialized = True
-            , tmOwner = Just ownerBytes
-            , tmMessages = []
-            , tmValue = 10_000_000
-            , tmTxIn = Just (C.TxIn dummyTxId (C.TxIx 0))
-            , tmHasBeenClaimed = False
-            }
     TipV2 msg ->
       -- Messages are prepended (Aiken list.push adds to head)
       model
@@ -475,19 +459,13 @@ instance TestingInterface TipJarV2Model where
         }
     OwnerClaimV2 ->
       -- Claiming resets the model and marks as claimed (sequence ends)
-      TipJarV2Model
-        { tmInitialized = False
-        , tmOwner = Nothing
-        , tmMessages = []
+      model
+        { tmMessages = []
         , tmValue = 0
-        , tmTxIn = Nothing
-        , tmHasBeenClaimed = True -- Mark as claimed - no re-init allowed
+        , tmHasBeenClaimed = True -- Mark as claimed
         }
 
   perform _model action = case action of
-    InitTipJarV2 -> do
-      let txBody = execBuildTx $ initTipJarV2 @C.ConwayEra Defaults.networkId Wallet.w1 10_000_000
-      void $ balanceAndSubmit mempty Wallet.w1 txBody TrailingChange []
     TipV2 msg -> do
       -- Find the UTxO at the script address
       utxoSet <- fromLedgerUTxO C.shelleyBasedEra <$> getUtxo
@@ -518,42 +496,37 @@ instance TestingInterface TipJarV2Model where
               txBody = execBuildTx $ claimJarV2 @C.ConwayEra Defaults.networkId txIn tipJarValue Wallet.w1
           void $ balanceAndSubmit mempty Wallet.w1 txBody TrailingChange []
 
-  validate model = case tmTxIn model of
-    Nothing -> pure True -- No tipjar deployed
-    Just _ -> do
-      -- Query the actual state from the blockchain
-      utxoSet <- fromLedgerUTxO C.shelleyBasedEra <$> getUtxo
-      let C.UTxO utxos = utxoSet
-          scriptUtxos = Map.filter (\(C.TxOut addr _ _ _) -> addr == tipJarV2Address) utxos
-      case Map.toList scriptUtxos of
-        [] ->
-          -- No UTxO found - tipjar must have been claimed
-          pure (not $ tmInitialized model)
-        ((_, C.TxOut _ (C.TxOutValueShelleyBased _ val) datum _) : _) -> do
-          -- Check value matches model
-          let actualLovelace = C.selectLovelace (C.fromMaryValue val)
-              valueMatches = actualLovelace == tmValue model
-          -- Check datum matches model
-          datumMatches <- case datum of
-            C.TxOutDatumInline _ scriptData -> do
-              let actualDatum =
-                    unsafeFromBuiltinData @TipJarDatum
-                      (PlutusTx.dataToBuiltinData $ C.toPlutusData $ C.getScriptData scriptData)
-              pure $
-                tjOwner actualDatum == maybe "" id (tmOwner model)
-                  && tjMessages actualDatum == tmMessages model
-            _ -> pure False
-          unless (valueMatches && datumMatches) $
-            liftIO $
-              putStrLn $
-                "STATE MISMATCH! Model value: "
-                  ++ show (tmValue model)
-                  ++ ", Blockchain: "
-                  ++ show actualLovelace
-          pure (valueMatches && datumMatches)
-   where
-    unless True _ = pure ()
-    unless False m = m
+  validate model = do
+    -- Query the actual state from the blockchain
+    utxoSet <- fromLedgerUTxO C.shelleyBasedEra <$> getUtxo
+    let C.UTxO utxos = utxoSet
+        scriptUtxos = Map.filter (\(C.TxOut addr _ _ _) -> addr == tipJarV2Address) utxos
+    case Map.toList scriptUtxos of
+      [] ->
+        -- No UTxO found - tipjar must have been claimed
+        pure (tmHasBeenClaimed model)
+      ((_, C.TxOut _ (C.TxOutValueShelleyBased _ val) datum _) : _) -> do
+        -- Check value matches model
+        let actualLovelace = C.selectLovelace (C.fromMaryValue val)
+            valueMatches = actualLovelace == tmValue model
+        -- Check datum matches model
+        datumMatches <- case datum of
+          C.TxOutDatumInline _ scriptData -> do
+            let actualDatum =
+                  unsafeFromBuiltinData @TipJarDatum
+                    (PlutusTx.dataToBuiltinData $ C.toPlutusData $ C.getScriptData scriptData)
+            pure $
+              tjOwner actualDatum == tmOwner model
+                && tjMessages actualDatum == tmMessages model
+          _ -> pure False
+        unless (valueMatches && datumMatches) $
+          liftIO $
+            putStrLn $
+              "STATE MISMATCH! Model value: "
+                ++ show (tmValue model)
+                ++ ", Blockchain: "
+                ++ show actualLovelace
+        pure (valueMatches && datumMatches)
 
   monitoring _state _action prop = prop
 

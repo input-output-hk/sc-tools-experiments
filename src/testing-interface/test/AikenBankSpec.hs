@@ -881,65 +881,52 @@ aikenBank03UnitTests =
 
 -- | Model state for the Bank contract
 data BankModel = BankModel
-  { bmBankTxIn :: Maybe C.TxIn
+  { bmBankTxIn :: C.TxIn
   -- ^ Bank UTxO
   , bmBankValue :: C.Lovelace
   -- ^ Bank's pooled funds
-  , bmAccountTxIn :: Maybe C.TxIn
+  , bmAccountTxIn :: C.TxIn
   -- ^ Account UTxO
   , bmAccountBalance :: Integer
   -- ^ Account balance
-  , bmAccountOwner :: Maybe PlutusTx.BuiltinByteString
+  , bmAccountOwner :: PlutusTx.BuiltinByteString
   -- ^ Account owner
-  , bmInitialized :: Bool
   }
   deriving stock (Show, Eq)
 
 instance TestingInterface BankModel where
   data Action BankModel
-    = InitBankAction
-    | DepositAction C.Lovelace
+    = DepositAction C.Lovelace
     | WithdrawAction C.Lovelace
     deriving stock (Show, Eq)
 
-  initialize =
+  initialize = do
+    let txBody = execBuildTx $ initBank bankLevel00 Defaults.networkId Wallet.w1 100_000_000
+    void $ balanceAndSubmit mempty Wallet.w1 txBody TrailingChange []
+    let ownerBytes = PlutusTx.toBuiltin $ C.serialiseToRawBytes (verificationKeyHash Wallet.w1)
     pure $
       BankModel
-        { bmBankTxIn = Nothing
-        , bmBankValue = 0
-        , bmAccountTxIn = Nothing
+        { bmBankTxIn = C.TxIn dummyTxId (C.TxIx 0)
+        , bmBankValue = 100_000_000
+        , bmAccountTxIn = C.TxIn dummyTxId (C.TxIx 1)
         , bmAccountBalance = 0
-        , bmAccountOwner = Nothing
-        , bmInitialized = False
+        , bmAccountOwner = ownerBytes
         }
 
   -- Generate actions following PingPong pattern:
   -- - Init actions: TIGHT (only when not initialized) - creates fresh UTxOs
   -- - Non-init actions: BROAD (generate invalid variants for negative testing)
-  arbitraryAction model
-    | not (bmInitialized model) = pure InitBankAction
-    | otherwise =
-        QC.frequency
-          [ (3, DepositAction <$> (fromInteger <$> QC.choose (1_000_000, 20_000_000)))
-          , (7, WithdrawAction <$> (fromInteger <$> QC.choose (1_000_000, 20_000_000))) -- May overdraw for negative testing
-          ]
+  arbitraryAction _model =
+    QC.frequency
+      [ (3, DepositAction <$> (fromInteger <$> QC.choose (1_000_000, 20_000_000)))
+      , (7, WithdrawAction <$> (fromInteger <$> QC.choose (1_000_000, 20_000_000))) -- May overdraw for negative testing
+      ]
 
-  precondition model InitBankAction = not (bmInitialized model)
-  precondition model (DepositAction _) = bmInitialized model
+  precondition _model (DepositAction _) = True
   precondition model (WithdrawAction amt) =
-    bmInitialized model && bmAccountBalance model >= fromIntegral amt
+    bmAccountBalance model >= fromIntegral amt
 
   nextState model action = case action of
-    InitBankAction ->
-      let ownerBytes = PlutusTx.toBuiltin $ C.serialiseToRawBytes (verificationKeyHash Wallet.w1)
-       in model
-            { bmBankTxIn = Just (C.TxIn dummyTxId (C.TxIx 0))
-            , bmBankValue = 100_000_000
-            , bmAccountTxIn = Just (C.TxIn dummyTxId (C.TxIx 1))
-            , bmAccountBalance = 0
-            , bmAccountOwner = Just ownerBytes
-            , bmInitialized = True
-            }
     DepositAction amt ->
       model
         { bmBankValue = bmBankValue model + amt
@@ -952,9 +939,6 @@ instance TestingInterface BankModel where
         }
 
   perform _model action = case action of
-    InitBankAction -> do
-      let txBody = execBuildTx $ initBank bankLevel00 Defaults.networkId Wallet.w1 100_000_000
-      void $ balanceAndSubmit mempty Wallet.w1 txBody TrailingChange []
     DepositAction amt -> do
       [(bankTxIn, bankValue)] <- findBankUtxos bankLevel00
       [(accountTxIn, accountValue, accountDatum)] <- findAccountUtxos bankLevel00

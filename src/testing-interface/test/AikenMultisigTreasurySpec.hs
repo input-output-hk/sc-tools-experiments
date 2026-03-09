@@ -603,9 +603,7 @@ propMultisigVulnerableToSignDestruction opts = monadicIO $ do
 
 -- | Model state for the CTF Multisig Treasury contract
 data MultisigModel = MultisigModel
-  { mmInitialized :: Bool
-  -- ^ Whether the multisig has been created
-  , mmTxIn :: Maybe C.TxIn
+  { mmTxIn :: C.TxIn
   -- ^ The UTxO at the script
   , mmValue :: C.Lovelace
   -- ^ Value locked in the multisig
@@ -613,7 +611,7 @@ data MultisigModel = MultisigModel
   -- ^ List of required signers
   , mmSignedUsers :: [PlutusTx.BuiltinByteString]
   -- ^ List of users who have signed
-  , mmBeneficiary :: Maybe PV1.Address
+  , mmBeneficiary :: PV1.Address
   -- ^ Beneficiary address
   , mmReleaseValue :: Integer
   -- ^ Amount to release
@@ -633,24 +631,23 @@ signerToWallet Signer2 = Wallet.w2
 instance TestingInterface MultisigModel where
   -- Actions for Multisig: initialize, sign, and use
   data Action MultisigModel
-    = InitMultisig
-    | -- \^ Initialize the multisig (2-of-2 with w1, w2)
-      SignMultisig SignerChoice
+    = SignMultisig SignerChoice
     | -- \^ Sign with a wallet (Signer1 = w1, Signer2 = w2)
       UseMultisig
     -- \^ Use the multisig (release funds)
     deriving stock (Show, Eq)
 
-  initialize =
+  initialize = do
+    let txBody = execBuildTx $ initMultisig @C.ConwayEra Defaults.networkId Wallet.w1 20_000_000
+    void $ balanceAndSubmit mempty Wallet.w1 txBody TrailingChange []
     pure $
       MultisigModel
-        { mmInitialized = False
-        , mmTxIn = Nothing
-        , mmValue = 0
-        , mmRequiredSigners = []
+        { mmTxIn = C.TxIn dummyTxId (C.TxIx 0)
+        , mmValue = 20_000_000
+        , mmRequiredSigners = [walletPkhBytes Wallet.w1, walletPkhBytes Wallet.w2]
         , mmSignedUsers = []
-        , mmBeneficiary = Nothing
-        , mmReleaseValue = 0
+        , mmBeneficiary = walletPlutusAddress Wallet.w1
+        , mmReleaseValue = 10_000_000
         , mmHasBeenUsed = False
         }
 
@@ -659,7 +656,6 @@ instance TestingInterface MultisigModel where
   -- Non-init actions: BROAD - generate all variants for negative testing
   arbitraryAction model
     | mmHasBeenUsed model = SignMultisig <$> QC.elements [Signer1, Signer2] -- Invalid: already used, will fail
-    | not (mmInitialized model) && not (mmHasBeenUsed model) = pure InitMultisig
     | length (mmSignedUsers model) < 2 =
         QC.frequency
           [ (80, SignMultisig <$> pickUnsignedSigner model)
@@ -681,44 +677,22 @@ instance TestingInterface MultisigModel where
       | walletPkhBytes Wallet.w2 `elem` mmSignedUsers m = pure Signer2
       | otherwise = QC.elements [Signer1, Signer2]
 
-  precondition model InitMultisig = not (mmInitialized model) && not (mmHasBeenUsed model)
   precondition model (SignMultisig sc) =
-    mmInitialized model && walletPkhBytes (signerToWallet sc) `notElem` mmSignedUsers model && not (mmHasBeenUsed model)
+    walletPkhBytes (signerToWallet sc) `notElem` mmSignedUsers model && not (mmHasBeenUsed model)
   precondition model UseMultisig =
-    mmInitialized model && not (null (mmSignedUsers model)) && not (mmHasBeenUsed model)
+    not (null (mmSignedUsers model)) && not (mmHasBeenUsed model)
 
   nextState model action = case action of
-    InitMultisig ->
-      model
-        { mmInitialized = True
-        , mmTxIn = Just (C.TxIn dummyTxId (C.TxIx 0))
-        , mmValue = 20_000_000
-        , mmRequiredSigners = [walletPkhBytes Wallet.w1, walletPkhBytes Wallet.w2]
-        , mmSignedUsers = []
-        , mmBeneficiary = Just (walletPlutusAddress Wallet.w1)
-        , mmReleaseValue = 10_000_000
-        , mmHasBeenUsed = False
-        }
     SignMultisig sc ->
       model
         { mmSignedUsers = walletPkhBytes (signerToWallet sc) : mmSignedUsers model
         }
     UseMultisig ->
       model
-        { mmInitialized = False
-        , mmTxIn = Nothing
-        , mmValue = 0
-        , mmRequiredSigners = []
-        , mmSignedUsers = []
-        , mmBeneficiary = Nothing
-        , mmReleaseValue = 0
-        , mmHasBeenUsed = True -- Mark as used - no re-init allowed
+        { mmHasBeenUsed = True -- Mark as used - no re-init allowed
         }
 
   perform _model action = case action of
-    InitMultisig -> do
-      let txBody = execBuildTx $ initMultisig @C.ConwayEra Defaults.networkId Wallet.w1 20_000_000
-      void $ balanceAndSubmit mempty Wallet.w1 txBody TrailingChange []
     SignMultisig sc -> do
       let w = signerToWallet sc
       result <- findMultisigUtxos
