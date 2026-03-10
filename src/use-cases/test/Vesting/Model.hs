@@ -24,6 +24,8 @@ import Test.Tasty.QuickCheck qualified as QC
 import Vesting.Utils (VestingState (..), findVestingUtxos, lockVesting, mkScriptHash, mkVestingParams, slotToPosixTime, submitAndGetScriptTxIn, withdrawStep)
 import Vesting.Validator qualified as Vesting
 
+-- import Debug.Trace (trace)
+
 -------------------------------------------------------------------------------
 -- Vesting Testing Interface
 -------------------------------------------------------------------------------
@@ -107,44 +109,52 @@ instance TestingInterface VestingModel where
 
   -- \| Preconditions determine which actions are valid in the current state.
   -- Anyone can vest at any time, except the owner
-  precondition vm (Vest w _) =
-    w /= _owner vm -- Don't let the owner vest (they're the beneficiary, not the grantor)
-    -- Withdrawals have complex preconditions based on time and amounts
-  precondition vm (Retrieve amt) =
-    _vestedAmount vm > 0
-      && amt >= 1_000_000 -- Must have funds locked
-      && amt <= _vestedAmount vm -- Must withdraw at least 1 ADA
-      && enoughValueLeft vm amt -- Must not withdraw more than what's locked
-      && _curSlot vm >= _t1Slot vm -- Must leave enough to satisfy remaining tranches
-      && validChangeOutput vm amt -- Only test withdrawals after first tranche is available
-      -- added to avoid changes with less than 1 ADA
-      -- Time can always advance
-  precondition _ (WaitSlots _) = True
+  precondition vm action =
+    -- trace
+    --   ("PRECONDITION CHECK\n"
+    --     <> "State: " <> show vm <> "\n"
+    --     <> "Action: " <> show action)
+    --   $
+    case action of
+      Vest _w _ -> True -- w /= _owner vm -- Don't let the owner vest (they're the beneficiary, not the grantor)
+      Retrieve amt ->
+        _vestedAmount vm > 0
+          && amt >= 1_000_000 -- Must have funds locked
+          && amt <= _vestedAmount vm -- Must withdraw at least 1 ADA and not more than what's locked
+          && enoughValueLeft vm amt -- Must not withdraw more than what's locked
+          -- && _curSlot vm >= _t1Slot vm -- Must leave enough to satisfy remaining tranches
+          && validChangeOutput vm amt -- Only test withdrawals after first tranche is available
+      WaitSlots _ -> True -- Time can always advance
 
   -- \| nextState updates the model based on actions.
   -- Vest the sum of the two tranches
-  nextState vm (Vest w amt) =
-    vm
-      { _vestedAmount = _vestedAmount vm + amt
-      , _vested = w : _vested vm
-      , _curSlot = _curSlot vm + 1 -- advancing time in 1 slot
-      }
-  -- Retrieve `v` value as long as that leaves enough value to satisfy
-  -- the tranche requirements
-  nextState vm (Retrieve amt) =
-    vm
-      { _vestedAmount = _vestedAmount vm - amt
-      , _curSlot = _curSlot vm + 1 -- advancing time in 1 slot
-      }
-  nextState vm (WaitSlots slots) =
-    vm
-      { _curSlot = _curSlot vm + slots
-      }
+  nextState vm action =
+    -- trace
+    --   ("NEXT STATE\n"
+    --     <> "Old state: " <> show vm <> "\n"
+    --     <> "Action: " <> show action)
+    --   $
+    case action of
+      Vest w amt ->
+        vm
+          { _vestedAmount = _vestedAmount vm + amt
+          , _vested = w : _vested vm
+          , _curSlot = _curSlot vm + 1 -- advancing time in 1 slot
+          }
+      Retrieve amt ->
+        vm
+          { _vestedAmount = _vestedAmount vm - amt
+          , _curSlot = _curSlot vm + 1 -- advancing time in 1 slot
+          }
+      WaitSlots slots ->
+        vm
+          { _curSlot = _curSlot vm + slots
+          }
 
   -- \| perform executes actions on the actual blockchain.
   perform vm (Vest w amt) =
     do
-      C.liftIO $ putStrLn $ ">>> Vesting " ++ show amt ++ " lovelace from " ++ show w
+      -- C.liftIO $ putStrLn $ ">>> Vesting " ++ show amt ++ " lovelace from " ++ show w
       runExceptT $
         lockVestingPBT @C.ConwayEra (_t1Slot vm) w amt
       >>= \case
@@ -152,7 +162,7 @@ instance TestingInterface VestingModel where
         Right _txId -> pure ()
   perform vm (Retrieve amt) =
     do
-      C.liftIO $ putStrLn $ ">>> Withdrawing " ++ show amt ++ " lovelace at slot " ++ show (_curSlot vm)
+      -- C.liftIO $ putStrLn $ ">>> Withdrawing " ++ show amt ++ " lovelace at slot " ++ show (_curSlot vm)
       let vestingParams = paramsFromModel vm
       runExceptT $
         retrieveFundsPBT @C.ConwayEra
@@ -164,9 +174,9 @@ instance TestingInterface VestingModel where
       >>= \case
         Left err -> fail $ "Withdraw failed: " <> show err
         Right _txId -> pure ()
-  perform vm (WaitSlots slots) =
+  perform _vm (WaitSlots _slots) =
     do
-      C.liftIO $ putStrLn $ ">>> Waiting " ++ show slots ++ " slots (now at " ++ show (_curSlot vm + slots) ++ ")"
+      -- C.liftIO $ putStrLn $ ">>> Waiting " ++ show _slots ++ " slots (now at " ++ show (_curSlot vm + _slots) ++ ")"
       pure () -- do nothing
 
   validate _vm = pure True
@@ -218,9 +228,8 @@ enoughValueLeft vm amt =
 validChangeOutput :: VestingModel -> C.Lovelace -> Bool
 validChangeOutput vm withdrawAmount =
   let remaining = _vestedAmount vm - withdrawAmount
-      minUtxo = 1_000_000 -- 1 ADA
-   in remaining == 0 -- OK: retrieves everything
-        || remaining >= minUtxo -- OK: leaves at least 1 ADA
+      minUtxo = 900_000
+   in remaining == 0 || remaining >= minUtxo
 
 -------------------------------------------------------------------------------
 -- Property-Based Testing Functions
