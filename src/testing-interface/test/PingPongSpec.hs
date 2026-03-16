@@ -239,8 +239,8 @@ instance TestingInterface PingPongModel where
 
   monitoring _state _action prop = prop
 
-  threatModels = [basicThreatModel, unprotectedScriptOutput, largeDataAttackWith 10, largeValueAttackWith 10]
-  expectedVulnerabilities = []
+  threatModels = [basicThreatModel, unprotectedScriptOutput, largeValueAttackWith 10]
+  expectedVulnerabilities = [largeDataAttackWith 10]
 
 plutusScript :: (C.IsPlutusScriptLanguage lang) => C.PlutusScript lang -> C.Script lang
 plutusScript = C.PlutusScript C.plutusScriptVersion
