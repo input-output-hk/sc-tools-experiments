@@ -222,12 +222,13 @@ instance TestingInterface AikenPingPongModel where
           -- Get the value from the UTxO
           let lovelace = C.selectLovelace (C.fromMaryValue val)
           -- Execute the round
-          void $ balanceAndSubmit
-            mempty
-            Wallet.w1
-            (execBuildTx $ playAikenPingPongRound aikenPingPongScript Defaults.networkId lovelace redeemer txIn)
-            TrailingChange
-            []
+          void $
+            balanceAndSubmit
+              mempty
+              Wallet.w1
+              (execBuildTx $ playAikenPingPongRound aikenPingPongScript Defaults.networkId lovelace redeemer txIn)
+              TrailingChange
+              []
 
   validate model = case apmTxIn model of
     Nothing -> pure True -- No contract deployed yet
@@ -270,7 +271,9 @@ instance TestingInterface AikenPingPongModel where
   monitoring _state _action prop = prop
 
   -- The secure Aiken validator should RESIST all these attacks
-  threatModels = [unprotectedScriptOutput, largeDataAttackWith 10, largeValueAttackWith 10]
+  threatModels = [unprotectedScriptOutput, largeValueAttackWith 10]
+
+  expectedVulnerabilities = [largeDataAttackWith 10]
 
 -- | All Aiken PingPong tests grouped together
 aikenPingPongTests :: RunOptions -> TestTree

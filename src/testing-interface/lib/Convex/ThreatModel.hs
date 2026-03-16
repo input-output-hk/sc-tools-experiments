@@ -63,6 +63,7 @@ module Convex.ThreatModel (
   ThreatModel (Named),
   ThreatModelEnv (..),
   ThreatModelOutcome (..),
+  threatModelEnvs,
   runThreatModel,
   runThreatModelM,
   runThreatModelMQuiet,
@@ -139,18 +140,18 @@ module Convex.ThreatModel (
 
 import Cardano.Api as X
 
+import Control.Lens ((%~), (&), (^.))
 import Control.Monad
-
 import Data.Map qualified as Map
+import Text.PrettyPrint hiding ((<>))
+import Text.Printf
 
 import Test.QuickCheck
 import Test.QuickCheck qualified as QC
 
-import Text.PrettyPrint hiding ((<>))
-import Text.Printf
-
-import Control.Lens ((%~), (&))
-import Convex.Class (MonadMockchain (..), coverageData)
+import Convex.Class (MockChainState, MonadMockchain (..), coverageData, getUtxo, setTimeToValidRange)
+import Convex.MockChain (applyTransaction, runMockchain)
+import Convex.NodeParams (NodeParams, ledgerProtocolParameters)
 import Convex.ThreatModel.Cardano.Api
 import Convex.ThreatModel.Cardano.Api qualified as TM
 import Convex.ThreatModel.Pretty
@@ -176,6 +177,25 @@ data ThreatModelEnv = ThreatModelEnv
   , currentUTxOs :: UTxO Era
   , pparams :: LedgerProtocolParameters Era
   }
+
+-- | Create `ThreatModelEnv`s by reapplying the given transactions in order, starting with the given chain state.
+threatModelEnvs :: NodeParams Era -> [Tx Era] -> MockChainState Era -> [ThreatModelEnv]
+threatModelEnvs params txs chainState0 = fst $ foldM go chainState0 txs
+ where
+  go chainState tx =
+    let txBodyContent = getTxBodyContent $ getTxBody tx
+        rng = (txValidityLowerBound txBodyContent, txValidityUpperBound txBodyContent)
+        (utxo, chainState') = runMockchain (setTimeToValidRange rng >> getUtxo) params chainState
+        res = applyTransaction params chainState' tx
+        threatModelEnv =
+          ThreatModelEnv
+            { currentTx = tx
+            , currentUTxOs = fromLedgerUTxO shelleyBasedEra utxo
+            , pparams = params ^. ledgerProtocolParameters
+            }
+     in case res of
+          Left e -> error $ "Unexpected error after replaying transactions: " ++ show e
+          Right (chainState'', _) -> ([threatModelEnv], chainState'')
 
 -- | Structured outcome of running a threat model against a transaction.
 data ThreatModelOutcome
