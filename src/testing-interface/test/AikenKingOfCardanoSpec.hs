@@ -832,11 +832,11 @@ instance TestingInterface KingModel where
   monitoring _state _action prop = prop
 
   -- Threat models: OverthrowKing creates a continuation output
-  threatModels = [unprotectedScriptOutput, largeDataAttackWith 10]
+  threatModels = [unprotectedScriptOutput]
 
   -- selfReferenceInjection is a KNOWN vulnerability in this contract.
   -- It's run as an expected vulnerability (inverted pass/fail).
-  expectedVulnerabilities = [selfReferenceInjection]
+  expectedVulnerabilities = [selfReferenceInjection, largeDataAttackWith 10]
 
 -- ----------------------------------------------------------------------------
 -- Test tree

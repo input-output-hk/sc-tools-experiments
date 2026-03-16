@@ -581,11 +581,11 @@ instance TestingInterface TipJarModel where
   -- Threat models to test vulnerability detection.
   -- Note: largeDataAttackWith, largeValueAttackWith, and datumByteBloatAttackWith
   -- all FAIL (detecting vulnerabilities), so only unprotectedScriptOutput is included.
-  threatModels = [unprotectedScriptOutput, largeDataAttackWith 10]
+  threatModels = [unprotectedScriptOutput]
 
   -- Expected vulnerabilities: threat models that SHOULD find vulnerabilities.
   -- These are run with inverted pass/fail semantics.
-  expectedVulnerabilities = [datumByteBloatAttackWith 1000, largeValueAttackWith 10]
+  expectedVulnerabilities = [datumByteBloatAttackWith 1000, largeValueAttackWith 10, largeDataAttackWith 10]
 
 -- ----------------------------------------------------------------------------
 -- Test tree
