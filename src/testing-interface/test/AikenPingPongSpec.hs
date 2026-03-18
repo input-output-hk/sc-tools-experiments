@@ -28,7 +28,7 @@ module AikenPingPongSpec (
 ) where
 
 import Cardano.Api qualified as C
-import Control.Monad (void)
+import Control.Monad (unless, void)
 import Control.Monad.IO.Class (MonadIO (..))
 import Convex.Aiken.Blueprint (Blueprint (..))
 import Convex.Aiken.Blueprint qualified as Blueprint
@@ -56,7 +56,6 @@ import Convex.ThreatModel.LargeValue (largeValueAttackWith)
 import Convex.ThreatModel.UnprotectedScriptOutput (unprotectedScriptOutput)
 import Convex.Wallet.MockWallet qualified as Wallet
 import Data.Map qualified as Map
-import Data.Maybe (isNothing)
 import Paths_convex_testing_interface qualified as Pkg
 import PlutusTx.Builtins (dataToBuiltinData)
 import PlutusTx.IsData.Class (UnsafeFromData (unsafeFromBuiltinData))
@@ -128,7 +127,7 @@ playAikenPingPongRound script networkId value redeemer txi = do
 data AikenPingPongModel = AikenPingPongModel
   { apmState :: PingPong.PingPongState
   -- ^ Current state of the PingPong contract
-  , apmTxIn :: Maybe C.TxIn
+  , apmTxIn :: C.TxIn
   -- ^ Reference to the current UTxO locked at the contract
   , apmValue :: C.Lovelace
   -- ^ Amount of lovelace locked in the contract
@@ -137,136 +136,111 @@ data AikenPingPongModel = AikenPingPongModel
 
 instance TestingInterface AikenPingPongModel where
   data Action AikenPingPongModel
-    = AikenInitialize PingPong.PingPongState
-    | -- \^ Deploy the contract with an initial state
-      AikenPlayRound PingPong.PingPongRedeemer
+    = AikenPlayRound PingPong.PingPongRedeemer
     -- \^ Play a round (Ping, Pong, or Stop)
     deriving (Show, Eq)
 
-  initialState =
-    AikenPingPongModel
-      { apmState = PingPong.Pinged
-      , apmTxIn = Nothing
-      , apmValue = 10_000_000
-      }
-
-  arbitraryAction model =
-    case apmTxIn model of
-      Nothing ->
-        -- Contract not yet deployed, must initialize
-        pure $ AikenInitialize (apmState model)
-      Just _ ->
-        -- Contract deployed, generate any action - precondition will filter
-        QC.elements [AikenPlayRound PingPong.Ping, AikenPlayRound PingPong.Pong, AikenPlayRound PingPong.Stop]
-
-  precondition model action =
-    case action of
-      AikenInitialize _ ->
-        -- Can only initialize if contract not yet deployed
-        isNothing (apmTxIn model)
-      AikenPlayRound redeemer ->
-        -- Can only play if contract is deployed
-        case apmTxIn model of
-          Nothing -> False
-          Just _ -> case (apmState model, redeemer) of
-            -- From Stopped, no valid actions (contract is finished)
-            (PingPong.Stopped, _) -> False
-            -- From Pinged, we can Pong or Stop
-            (PingPong.Pinged, PingPong.Pong) -> True
-            (PingPong.Pinged, PingPong.Stop) -> True
-            (PingPong.Pinged, PingPong.Ping) -> False
-            -- From Ponged, we can Ping or Stop
-            (PingPong.Ponged, PingPong.Ping) -> True
-            (PingPong.Ponged, PingPong.Stop) -> True
-            (PingPong.Ponged, PingPong.Pong) -> False
-
-  nextState model action =
-    case action of
-      AikenInitialize _state ->
-        -- Mark contract as deployed (actual TxIn will be set during perform)
-        model{apmTxIn = Just (C.TxIn dummyTxId (C.TxIx 0))}
-      AikenPlayRound redeemer ->
-        let newState = case redeemer of
-              PingPong.Ping -> PingPong.Pinged
-              PingPong.Pong -> PingPong.Ponged
-              PingPong.Stop -> PingPong.Stopped
-         in model{apmState = newState}
-
-  perform model action = case action of
-    AikenInitialize state -> do
-      -- liftIO $ putStrLn $ "[Aiken] Initializing contract with state: " ++ show state
-      -- Deploy the contract with the initial state
-      let txBody =
-            execBuildTx
-              ( BuildTx.payToScriptInlineDatum
-                  Defaults.networkId
-                  (C.hashScript (plutusScript aikenPingPongScript))
-                  state
-                  C.NoStakeAddress
-                  (C.lovelaceToValue $ apmValue model)
-              )
-      void $ balanceAndSubmit mempty Wallet.w1 txBody TrailingChange []
-    AikenPlayRound redeemer -> do
-      -- liftIO $ putStrLn $ "[Aiken] Playing round: " ++ show redeemer
-      -- Find the UTxO at the script address
-      let scriptHash = C.hashScript (plutusScript aikenPingPongScript)
-          scriptAddr = C.makeShelleyAddressInEra C.shelleyBasedEra Defaults.networkId (C.PaymentCredentialByScript scriptHash) C.NoStakeAddress
-      -- Query all UTxOs from the blockchain
-      utxoSet <- fromLedgerUTxO C.shelleyBasedEra <$> getUtxo
-      let C.UTxO utxos = utxoSet
-      -- Find UTxOs at the script address
-      let scriptUtxos = Map.filter (\(C.TxOut addr _ _ _) -> addr == scriptAddr) utxos
-      case Map.toList scriptUtxos of
-        [] -> fail "No UTxO found at script address"
-        ((txIn, C.TxOut _ (C.TxOutValueShelleyBased _ val) _ _) : _) -> do
-          -- Get the value from the UTxO
-          let lovelace = C.selectLovelace (C.fromMaryValue val)
-          -- Execute the round
-          void $
-            balanceAndSubmit
-              mempty
-              Wallet.w1
-              (execBuildTx $ playAikenPingPongRound aikenPingPongScript Defaults.networkId lovelace redeemer txIn)
-              TrailingChange
-              []
-
-  validate model = case apmTxIn model of
-    Nothing -> pure True -- No contract deployed yet
-    Just _ -> do
-      -- Query the actual state from the blockchain
-      let scriptHash = C.hashScript (plutusScript aikenPingPongScript)
-          scriptAddr =
-            C.makeShelleyAddressInEra
-              C.shelleyBasedEra
+  initialize = do
+    -- liftIO $ putStrLn $ "[Aiken] Initializing contract with state: " ++ show state
+    -- Deploy the contract with the initial state
+    let
+      model =
+        AikenPingPongModel
+          { apmState = PingPong.Pinged
+          , apmTxIn = C.TxIn dummyTxId (C.TxIx 0)
+          , apmValue = 10_000_000
+          }
+      txBody =
+        execBuildTx
+          ( BuildTx.payToScriptInlineDatum
               Defaults.networkId
-              (C.PaymentCredentialByScript scriptHash)
+              (C.hashScript (plutusScript aikenPingPongScript))
+              (apmState model)
               C.NoStakeAddress
-      utxoSet <- fromLedgerUTxO C.shelleyBasedEra <$> getUtxo
-      let C.UTxO utxos = utxoSet
-          scriptUtxos = Map.filter (\(C.TxOut addr _ _ _) -> addr == scriptAddr) utxos
+              (C.lovelaceToValue $ apmValue model)
+          )
+    void $ balanceAndSubmit mempty Wallet.w1 txBody TrailingChange []
+    pure model
 
-      case Map.toList scriptUtxos of
-        [] ->
-          -- No UTxO found - contract must have been consumed
-          -- This is valid if model state is Stopped
-          pure (apmState model == PingPong.Stopped)
-        ((_, C.TxOut _ _ datum _) : _) -> do
-          -- Extract the actual state from the datum
-          case datum of
-            C.TxOutDatumInline _ scriptData -> do
-              let actualState = unsafeFromBuiltinData @PingPong.PingPongState (dataToBuiltinData $ C.toPlutusData $ C.getScriptData scriptData)
-                  matches = actualState == apmState model
-              unless matches $
-                liftIO $
-                  putStrLn $
-                    "STATE MISMATCH! Model: " ++ show (apmState model) ++ ", Blockchain: " ++ show actualState
-              pure matches
-            _ -> do
-              liftIO $ putStrLn "Expected inline datum but got something else"
-              pure False
-   where
-    unless True _ = pure ()
-    unless False m = m
+  arbitraryAction _model =
+    QC.elements [AikenPlayRound PingPong.Ping, AikenPlayRound PingPong.Pong, AikenPlayRound PingPong.Stop]
+
+  precondition model (AikenPlayRound redeemer) =
+    case (apmState model, redeemer) of
+      -- From Stopped, no valid actions (contract is finished)
+      (PingPong.Stopped, _) -> False
+      -- From Pinged, we can Pong or Stop
+      (PingPong.Pinged, PingPong.Pong) -> True
+      (PingPong.Pinged, PingPong.Stop) -> True
+      (PingPong.Pinged, PingPong.Ping) -> False
+      -- From Ponged, we can Ping or Stop
+      (PingPong.Ponged, PingPong.Ping) -> True
+      (PingPong.Ponged, PingPong.Stop) -> True
+      (PingPong.Ponged, PingPong.Pong) -> False
+
+  nextState model (AikenPlayRound redeemer) =
+    let newState = case redeemer of
+          PingPong.Ping -> PingPong.Pinged
+          PingPong.Pong -> PingPong.Ponged
+          PingPong.Stop -> PingPong.Stopped
+     in model{apmState = newState}
+
+  perform _model (AikenPlayRound redeemer) = do
+    -- liftIO $ putStrLn $ "[Aiken] Playing round: " ++ show redeemer
+    -- Find the UTxO at the script address
+    let scriptHash = C.hashScript (plutusScript aikenPingPongScript)
+        scriptAddr = C.makeShelleyAddressInEra C.shelleyBasedEra Defaults.networkId (C.PaymentCredentialByScript scriptHash) C.NoStakeAddress
+    -- Query all UTxOs from the blockchain
+    utxoSet <- fromLedgerUTxO C.shelleyBasedEra <$> getUtxo
+    let C.UTxO utxos = utxoSet
+    -- Find UTxOs at the script address
+    let scriptUtxos = Map.filter (\(C.TxOut addr _ _ _) -> addr == scriptAddr) utxos
+    case Map.toList scriptUtxos of
+      [] -> fail "No UTxO found at script address"
+      ((txIn, C.TxOut _ (C.TxOutValueShelleyBased _ val) _ _) : _) -> do
+        -- Get the value from the UTxO
+        let lovelace = C.selectLovelace (C.fromMaryValue val)
+        -- Execute the round
+        void $
+          balanceAndSubmit
+            mempty
+            Wallet.w1
+            (execBuildTx $ playAikenPingPongRound aikenPingPongScript Defaults.networkId lovelace redeemer txIn)
+            TrailingChange
+            []
+
+  validate model = do
+    -- Query the actual state from the blockchain
+    let scriptHash = C.hashScript (plutusScript aikenPingPongScript)
+        scriptAddr =
+          C.makeShelleyAddressInEra
+            C.shelleyBasedEra
+            Defaults.networkId
+            (C.PaymentCredentialByScript scriptHash)
+            C.NoStakeAddress
+    utxoSet <- fromLedgerUTxO C.shelleyBasedEra <$> getUtxo
+    let C.UTxO utxos = utxoSet
+        scriptUtxos = Map.filter (\(C.TxOut addr _ _ _) -> addr == scriptAddr) utxos
+
+    case Map.toList scriptUtxos of
+      [] ->
+        -- No UTxO found - contract must have been consumed
+        -- This is valid if model state is Stopped
+        pure (apmState model == PingPong.Stopped)
+      ((_, C.TxOut _ _ datum _) : _) -> do
+        -- Extract the actual state from the datum
+        case datum of
+          C.TxOutDatumInline _ scriptData -> do
+            let actualState = unsafeFromBuiltinData @PingPong.PingPongState (dataToBuiltinData $ C.toPlutusData $ C.getScriptData scriptData)
+                matches = actualState == apmState model
+            unless matches $
+              liftIO $
+                putStrLn $
+                  "STATE MISMATCH! Model: " ++ show (apmState model) ++ ", Blockchain: " ++ show actualState
+            pure matches
+          _ -> do
+            liftIO $ putStrLn "Expected inline datum but got something else"
+            pure False
 
   monitoring _state _action prop = prop
 

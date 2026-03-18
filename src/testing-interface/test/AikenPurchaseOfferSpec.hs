@@ -656,15 +656,16 @@ instance TestingInterface PurchaseOfferModel where
     -- \^ Fulfill the offer (uses worthless token - exploit)
     deriving stock (Show, Eq)
 
-  initialState =
-    PurchaseOfferModel
-      { pomInitialized = False
-      , pomTxIn = Nothing
-      , pomValue = 0
-      , pomDesiredPolicyId = Nothing
-      , pomDesiredTokenName = Nothing
-      , pomHasBeenFulfilled = False
-      }
+  initialize =
+    pure $
+      PurchaseOfferModel
+        { pomInitialized = False
+        , pomTxIn = Nothing
+        , pomValue = 0
+        , pomDesiredPolicyId = Nothing
+        , pomDesiredTokenName = Nothing
+        , pomHasBeenFulfilled = False
+        }
 
   -- Generate actions based on state
   -- Init-type actions (CreateOffer): TIGHT - only when not initialized AND not fulfilled

@@ -650,9 +650,7 @@ propMultisigV3SignReplayExploit opts = monadicIO $ do
 
 -- | Model state for the CTF Multisig Treasury V3 contract
 data MultisigV3Model = MultisigV3Model
-  { mmv3Initialized :: Bool
-  -- ^ Whether the multisig has been created
-  , mmv3TxIn :: Maybe C.TxIn
+  { mmv3TxIn :: C.TxIn
   -- ^ The UTxO at the script
   , mmv3Value :: C.Lovelace
   -- ^ Value locked in the multisig
@@ -660,7 +658,7 @@ data MultisigV3Model = MultisigV3Model
   -- ^ List of required signers
   , mmv3SignedUsers :: [PlutusTx.BuiltinByteString]
   -- ^ List of users who have signed (may contain duplicates!)
-  , mmv3Beneficiary :: Maybe PV1.Address
+  , mmv3Beneficiary :: PV1.Address
   -- ^ Beneficiary address
   , mmv3ReleaseValue :: Integer
   -- ^ Amount to release
@@ -682,9 +680,7 @@ signerToWallet Signer2 = Wallet.w2
 instance TestingInterface MultisigV3Model where
   -- Actions for Multisig V3
   data Action MultisigV3Model
-    = InitMultisigV3
-    | -- \^ Initialize the multisig (2-of-2 with w1, w2)
-      SignMultisigV3 SignerChoice
+    = SignMultisigV3 SignerChoice
     | -- \^ Sign with a wallet (can sign multiple times - vulnerability!)
       MintValidationToken
     | -- \^ Mint a validation token
@@ -694,18 +690,20 @@ instance TestingInterface MultisigV3Model where
     -- \^ EXPLOIT: w1 signs twice and drains
     deriving stock (Show, Eq)
 
-  initialState =
-    MultisigV3Model
-      { mmv3Initialized = False
-      , mmv3TxIn = Nothing
-      , mmv3Value = 0
-      , mmv3RequiredSigners = []
-      , mmv3SignedUsers = []
-      , mmv3Beneficiary = Nothing
-      , mmv3ReleaseValue = 0
-      , mmv3HasBeenUsed = False
-      , mmv3HasValidationToken = False
-      }
+  initialize = do
+    let txBody = execBuildTx $ initMultisigV3 @C.ConwayEra Defaults.networkId Wallet.w1 20_000_000
+    void $ balanceAndSubmit mempty Wallet.w1 txBody TrailingChange []
+    pure $
+      MultisigV3Model
+        { mmv3TxIn = C.TxIn dummyTxId (C.TxIx 0)
+        , mmv3Value = 20_000_000
+        , mmv3RequiredSigners = [walletPkhBytes Wallet.w1, walletPkhBytes Wallet.w2]
+        , mmv3SignedUsers = []
+        , mmv3Beneficiary = walletPlutusAddress Wallet.w1
+        , mmv3ReleaseValue = 10_000_000
+        , mmv3HasBeenUsed = False
+        , mmv3HasValidationToken = False
+        }
 
   -- Generate actions based on state
   -- Init actions: TIGHT - only generate when not initialized
@@ -718,7 +716,6 @@ instance TestingInterface MultisigV3Model where
           , (1, pure UseMultisigV3) -- Invalid: used
           , (1, pure SignReplayExploit) -- Invalid: used
           ]
-    | not (mmv3Initialized model) && not (mmv3HasBeenUsed model) = pure InitMultisigV3
     | length (mmv3SignedUsers model) < 2 =
         QC.frequency
           [ (70, SignMultisigV3 <$> pickSigner model)
@@ -742,27 +739,14 @@ instance TestingInterface MultisigV3Model where
       | walletPkhBytes Wallet.w2 `notElem` mmv3SignedUsers m = pure Signer2
       | otherwise = QC.elements [Signer1, Signer2]
 
-  precondition model InitMultisigV3 = not (mmv3Initialized model) && not (mmv3HasBeenUsed model)
-  precondition model (SignMultisigV3 _) = mmv3Initialized model && not (mmv3HasBeenUsed model)
+  precondition model (SignMultisigV3 _) = not (mmv3HasBeenUsed model)
   precondition model MintValidationToken = not (mmv3HasValidationToken model)
   precondition model UseMultisigV3 =
-    mmv3Initialized model && not (null (mmv3SignedUsers model)) && mmv3HasValidationToken model
+    not (null (mmv3SignedUsers model)) && mmv3HasValidationToken model
   precondition model SignReplayExploit =
-    mmv3Initialized model && not (mmv3HasBeenUsed model)
+    not (mmv3HasBeenUsed model)
 
   nextState model action = case action of
-    InitMultisigV3 ->
-      model
-        { mmv3Initialized = True
-        , mmv3TxIn = Just (C.TxIn dummyTxId (C.TxIx 0))
-        , mmv3Value = 20_000_000
-        , mmv3RequiredSigners = [walletPkhBytes Wallet.w1, walletPkhBytes Wallet.w2]
-        , mmv3SignedUsers = []
-        , mmv3Beneficiary = Just (walletPlutusAddress Wallet.w1)
-        , mmv3ReleaseValue = 10_000_000
-        , mmv3HasBeenUsed = False
-        , mmv3HasValidationToken = False
-        }
     SignMultisigV3 sc ->
       model
         { mmv3SignedUsers = walletPkhBytes (signerToWallet sc) : mmv3SignedUsers model
@@ -773,12 +757,9 @@ instance TestingInterface MultisigV3Model where
         }
     UseMultisigV3 ->
       model
-        { mmv3Initialized = False
-        , mmv3TxIn = Nothing
-        , mmv3Value = 0
+        { mmv3Value = 0
         , mmv3RequiredSigners = []
         , mmv3SignedUsers = []
-        , mmv3Beneficiary = Nothing
         , mmv3ReleaseValue = 0
         , mmv3HasBeenUsed = True
         , mmv3HasValidationToken = False
@@ -786,21 +767,15 @@ instance TestingInterface MultisigV3Model where
     SignReplayExploit ->
       -- Exploit: w1 signs twice and drains
       model
-        { mmv3Initialized = False
-        , mmv3TxIn = Nothing
-        , mmv3Value = 0
+        { mmv3Value = 0
         , mmv3RequiredSigners = []
         , mmv3SignedUsers = []
-        , mmv3Beneficiary = Nothing
         , mmv3ReleaseValue = 0
         , mmv3HasBeenUsed = True
         , mmv3HasValidationToken = False
         }
 
   perform _model action = case action of
-    InitMultisigV3 -> do
-      let txBody = execBuildTx $ initMultisigV3 @C.ConwayEra Defaults.networkId Wallet.w1 20_000_000
-      void $ balanceAndSubmit mempty Wallet.w1 txBody TrailingChange []
     SignMultisigV3 sc -> do
       let w = signerToWallet sc
       result <- findMultisigV3Utxos

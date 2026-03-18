@@ -31,10 +31,6 @@ module Convex.TestingInterface (
   defaultOptions,
   modifyTransactionLimits,
 
-  -- * Actions
-  Actions (Actions),
-  InvalidActions (..),
-
   -- * Coverage helpers
   withCoverage,
   CoverageConfig (..),
@@ -63,7 +59,7 @@ import Control.Monad (foldM, forM, unless, when)
 import Control.Monad.IO.Class (MonadIO, liftIO)
 import Test.HUnit (Assertion)
 import Test.QuickCheck (Arbitrary (..), Gen, Property, counterexample, discard, elements, frequency, oneof, property)
-import Test.QuickCheck.Monadic (monadicIO, monitor, run)
+import Test.QuickCheck.Monadic (PropertyM, monadicIO, monitor, pick, run)
 import Test.Tasty (DependencyType (..), TestTree, sequentialTestGroup, testGroup, withResource)
 import Test.Tasty.ExpectedFailure (ignoreTestBecause)
 import Test.Tasty.HUnit (assertFailure, testCaseSteps)
@@ -76,7 +72,7 @@ import Control.Lens ((&), (.~), (^.))
 import Control.Monad.Trans (MonadTrans (..))
 import Convex.Class (MonadBlockchain, MonadMockchain, coverageData, getTxs)
 import Convex.CoinSelection (BalanceTxError, coverageFromBalanceTxError)
-import Convex.MockChain (MockChainState (..), MockchainT, initialStateFor, runMockchain0IOWith, runMockchainIO)
+import Convex.MockChain (MockChainState (..), MockchainT, initialStateFor, runMockchainIO, runMockchainT)
 import Convex.MockChain.Defaults qualified as Defaults
 import Convex.MonadLog (MonadLog)
 import Convex.NodeParams (NodeParams (..))
@@ -116,7 +112,7 @@ The type parameter @state@ represents the model's view of the world. It should
 track all relevant information needed to validate that the contract is behaving
 correctly.
 
-Minimal complete definition: 'Action', 'initialState', 'arbitraryAction', 'nextState', 'perform'
+Minimal complete definition: 'Action', 'initialize', 'arbitraryAction', 'nextState', 'perform'
 -}
 class (Show state, Eq state) => TestingInterface state where
   {- | Actions that can be performed on the contract.
@@ -125,7 +121,7 @@ class (Show state, Eq state) => TestingInterface state where
   data Action state
 
   -- | The initial state of the model, before any actions are performed.
-  initialState :: state
+  initialize :: (MonadIO m) => TestingMonadT m state
 
   {- | Generate a random action given the current state.
   The generated action should be appropriate for the current state.
@@ -205,8 +201,8 @@ class (Show state, Eq state) => TestingInterface state where
 Leaving handling of balancing errors to the testing interface is important because
 the errors can contain data for code coverage.
 -}
-newtype TestingMonadT m a = TestingMonad
-  { runTestingMonadT :: ExceptT (BalanceTxError C.ConwayEra) (MockchainT C.ConwayEra m) a
+newtype TestingMonadT m a = TestingMonadT
+  { unTestingMonadT :: ExceptT (BalanceTxError C.ConwayEra) (MockchainT C.ConwayEra m) a
   }
   deriving newtype
     ( Functor
@@ -219,12 +215,19 @@ newtype TestingMonadT m a = TestingMonad
     , MonadMockchain C.ConwayEra
     )
 
+runTestingMonadT
+  :: NodeParams C.ConwayEra
+  -> TestingMonadT m a
+  -> m (Either (BalanceTxError C.ConwayEra) a, MockChainState C.ConwayEra)
+runTestingMonadT params (TestingMonadT action) =
+  runMockchainT (runExceptT action) params (initialStateFor params Wallet.initialUTxOs)
+
 -- Let the TestingMonad fail in IO
 instance (MonadIO m) => MonadFail (TestingMonadT m) where
   fail s = liftIO $ fail s
 
 instance MonadTrans TestingMonadT where
-  lift = TestingMonad . lift . lift
+  lift = TestingMonadT . lift . lift
 
 -- | Opaque wrapper for model state
 newtype ModelState state = ModelState {unModelState :: state}
@@ -234,36 +237,6 @@ newtype ModelState state = ModelState {unModelState :: state}
 Key is the threat model name, value is the list of outcomes (one per iteration).
 -}
 type ThreatModelResults = Map.Map String [ThreatModelOutcome]
-
--- | A sequence of actions to perform
-newtype Actions state = Actions_ [Action state]
-
-newtype InvalidActions state = InvalidActions (Actions state, Action state)
-
-instance (TestingInterface state, Show (Action state)) => Show (InvalidActions state) where
-  show (InvalidActions (Actions prefix, bad)) =
-    "InvalidActions " ++ show prefix ++ " then " ++ show bad
-
-pattern Actions :: [Action state] -> Actions state
-pattern Actions as = Actions_ as
-{-# COMPLETE Actions #-}
-
-instance (TestingInterface state, Show (Action state)) => Show (Actions state) where
-  show (Actions acts) = "Actions " ++ show acts
-
-instance (TestingInterface state) => Arbitrary (Actions state) where
-  arbitrary = Actions <$> genActions initialState 10
-
-instance (TestingInterface state) => Arbitrary (InvalidActions state) where
-  arbitrary = do
-    -- Generate a valid prefix (builds up state)
-    prefix <- genActions initialState 10
-    let finalState = foldl nextState initialState prefix
-    -- Generate an action that VIOLATES the precondition in that state
-    maybeInvalid <- arbitraryAction finalState `suchThatMaybe` (not . precondition finalState)
-    case maybeInvalid of
-      Nothing -> discard -- tell QuickCheck to skip this case
-      Just bad -> pure $ InvalidActions (Actions_ prefix, bad)
 
 -- | Try up to 100 times to generate a value satisfying a predicate
 suchThatMaybe :: Gen a -> (a -> Bool) -> Gen (Maybe a)
@@ -359,26 +332,32 @@ negativeTest
   :: forall state
    . (TestingInterface state, Show (Action state))
   => RunOptions
-  -> InvalidActions state
   -> Property
-negativeTest opts (InvalidActions (Actions actions, badAction)) = monadicIO $ do
+negativeTest opts = monadicIO $ do
   let RunOptions{mcOptions = Options{coverageRef, params}} = opts
-      initialSt = initialState @state
-
-  when (verbose opts) $
-    monitor (counterexample $ "Initial state: " ++ show initialSt)
-
   -- Phase 1: Run the valid prefix, capturing the final mockchain state
-  (prefixResult, prefixState) <- run $ runMockchain0IOWith Wallet.initialUTxOs params $ runExceptT $ runTestingMonadT $ do
-    foldM (runAction opts) initialSt actions
+  (prefixResult, prefixState) <- runTestingMonadT params $ do
+    initialState <- runInitialization @state opts
+
+    (actions, badAction) <- lift $ pick $ do
+      -- Generate a valid prefix (builds up state)
+      prefix <- genActions initialState 10
+      let finalState = foldl nextState initialState prefix
+      -- Generate an action that VIOLATES the precondition in that state
+      maybeInvalid <- arbitraryAction finalState `suchThatMaybe` (not . precondition finalState)
+      case maybeInvalid of
+        Nothing -> discard -- tell QuickCheck to skip this case
+        Just bad -> pure (prefix, bad)
+
+    ((,) badAction) <$> foldM (runAction opts) initialState actions
 
   -- Phase 2: Run the bad action starting from the state left by the valid prefix
   case prefixResult of
     Left err -> do
       monitor (counterexample $ "Valid prefix failed: " ++ show err)
       pure (property False)
-    Right finalState -> do
-      let monadAction = runExceptT $ runTestingMonadT $ perform finalState badAction
+    Right (badAction, finalState) -> do
+      let monadAction = runExceptT $ unTestingMonadT $ perform finalState badAction
       result' <- run $ try @SomeException $ runMockchainIO monadAction params prefixState
       -- We distinguish between validation errors and user errors:
       -- if the action failed at the off-chain level (e.g. balancing), we discard the test,
@@ -413,17 +392,14 @@ positiveTest
   -- ^ Threat models (early-stop on TMFailed)
   -> [ThreatModel ()]
   -- ^ Expected vulnerabilities (never early-stop)
-  -> Actions state
   -> Property
-positiveTest opts mGetTmResultsRef tms evs (Actions actions) = monadicIO $ do
+positiveTest opts mGetTmResultsRef tms evs = monadicIO $ do
   let RunOptions{mcOptions = Options{coverageRef, params}} = opts
-      initialSt = initialState @state
+  result <- runTestingMonadT params $ do
+    initialState <- runInitialization @state opts
+    actions <- lift $ pick $ genActions initialState 10
 
-  when (verbose opts) $
-    monitor (counterexample $ "Initial state: " ++ show initialSt)
-
-  result <- run $ runMockchain0IOWith Wallet.initialUTxOs params $ runExceptT $ runTestingMonadT $ do
-    finalState <- foldM (runAction opts) initialSt actions
+    finalState <- foldM (runAction opts) initialState actions
 
     -- Run threat models in isolation
     -- Note: runThreatModelCheck handles rebalancing failures internally (returns TMSkipped)
@@ -652,6 +628,25 @@ runAction opts modelState action = do
 
   pure modelState'
 
+-- | Initialize the blockchain and validate the model state
+runInitialization
+  :: forall state m
+   . (TestingInterface state, MonadIO m)
+  => RunOptions
+  -> TestingMonadT (PropertyM m) state
+runInitialization opts = do
+  initialState <- initialize @state
+
+  when (verbose opts) $
+    lift $
+      monitor (counterexample $ "Initial state: " ++ show initialState)
+
+  valid <- validate initialState
+  unless valid $
+    fail "Blockchain state does not match model state after initialization"
+
+  pure initialState
+
 {- | Configuration for coverage collection and reporting.
 
 Use with 'withCoverage' to set up coverage tracking for your test suite.
@@ -870,7 +865,7 @@ modifyTransactionLimits opts@Options{params = Defaults.pParams -> pp} newVal =
 -- | Run the 'TestingMonadT' action with the given options and fail if there is an error
 mockchainSucceedsWithOptions :: Options C.ConwayEra -> TestingMonadT IO a -> Assertion
 mockchainSucceedsWithOptions Options{params, coverageRef} action =
-  runMockchain0IOWith Wallet.initialUTxOs params (runExceptT (runTestingMonadT action))
+  runTestingMonadT params action
     >>= \(res, st) -> do
       let covData = st ^. coverageData
       for_ coverageRef $ \ref -> modifyIORef ref (<> covData)
@@ -885,7 +880,7 @@ mockchainSucceedsWithOptions Options{params, coverageRef} action =
 -}
 mockchainFailsWithOptions :: Options C.ConwayEra -> TestingMonadT IO a -> (BalanceTxError C.ConwayEra -> Assertion) -> Assertion
 mockchainFailsWithOptions Options{params, coverageRef} action handleError =
-  runMockchain0IOWith Wallet.initialUTxOs params (runExceptT (runTestingMonadT action))
+  runTestingMonadT params action
     >>= \(res, st) -> do
       let covData = st ^. coverageData
       for_ coverageRef $ \ref -> modifyIORef ref (<> covData)
