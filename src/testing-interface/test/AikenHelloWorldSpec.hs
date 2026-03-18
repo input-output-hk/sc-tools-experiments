@@ -319,12 +319,13 @@ instance TestingInterface HelloWorldModel where
     -- \^ Unlock with correct password "Hello CTF!"
     deriving stock (Show, Eq)
 
-  initialState =
-    HelloWorldModel
-      { hwLocked = False
-      , hwValue = 0
-      , hwTxIn = Nothing
-      }
+  initialize =
+    pure $
+      HelloWorldModel
+        { hwLocked = False
+        , hwValue = 0
+        , hwTxIn = Nothing
+        }
 
   -- Generate actions following PingPong pattern:
   -- - LockFunds: TIGHT (only when not locked) - creates fresh UTxO, always succeeds on-chain

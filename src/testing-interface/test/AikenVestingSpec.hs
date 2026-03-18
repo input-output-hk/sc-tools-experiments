@@ -397,14 +397,15 @@ instance TestingInterface VestingModel where
     -- \^ Unlock before deadline using exploit (demonstrates vulnerability)
     deriving stock (Show, Eq)
 
-  initialState =
-    VestingModel
-      { vmLocked = False
-      , vmLockSlot = Nothing
-      , vmValue = 0
-      , vmTxIn = Nothing
-      , vmBeneficiary = Nothing
-      }
+  initialize =
+    pure $
+      VestingModel
+        { vmLocked = False
+        , vmLockSlot = Nothing
+        , vmValue = 0
+        , vmTxIn = Nothing
+        , vmBeneficiary = Nothing
+        }
 
   -- Generate actions: init-type actions TIGHT, spending actions BROAD.
   -- LockVesting creates fresh UTxO (always succeeds on Cardano) - only when not locked.

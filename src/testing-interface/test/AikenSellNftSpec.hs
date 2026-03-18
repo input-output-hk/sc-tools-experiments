@@ -357,8 +357,6 @@ aikenSellNftUnitTests =
 data SellNftModel = SellNftModel
   { smListings :: [(C.TxIn, C.Lovelace)]
   -- ^ Active NFT listings (txin + price)
-  , smInitialized :: Bool
-  -- ^ Whether any listings exist
   }
   deriving stock (Show, Eq)
 
@@ -371,11 +369,11 @@ instance TestingInterface SellNftModel where
     -- \^ Buy one listing by index
     deriving stock (Show, Eq)
 
-  initialState =
-    SellNftModel
-      { smListings = []
-      , smInitialized = False
-      }
+  initialize =
+    pure $
+      SellNftModel
+        { smListings = []
+        }
 
   -- Generate actions: all types in every state (weighted)
   -- Precondition filters invalid ones; this enables negative testing
@@ -402,7 +400,6 @@ instance TestingInterface SellNftModel where
     ListNft price ->
       model
         { smListings = smListings model ++ [(dummyTxIn, price)]
-        , smInitialized = True
         }
     BuySingle idx ->
       let listings = smListings model
