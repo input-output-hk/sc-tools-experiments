@@ -710,9 +710,7 @@ propKingUnprotectedOutput opts = monadicIO $ do
 
 -- | Model state for the CTF King of Cardano contract
 data KingModel = KingModel
-  { kmInitialized :: Bool
-  -- ^ Whether the competition has been created
-  , kmTxIn :: Maybe C.TxIn
+  { kmTxIn :: Maybe C.TxIn
   -- ^ The UTxO at the script
   , kmValue :: C.Lovelace
   -- ^ Value locked in the contract
@@ -726,34 +724,32 @@ data KingModel = KingModel
 instance TestingInterface KingModel where
   -- Actions for King of Cardano: initialize, overthrow, close
   data Action KingModel
-    = InitCompetition
-    | -- \^ Initialize the competition (w1 as initial king)
-      OverthrowKingAction C.Lovelace
+    = OverthrowKingAction C.Lovelace
     | -- \^ Overthrow the current king with a higher bid
       CloseCompetitionAction
     -- \^ Close the competition
     deriving stock (Show, Eq)
 
-  initialState =
-    KingModel
-      { kmInitialized = False
-      , kmTxIn = Nothing
-      , kmValue = 0
-      , kmCurrentKing = Nothing
-      , kmCompetitionClosed = False
-      }
+  initialize = do
+    let txBody = execBuildTx $ initCompetition @C.ConwayEra Defaults.networkId Wallet.w1 20_000_000
+    void $ balanceAndSubmit mempty Wallet.w1 txBody TrailingChange []
+    pure $
+      KingModel
+        { kmTxIn = Just (C.TxIn dummyTxId (C.TxIx 0))
+        , kmValue = 20_000_000
+        , kmCurrentKing = Just (walletPlutusAddress Wallet.w1)
+        , kmCompetitionClosed = False
+        }
 
   -- Generate actions based on state
   -- Init-type actions (InitCompetition): TIGHT - only when not initialized
   -- Non-init actions (OverthrowKingAction, CloseCompetitionAction): BROAD - for negative testing
-  arbitraryAction model
-    | not (kmInitialized model) && not (kmCompetitionClosed model) = pure InitCompetition
-    | otherwise =
-        QC.frequency
-          [ (7, OverthrowKingAction <$> genHigherBid (kmValue model))
-          , (1, OverthrowKingAction <$> genLowerBid (kmValue model)) -- Invalid: bid too low
-          , (2, pure CloseCompetitionAction)
-          ]
+  arbitraryAction model =
+    QC.frequency
+      [ (7, OverthrowKingAction <$> genHigherBid (kmValue model))
+      , (1, OverthrowKingAction <$> genLowerBid (kmValue model)) -- Invalid: bid too low
+      , (2, pure CloseCompetitionAction)
+      ]
    where
     genHigherBid currentVal = do
       extra <- fromInteger <$> (QC.choose (1_000_000, 10_000_000) :: QC.Gen Integer)
@@ -764,23 +760,12 @@ instance TestingInterface KingModel where
       reduction <- fromInteger <$> (QC.choose (1_000_000, maxReduction) :: QC.Gen Integer)
       pure $ max 1_000_000 (currentVal - reduction)
 
-  precondition model InitCompetition = not (kmInitialized model) && not (kmCompetitionClosed model)
   precondition model (OverthrowKingAction newVal) =
-    kmInitialized model
-      && not (kmCompetitionClosed model)
-      && newVal > kmValue model
+    not (kmCompetitionClosed model) && newVal > kmValue model
   precondition model CloseCompetitionAction =
-    kmInitialized model && not (kmCompetitionClosed model)
+    not (kmCompetitionClosed model)
 
   nextState model action = case action of
-    InitCompetition ->
-      model
-        { kmInitialized = True
-        , kmTxIn = Just (C.TxIn dummyTxId (C.TxIx 0))
-        , kmValue = 20_000_000
-        , kmCurrentKing = Just (walletPlutusAddress Wallet.w1)
-        , kmCompetitionClosed = False
-        }
     OverthrowKingAction newVal ->
       model
         { kmValue = newVal
@@ -796,9 +781,6 @@ instance TestingInterface KingModel where
         }
 
   perform _model action = case action of
-    InitCompetition -> do
-      let txBody = execBuildTx $ initCompetition @C.ConwayEra Defaults.networkId Wallet.w1 20_000_000
-      void $ balanceAndSubmit mempty Wallet.w1 txBody TrailingChange []
     OverthrowKingAction newVal -> do
       result <- findKingUtxos
       case result of

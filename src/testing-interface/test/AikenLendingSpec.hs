@@ -789,10 +789,11 @@ instance TestingInterface LendingModel where
     -- \^ Borrower repays the first funded-but-not-repaid loan
     deriving stock (Show, Eq)
 
-  initialState =
-    LendingModel
-      { lmLoans = []
-      }
+  initialize =
+    pure $
+      LendingModel
+        { lmLoans = []
+        }
 
   -- Generate actions to create multiple loans, then fund/repay
   -- Key: we want at least 2 unfunded loans before LendAction for inputDuplication
