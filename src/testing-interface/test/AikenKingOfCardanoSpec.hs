@@ -67,7 +67,7 @@ import Convex.TestingInterface (
   TestingInterface (..),
   propRunActionsWithOptions,
  )
-import Convex.ThreatModel (ThreatModelEnv (..), runThreatModelM)
+import Convex.ThreatModel (SigningWallet (SignWith), ThreatModelEnv (..), runThreatModelM)
 import Convex.ThreatModel.Cardano.Api (dummyTxId)
 import Convex.ThreatModel.LargeData (largeDataAttackWith)
 import Convex.ThreatModel.SelfReferenceInjection (selfReferenceInjection)
@@ -694,7 +694,7 @@ propKingUnprotectedOutput opts = monadicIO $ do
             }
 
     -- Run the threat model INSIDE MockchainT with full Phase 1 + Phase 2 validation
-    lift $ runThreatModelM Wallet.w1 unprotectedScriptOutput [env]
+    lift $ runThreatModelM (SignWith Wallet.w1) unprotectedScriptOutput [env]
 
   case result of
     (Left err, _) -> do

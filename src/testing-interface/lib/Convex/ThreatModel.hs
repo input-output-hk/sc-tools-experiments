@@ -112,6 +112,9 @@ module Convex.ThreatModel (
   monitorThreatModel,
   monitorLocalThreatModel,
 
+  -- * Wallet selection
+  SigningWallet (..),
+
   -- * Cardano API helpers
   -- $cardanoHelpers
   projectAda,
@@ -153,7 +156,7 @@ import Convex.Class (MockChainState, MonadMockchain (..), coverageData, getUtxo,
 import Convex.MockChain (applyTransaction, runMockchain)
 import Convex.NodeParams (NodeParams, ledgerProtocolParameters)
 import Convex.ThreatModel.Cardano.Api
-import Convex.ThreatModel.Cardano.Api qualified as TM
+import Convex.ThreatModel.Cardano.Api qualified as TM (detectSigningWallet, rebalanceAndSign, txRequiredSigners)
 import Convex.ThreatModel.Pretty
 import Convex.ThreatModel.TxModifier
 import Convex.Wallet (Wallet)
@@ -177,6 +180,13 @@ data ThreatModelEnv = ThreatModelEnv
   , currentUTxOs :: UTxO Era
   , pparams :: LedgerProtocolParameters Era
   }
+
+-- | How to determine the wallet for re-balancing and re-signing modified transactions.
+data SigningWallet
+  = -- | Detect the signing wallet automatically from the transaction's witnesses.
+    AutoSign
+  | -- | Use the specified wallet for signing.
+    SignWith Wallet
 
 -- | Create `ThreatModelEnv`s by reapplying the given transactions in order, starting with the given chain state.
 threatModelEnvs :: NodeParams Era -> [Tx Era] -> MockChainState Era -> [ThreatModelEnv]
@@ -336,16 +346,22 @@ then performs full Phase 1 + Phase 2 validation via 'applyTransaction'.
 This catches vulnerabilities that would be masked by signature/fee failures
 in the simpler Phase 2-only validation.
 
+The wallet parameter controls signing:
+- @SignWith wallet@ - use the specified wallet for signing
+- @AutoSign@ - detect the signing wallet from the transaction's witnesses
+
 Usage:
 @
 result <- runMockchain0IOWith utxos params $ do
   -- ... run your actions to get a transaction ...
-  runThreatModelM Wallet.w1 unprotectedScriptOutput [env]
+  runThreatModelM (SignWith Wallet.w1) unprotectedScriptOutput [env]
+  -- or auto-detect:
+  runThreatModelM AutoSign unprotectedScriptOutput [env]
 @
 -}
 runThreatModelM
   :: (MonadMockchain Era m, MonadFail m, MonadIO m)
-  => Wallet
+  => SigningWallet
   -> ThreatModel a
   -> [ThreatModelEnv]
   -> m Property
@@ -359,10 +375,12 @@ output cluttering test results.
 
 The property still succeeds/fails correctly based on shouldValidate/shouldNotValidate
 checks, but Monitor/MonitorLocal annotations (counterexampleTM, etc.) are ignored.
+
+The wallet parameter controls signing (see 'runThreatModelM' for details).
 -}
 runThreatModelMQuiet
   :: (MonadMockchain Era m, MonadFail m, MonadIO m)
-  => Wallet
+  => SigningWallet
   -> ThreatModel a
   -> [ThreatModelEnv]
   -> m Property
@@ -373,14 +391,21 @@ runThreatModelM'
   :: (MonadMockchain Era m, MonadFail m, MonadIO m)
   => Bool
   -- ^ quiet: suppress counterexample annotations
-  -> Wallet
+  -> SigningWallet
   -> ThreatModel a
   -> [ThreatModelEnv]
   -> m Property
-runThreatModelM' quiet wallet = go False
+runThreatModelM' quiet signingWallet = go False
  where
   go b _model [] = pure $ b ==> property True
-  go b model (env : envs) = interpM initialMon model
+  go b model (env : envs) = do
+    -- Resolve wallet: use provided or detect from transaction
+    let resolvedWallet = case signingWallet of
+          SignWith w -> Right w
+          AutoSign -> TM.detectSigningWallet (currentTx env)
+    case resolvedWallet of
+      Left err -> pure $ counterexample err False
+      Right wallet -> interpM initialMon wallet model
    where
     initialMon = if quiet then id else counterexample (show info)
 
@@ -398,7 +423,7 @@ runThreatModelM' quiet wallet = go False
         , ""
         ]
 
-    interpM mon = \case
+    interpM mon wallet = \case
       Validate mods k -> do
         let (modifiedTx, modifiedUtxo) = applyTxModifier (currentTx env) (currentUTxOs env) mods
         -- Re-balance and re-sign the modified transaction
@@ -408,20 +433,20 @@ runThreatModelM' quiet wallet = go False
         (report, covData) <- validateTxM params rebalancedTx modifiedUtxo
         -- Accumulate coverage into the running MockChainState
         modifyMockChainState $ \s -> ((), s & coverageData %~ (<> covData))
-        interpM mon (k report)
+        interpM mon wallet (k report)
       Generate gen _shr k -> do
         -- Use QuickCheck's generate in IO
         a <- liftIO $ QC.generate gen
-        interpM mon (k a)
+        interpM mon wallet (k a)
       GetCtx k ->
-        interpM mon (k env)
+        interpM mon wallet (k env)
       Skip -> go b model envs
-      InPrecondition k -> interpM mon (k False)
+      InPrecondition k -> interpM mon wallet (k False)
       Fail err -> pure $ if quiet then property False else mon $ counterexample err False
-      Monitor m k -> if quiet then interpM mon k else m <$> interpM mon k
-      MonitorLocal m k -> if quiet then interpM mon k else interpM (mon . m) k
+      Monitor m k -> if quiet then interpM mon wallet k else m <$> interpM mon wallet k
+      MonitorLocal m k -> if quiet then interpM mon wallet k else interpM (mon . m) wallet k
       Done{} -> go True model envs
-      Named _n k -> interpM mon k
+      Named _n k -> interpM mon wallet k
 
 -- | Extract the name from a threat model, if it was defined with 'Named'.
 getThreatModelName :: ThreatModel a -> Maybe String
@@ -434,19 +459,30 @@ getThreatModelName _ = Nothing
   Rebalancing failures (e.g., "No change output found") are treated as skipped
   because they indicate the transaction modification cannot be applied to this
   particular transaction, similar to a precondition failure.
+
+  The wallet parameter controls signing:
+  - @SignWith wallet@ - use the specified wallet for signing
+  - @AutoSign@ - detect the signing wallet from the transaction's witnesses
 -}
 runThreatModelCheck
   :: (MonadMockchain Era m, MonadFail m, MonadIO m)
-  => Wallet
+  => SigningWallet
   -> ThreatModel a
   -> [ThreatModelEnv]
   -> m ThreatModelOutcome
-runThreatModelCheck wallet = go False
+runThreatModelCheck signingWallet = go False
  where
   go b _model [] = pure $ if b then TMPassed else TMSkipped
-  go b model (env : envs) = checkInterp model
+  go b model (env : envs) = do
+    -- Resolve wallet: use provided or detect from transaction
+    let resolvedWallet = case signingWallet of
+          SignWith w -> Right w
+          AutoSign -> TM.detectSigningWallet (currentTx env)
+    case resolvedWallet of
+      Left err -> pure (TMError err) -- Continue to next env would lose the error, so return it
+      Right wallet -> checkInterp wallet model
    where
-    checkInterp = \case
+    checkInterp wallet = \case
       Validate mods k -> do
         let (modifiedTx, modifiedUtxo) = applyTxModifier (currentTx env) (currentUTxOs env) mods
         params <- askNodeParams
@@ -458,19 +494,19 @@ runThreatModelCheck wallet = go False
           Right rebalancedTx -> do
             (report, covData) <- validateTxM params rebalancedTx modifiedUtxo
             modifyMockChainState $ \s -> ((), s & coverageData %~ (<> covData))
-            checkInterp (k report)
+            checkInterp wallet (k report)
       Generate gen _shr k -> do
         a <- liftIO $ QC.generate gen
-        checkInterp (k a)
+        checkInterp wallet (k a)
       GetCtx k ->
-        checkInterp (k env)
+        checkInterp wallet (k env)
       Skip -> go b model envs
-      InPrecondition k -> checkInterp (k False)
+      InPrecondition k -> checkInterp wallet (k False)
       Fail err -> pure (TMFailed err)
-      Monitor _m k -> checkInterp k -- No Property to wrap; drop monitoring
-      MonitorLocal _m k -> checkInterp k -- No Property to wrap; drop monitoring
+      Monitor _m k -> checkInterp wallet k -- No Property to wrap; drop monitoring
+      MonitorLocal _m k -> checkInterp wallet k -- No Property to wrap; drop monitoring
       Done{} -> go True model envs
-      Named _n k -> checkInterp k
+      Named _n k -> checkInterp wallet k
 
 {- | Check a precondition. If the argument threat model fails, the evaluation of the current
   transaction is skipped. If all transactions in an evaluation of `runThreatModel` are skipped

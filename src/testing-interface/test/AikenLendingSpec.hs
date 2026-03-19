@@ -76,7 +76,7 @@ import Convex.TestingInterface (
   TestingInterface (..),
   propRunActionsWithOptions,
  )
-import Convex.ThreatModel (ThreatModelEnv (..), runThreatModelMQuiet)
+import Convex.ThreatModel (SigningWallet (SignWith), ThreatModelEnv (..), runThreatModelMQuiet)
 import Convex.ThreatModel.Cardano.Api ()
 import Convex.ThreatModel.InputDuplication (inputDuplication)
 import Convex.ThreatModel.UnprotectedScriptOutput (unprotectedScriptOutput)
@@ -709,7 +709,7 @@ propLendingVulnerableToInputDuplication opts = QC.expectFailure $ monadicIO $ do
 
         -- Run inputDuplication threat model
         -- It should find the second loan UTxO and try adding it as another input
-        lift $ runThreatModelMQuiet Wallet.w3 inputDuplication [env]
+        lift $ runThreatModelMQuiet (SignWith Wallet.w3) inputDuplication [env]
       _ -> fail "Expected at least 2 loan request UTxOs"
 
   case result of
