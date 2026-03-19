@@ -76,7 +76,7 @@ import Convex.MockChain (MockChainState (..), MockchainT, initialStateFor, runMo
 import Convex.MockChain.Defaults qualified as Defaults
 import Convex.MonadLog (MonadLog)
 import Convex.NodeParams (NodeParams (..))
-import Convex.ThreatModel (ExceptT, ThreatModel, ThreatModelOutcome (..), getThreatModelName, runExceptT, runThreatModelCheck, threatModelEnvs)
+import Convex.ThreatModel (ExceptT, SigningWallet (AutoSign), ThreatModel, ThreatModelOutcome (..), getThreatModelName, runExceptT, runThreatModelCheck, threatModelEnvs)
 import Convex.Wallet.MockWallet qualified as Wallet
 import Data.Aeson (ToJSON (..), (.=))
 import Data.Aeson qualified as Aeson
@@ -424,8 +424,35 @@ positiveTest opts mGetTmResultsRef tms evs = monadicIO $ do
     tmResultsWithCov <- liftIO $ forM allToRun $ \tm -> do
       let name = fromMaybe "Unnamed" (getThreatModelName tm)
       (outcome, tmFinalState) <-
-        runMockchainIO (runThreatModelCheck Wallet.w1 tm envs) params state0
+        runMockchainIO (runThreatModelCheck AutoSign tm envs) params state0
       pure (name, outcome, mcsCoverageData tmFinalState)
+
+    --    tmResultsWithCov <- case (lastTx, lastUtxoBefore, lastMockChainState) of
+    --      (Just tx, Just utxo, Just mcState) -> do
+    --        let pparams' = params ^. ledgerProtocolParameters
+    --            env = ThreatModelEnv tx utxo pparams'
+    --        -- Check which threat models have already failed (from previous QuickCheck iterations)
+    --        existingResults <- case mGetTmResultsRef of
+    --          Just getTmRef -> liftIO $ do
+    --            tmRef <- getTmRef
+    --            readIORef tmRef
+    --          Nothing -> pure Map.empty
+    --        let isTMFailed (TMFailed _) = True
+    --            isTMFailed _ = False
+    --            alreadyFailed name = any isTMFailed (fromMaybe [] (Map.lookup name existingResults))
+    --            -- Only filter threat models (tms) for early-stop; expected vulnerabilities (evs) always run
+    --            tmsToRun = filter (not . alreadyFailed . fromMaybe "Unnamed" . getThreatModelName) tms
+    --            allToRun = tmsToRun <> evs -- evs always run, no filtering
+    --            -- Run each threat model in an isolated MockchainT context
+    --        liftIO $ forM allToRun $ \tm -> do
+    --          let name = fromMaybe "Unnamed" (getThreatModelName tm)
+    --          case detectSigningWallet tx of
+    --            Left err -> pure (name, TMError err, mempty)
+    --            Right wallet -> do
+    --              (outcome, tmFinalState) <-
+    --                runMockchainIO (runThreatModelCheck wallet tm [env]) params mcState
+    --              pure (name, outcome, mcsCoverageData tmFinalState)
+    --      _ -> pure []
 
     -- Extract just the (name, outcome) pairs for downstream processing
     let tmResults = [(n, o) | (n, o, _) <- tmResultsWithCov]
