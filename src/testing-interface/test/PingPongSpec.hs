@@ -63,6 +63,7 @@ import Convex.TestingInterface (
   propRunActionsWithOptions,
  )
 import Convex.ThreatModel (
+  SigningWallet (SignWith),
   ThreatModel (Named),
   ThreatModelEnv (..),
   counterexampleTM,
@@ -330,7 +331,7 @@ propPingPongVulnerableToOutputRedirect opts = QC.expectFailure $ monadicIO $ do
 
     -- Run the threat model INSIDE MockchainT with full Phase 1 + Phase 2 validation
     -- Use runThreatModelMQuiet to suppress verbose counterexample output
-    lift $ runThreatModelMQuiet Wallet.w1 unprotectedScriptOutput [env]
+    lift $ runThreatModelMQuiet (SignWith Wallet.w1) unprotectedScriptOutput [env]
 
   case result of
     (Left err, _) -> do
@@ -406,7 +407,7 @@ propPingPongVulnerableToLargeData opts = QC.expectFailure $ monadicIO $ do
 
     -- Run threat model inside MockchainT
     -- Use runThreatModelMQuiet to suppress verbose counterexample output
-    lift $ runThreatModelMQuiet Wallet.w1 (largeDataAttackWith 10) [env]
+    lift $ runThreatModelMQuiet (SignWith Wallet.w1) (largeDataAttackWith 10) [env]
 
   case result of
     (Left err, _) -> do
@@ -486,7 +487,7 @@ propPingPongVulnerableToLargeValue opts = QC.expectFailure $ monadicIO $ do
 
     -- Run threat model inside MockchainT
     -- Use runThreatModelMQuiet to suppress verbose counterexample output
-    lift $ runThreatModelMQuiet Wallet.w1 (largeValueAttackWith 10) [env]
+    lift $ runThreatModelMQuiet (SignWith Wallet.w1) (largeValueAttackWith 10) [env]
 
   case result of
     (Left err, _) -> do

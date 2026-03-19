@@ -4,7 +4,86 @@
 {-# LANGUAGE NamedFieldPuns #-}
 {-# LANGUAGE TypeApplications #-}
 
-module Convex.ThreatModel.Cardano.Api where
+module Convex.ThreatModel.Cardano.Api (
+  -- * Types
+  Era,
+  LedgerEra,
+
+  -- * TxOut accessors
+  addressOfTxOut,
+  valueOfTxOut,
+  datumOfTxOut,
+  referenceScriptOfTxOut,
+
+  -- * Redeemer and script data
+  redeemerOfTxIn,
+  recomputeScriptData,
+  emptyTxBodyScriptData,
+  addScriptData,
+  updateRedeemer,
+  addMintingRedeemer,
+  recomputeScriptDataForMint,
+  addDatum,
+  toMaryAssetName,
+
+  -- * Address utilities
+  paymentCredentialToAddressAny,
+  scriptAddressAny,
+  keyAddressAny,
+  isKeyAddressAny,
+
+  -- * Datum/Redeemer conversion
+  toCtxUTxODatum,
+  txOutDatum,
+  toScriptData,
+
+  -- * Transaction utilities
+  dummyTxId,
+  makeTxOut,
+  txSigners,
+  mockWalletHashes,
+  detectSigningWallet,
+  txRequiredSigners,
+  txInputs,
+  txReferenceInputs,
+  txOutputs,
+
+  -- * Value utilities
+  leqValue,
+  projectAda,
+
+  -- * Validation
+  ValidityReport (..),
+  validateTx,
+  validateTxM,
+  buildMockState,
+
+  -- * Rebalancing
+  rebalanceAndSignM,
+  rebalanceAndSign,
+  updateExecutionUnits,
+  updateTxRedeemersWithExUnits,
+  updateScriptDataExUnits,
+  recalculateScriptIntegrityHash,
+  getScriptLanguage,
+  getTxFeeCoin,
+  setTxFeeCoin,
+  setTxOutputsList,
+  adjustChangeOutputM,
+  adjustChangeOutput,
+  replaceAt,
+
+  -- * Validity interval
+  convValidityInterval,
+
+  -- * UTxO utilities
+  restrictUTxO,
+
+  -- * Coverage
+  extractCoverageFromValidationError,
+  unescapeHaskellString,
+  extractCoverageAnnotations,
+) where
 
 import Cardano.Api
 
@@ -48,7 +127,7 @@ import Data.ByteString.Short qualified as SBS
 import Data.Either (isRight)
 import Data.Foldable (foldrM)
 import Data.Map qualified as Map
-import Data.Maybe (listToMaybe)
+import Data.Maybe (listToMaybe, mapMaybe)
 import Data.Maybe.Strict
 import Data.SOP.NonEmpty (NonEmpty (NonEmptyOne))
 import Data.Sequence.Strict qualified as Seq
@@ -259,6 +338,18 @@ txSigners (Tx _ wits) = [toHash wit | ShelleyKeyWitness _ (WitVKey wit _) <- wit
 
 mockWalletHashes :: [(Hash PaymentKey, Wallet)]
 mockWalletHashes = map (\w -> (Wallet.verificationKeyHash w, w)) mockWallets
+
+{- | Detect which mock wallet signed a transaction by examining its witnesses.
+Returns an error message if no known mock wallet is found among the signers.
+-}
+detectSigningWallet :: Tx Era -> Either String Wallet
+detectSigningWallet tx =
+  case txSigners tx of
+    [] -> Left "Transaction has no signers — cannot determine wallet for threat model"
+    signers ->
+      case mapMaybe (\h -> lookup h mockWalletHashes) signers of
+        (w : _) -> Right w
+        [] -> Left "Transaction signers do not match any known mock wallet"
 
 -- | Get the required signers from the transaction body (not witnesses).
 txRequiredSigners :: Tx Era -> [Hash PaymentKey]

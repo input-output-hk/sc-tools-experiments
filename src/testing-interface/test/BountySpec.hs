@@ -40,6 +40,7 @@ import Convex.TestingInterface (
   RunOptions (mcOptions),
  )
 import Convex.ThreatModel (
+  SigningWallet (SignWith),
   ThreatModelEnv (..),
   runThreatModelM,
   runThreatModelMQuiet,
@@ -108,7 +109,7 @@ propBountyVulnerableToDoubleSatisfaction opts = QC.expectFailure $ monadicIO $ d
 
     -- Run the threat model INSIDE MockchainT with full Phase 1 + Phase 2 validation
     -- Use runThreatModelMQuiet to suppress verbose counterexample output
-    lift $ runThreatModelMQuiet Wallet.w1 doubleSatisfaction [env]
+    lift $ runThreatModelMQuiet (SignWith Wallet.w1) doubleSatisfaction [env]
 
   case result of
     (Left err, _) -> do
@@ -195,7 +196,7 @@ propBountySecureAgainstDoubleSatisfaction opts = monadicIO $ do
             }
 
     -- Run the threat model INSIDE MockchainT with full Phase 1 + Phase 2 validation
-    lift $ runThreatModelM Wallet.w1 doubleSatisfaction [env]
+    lift $ runThreatModelM (SignWith Wallet.w1) doubleSatisfaction [env]
 
   case result of
     (Left err, _) -> do
