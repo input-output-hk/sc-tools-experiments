@@ -193,8 +193,8 @@ class (Show state, Eq state) => TestingInterface state where
   Override this in your 'TestingInterface' instance if you need finer
   control over which failure modes are accepted in negative testing.
   -}
-  discarNegativeTestForUserExceptions :: Bool
-  discarNegativeTestForUserExceptions = False
+  discardNegativeTestForUserExceptions :: Bool
+  discardNegativeTestForUserExceptions = False
 
 {- | Tests run in the mockchain monad extended with balancing error handling.
 
@@ -364,7 +364,7 @@ negativeTest opts = monadicIO $ do
       -- but if it failed after submission (i.e. validator rejection), we count it as a success.
       case result' of
         -- we try another round of bad actions
-        Left _ | discarNegativeTestForUserExceptions @state -> discard
+        Left _ | discardNegativeTestForUserExceptions @state -> discard
         Left _ -> pure (property True)
         Right result ->
           case result of
@@ -426,33 +426,6 @@ positiveTest opts mGetTmResultsRef tms evs = monadicIO $ do
       (outcome, tmFinalState) <-
         runMockchainIO (runThreatModelCheck AutoSign tm envs) params state0
       pure (name, outcome, mcsCoverageData tmFinalState)
-
-    --    tmResultsWithCov <- case (lastTx, lastUtxoBefore, lastMockChainState) of
-    --      (Just tx, Just utxo, Just mcState) -> do
-    --        let pparams' = params ^. ledgerProtocolParameters
-    --            env = ThreatModelEnv tx utxo pparams'
-    --        -- Check which threat models have already failed (from previous QuickCheck iterations)
-    --        existingResults <- case mGetTmResultsRef of
-    --          Just getTmRef -> liftIO $ do
-    --            tmRef <- getTmRef
-    --            readIORef tmRef
-    --          Nothing -> pure Map.empty
-    --        let isTMFailed (TMFailed _) = True
-    --            isTMFailed _ = False
-    --            alreadyFailed name = any isTMFailed (fromMaybe [] (Map.lookup name existingResults))
-    --            -- Only filter threat models (tms) for early-stop; expected vulnerabilities (evs) always run
-    --            tmsToRun = filter (not . alreadyFailed . fromMaybe "Unnamed" . getThreatModelName) tms
-    --            allToRun = tmsToRun <> evs -- evs always run, no filtering
-    --            -- Run each threat model in an isolated MockchainT context
-    --        liftIO $ forM allToRun $ \tm -> do
-    --          let name = fromMaybe "Unnamed" (getThreatModelName tm)
-    --          case detectSigningWallet tx of
-    --            Left err -> pure (name, TMError err, mempty)
-    --            Right wallet -> do
-    --              (outcome, tmFinalState) <-
-    --                runMockchainIO (runThreatModelCheck wallet tm [env]) params mcState
-    --              pure (name, outcome, mcsCoverageData tmFinalState)
-    --      _ -> pure []
 
     -- Extract just the (name, outcome) pairs for downstream processing
     let tmResults = [(n, o) | (n, o, _) <- tmResultsWithCov]
