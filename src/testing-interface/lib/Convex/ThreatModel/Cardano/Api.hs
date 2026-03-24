@@ -65,6 +65,7 @@ module Convex.ThreatModel.Cardano.Api (
   updateTxRedeemersWithExUnits,
   updateScriptDataExUnits,
   recalculateScriptIntegrityHash,
+  recalculateTotalCollateral,
   getScriptLanguage,
   getTxFeeCoin,
   setTxFeeCoin,
@@ -88,9 +89,9 @@ module Convex.ThreatModel.Cardano.Api (
 import Cardano.Api
 
 import Cardano.Ledger.Allegra.Scripts (ValidityInterval (..))
-import Cardano.Ledger.Alonzo.PParams (getLanguageView)
+import Cardano.Ledger.Alonzo.PParams (getLanguageView, ppCollateralPercentageL)
 import Cardano.Ledger.Alonzo.Scripts qualified as Ledger
-import Cardano.Ledger.Alonzo.Tx (hashScriptIntegrity)
+import Cardano.Ledger.Alonzo.Tx (ScriptIntegrity (..), hashScriptIntegrity)
 import Cardano.Ledger.Alonzo.TxBody qualified as Ledger
 import Cardano.Ledger.Alonzo.TxWits qualified as Ledger
 import Cardano.Ledger.Api.Era qualified as Ledger (eraProtVerLow)
@@ -112,6 +113,7 @@ import Convex.Class (
   MockChainState,
   MonadBlockchain (..),
   MonadMockchain (..),
+  SendTxError (..),
   ValidationError (..),
   coverageData,
   env,
@@ -505,7 +507,7 @@ validateTxM params tx utxo = do
   slot <- getSlot
   let mockState = buildMockState params slot utxo
   pure $ case applyTransaction params mockState tx of
-    Left (VExUnits (Phase2Error (ScriptErrorEvaluationFailed DebugPlutusFailure{dpfEvaluationError, dpfExecutionLogs}))) ->
+    Left (MockchainError (VExUnits (Phase2Error (ScriptErrorEvaluationFailed DebugPlutusFailure{dpfEvaluationError, dpfExecutionLogs})))) ->
       (ValidityReport False [show dpfEvaluationError], foldMap (coverageDataFromLogMsg . Text.unpack) dpfExecutionLogs)
     Left err -> (ValidityReport False [show err], mempty)
     Right (state', _) -> (ValidityReport True [], state' ^. coverageData)
@@ -584,17 +586,21 @@ rebalanceAndSign wallet tx utxo = do
       -- Apply the changes: new fee and adjusted outputs
       let modifiedTx = setTxOutputsList adjustedOutputs $ setTxFeeCoin newFee txWithUpdatedExUnits
 
-      -- Recalculate script integrity hash (after updating execution units)
-      let finalTx = recalculateScriptIntegrityHash pparams modifiedTx
+      -- Recalculate total collateral based on new fee
+      case recalculateTotalCollateral pparams utxo modifiedTx of
+        Left err -> pure (Left err)
+        Right txWithCollateral -> do
+          -- Recalculate script integrity hash (after updating execution units)
+          let finalTx = recalculateScriptIntegrityHash pparams txWithCollateral
 
-      -- Re-sign (strip old signatures and add new one)
-      let Tx finalBody _ = finalTx
-          unsignedTx = makeSignedTransaction [] finalBody
-          signers = txSigners tx
-          sign hash tx' = case lookup hash mockWalletHashes of
-            Just w -> Right $ Wallet.signTx w tx'
-            Nothing -> Left "Transaction was signed by an unknown wallet"
-      pure $ foldrM sign unsignedTx signers
+          -- Re-sign (strip old signatures and add new one)
+          let Tx finalBody _ = finalTx
+              unsignedTx = makeSignedTransaction [] finalBody
+              signers = txSigners tx
+              sign hash tx' = case lookup hash mockWalletHashes of
+                Just w -> Right $ Wallet.signTx w tx'
+                Nothing -> Left "Transaction was signed by an unknown wallet"
+          pure $ foldrM sign unsignedTx signers
 
 {- | Update execution units in a transaction by evaluating all scripts.
 
@@ -707,17 +713,81 @@ recalculateScriptIntegrityHash pparams (Tx (ShelleyTxBody era body scripts scrip
         ]
 
     -- Compute new script integrity hash
-    newHash = hashScriptIntegrity langs redeemers datums
+    -- If no languages are used (e.g., no Plutus scripts), set to SNothing
+    newHash =
+      if Set.null langs
+        then SNothing
+        else SJust $ hashScriptIntegrity (ScriptIntegrity redeemers datums langs)
 
     -- Update the body with new hash
     body' = body{Conway.ctbScriptIntegrityHash = newHash}
    in
     Tx (ShelleyTxBody era body' scripts scriptData auxData validity) wits
 
+{- | Recalculate the total collateral and collateral return based on the new fee.
+
+Total collateral = ceiling(fee * collateralPercentage / 100)
+Collateral return = collateral input value - total collateral
+
+This is needed because cardano-ledger is strict about collateral matching the fee.
+When the fee increases (e.g., due to bloated datum), we need to:
+1. Increase the total collateral field
+2. Decrease the collateral return (to provide more collateral)
+
+Returns Left if the collateral inputs don't have enough value to cover the required
+collateral. This can happen when a TxModifier significantly increases the transaction
+size (and thus the fee) - the original collateral may no longer be sufficient.
+-}
+recalculateTotalCollateral :: LedgerProtocolParameters Era -> UTxO Era -> Tx Era -> Either String (Tx Era)
+recalculateTotalCollateral pparams utxo tx@(Tx (ShelleyTxBody era body scripts scriptData auxData validity) wits)
+  -- If there are no collateral inputs, this is a simple transaction without Plutus scripts.
+  -- Return it unchanged - no collateral recalculation needed.
+  | Set.null (Conway.ctbCollateralInputs body) = Right tx
+  | otherwise =
+      let pp = unLedgerProtocolParameters pparams
+          collPerc = pp ^. ppCollateralPercentageL
+          Coin fee = Conway.ctbTxfee body
+          -- Calculate required total collateral: ceiling(fee * collateralPercentage / 100)
+          requiredColl@(Coin requiredCollAmount) = Coin $ ceiling (fromIntegral fee * fromIntegral collPerc / (100 :: Rational))
+          -- Calculate total collateral input value
+          collInputs = Set.toList $ Conway.ctbCollateralInputs body
+          Coin collInputValue =
+            sum
+              [ txOutValueToLovelace val
+              | txIn <- collInputs
+              , Just (TxOut _ val _ _) <- [Map.lookup (fromShelleyTxIn txIn) (unUTxO utxo)]
+              ]
+          -- Calculate new collateral return = input value - required collateral
+          newReturnAmount = collInputValue - requiredCollAmount
+       in if newReturnAmount < 0
+            then Left $ "Insufficient collateral: inputs=" ++ show collInputValue ++ ", need=" ++ show requiredCollAmount
+            else
+              -- Update both total collateral and collateral return
+              let body' =
+                    body
+                      { Conway.ctbTotalCollateral = SJust requiredColl
+                      , Conway.ctbCollateralReturn = updateCollateralReturn (Coin newReturnAmount) (Conway.ctbCollateralReturn body)
+                      }
+               in Right $ Tx (ShelleyTxBody era body' scripts scriptData auxData validity) wits
+
+{- | Update the collateral return output with a new Ada value.
+If there's no existing collateral return, returns SNothing (no collateral return needed).
+-}
+updateCollateralReturn :: Coin -> StrictMaybe (CBOR.Sized (Ledger.TxOut LedgerEra)) -> StrictMaybe (CBOR.Sized (Ledger.TxOut LedgerEra))
+updateCollateralReturn (Coin 0) _ = SNothing -- No return needed if all collateral is used
+updateCollateralReturn _newCoin SNothing = SNothing -- No existing return output to modify
+updateCollateralReturn newCoin (SJust sizedOut) =
+  let oldOut = CBOR.sizedValue sizedOut
+      TxOut addr _ datum rscript = fromShelleyTxOut shelleyBasedEra oldOut
+      -- Create new output with updated Ada value (preserve any non-Ada assets)
+      newOut = TxOut addr (TxOutValueShelleyBased shelleyBasedEra (toMaryValue (lovelaceToValue newCoin))) datum rscript
+      newLedgerOut = toShelleyTxOut shelleyBasedEra (toCtxUTxOTxOut newOut)
+   in SJust $ CBOR.mkSized (Ledger.eraProtVerLow @LedgerEra) newLedgerOut
+
 -- | Extract the Plutus language from a ledger script, if it's a Plutus script
 getScriptLanguage :: Ledger.AlonzoScript LedgerEra -> Maybe Plutus.Language
 getScriptLanguage script = case script of
-  Ledger.TimelockScript{} -> Nothing
+  Ledger.NativeScript{} -> Nothing
   Ledger.PlutusScript ps -> Just $ Ledger.plutusScriptLanguage ps
 
 -- | Get the fee from a transaction

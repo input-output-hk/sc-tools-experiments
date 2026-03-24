@@ -245,9 +245,9 @@ instance TestingInterface AikenPingPongModel where
   monitoring _state _action prop = prop
 
   -- The secure Aiken validator should RESIST all these attacks
-  threatModels = [unprotectedScriptOutput, largeValueAttackWith 10]
+  threatModels = [unprotectedScriptOutput, largeValueAttackWith 10, largeDataAttackWith 10]
 
-  expectedVulnerabilities = [largeDataAttackWith 10]
+  expectedVulnerabilities = []
 
 -- | All Aiken PingPong tests grouped together
 aikenPingPongTests :: RunOptions -> TestTree

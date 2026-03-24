@@ -77,6 +77,9 @@ on-chain data differently, leading to potential exploits.
 -}
 largeDataAttackWith :: Int -> ThreatModel ()
 largeDataAttackWith n = Named ("Large Data Attack (max " ++ show n ++ " fields)") $ do
+  -- Precondition: transaction must spend a script input (otherwise no validator runs)
+  _ <- anyInputSuchThat (not . isKeyAddressAny . addressOf)
+
   -- Get all outputs from the transaction
   outputs <- getTxOutputs
 

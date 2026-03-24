@@ -218,4 +218,4 @@ inputDuplication = Named "Input Duplication" $ do
                     else Nothing
             -- V1 scripts are not supported for new inputs in Conway era
             Plutus.PlutusV1 -> Nothing
-  tryConvertScript _ (Ledger.TimelockScript _) = Nothing
+  tryConvertScript _ (Ledger.NativeScript _) = Nothing

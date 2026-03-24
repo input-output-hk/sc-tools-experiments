@@ -534,12 +534,12 @@ instance TestingInterface TipJarV2Model where
   -- Note: We intentionally exclude datumByteBloatAttackWith and largeValueAttackWith here
   -- because they WOULD find vulnerabilities (which is expected for this contract).
   -- Including unprotectedScriptOutput and largeDataAttackWith for basic coverage.
-  threatModels = [unprotectedScriptOutput]
+  threatModels = [unprotectedScriptOutput, largeDataAttackWith 10]
 
   -- Expected vulnerabilities: threat models that SHOULD find vulnerabilities.
   -- V2 is STILL vulnerable to datum bloat (no message size limit) and large value
   -- attacks (value_preserved only prevents REMOVAL, not ADDITION of tokens).
-  expectedVulnerabilities = [datumByteBloatAttackWith 1000, largeValueAttackWith 10, largeDataAttackWith 10]
+  expectedVulnerabilities = [datumByteBloatAttackWith 1000, largeValueAttackWith 10]
 
 -- ----------------------------------------------------------------------------
 -- Test tree
