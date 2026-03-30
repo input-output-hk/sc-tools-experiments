@@ -3,6 +3,9 @@ cradle:
     - path: "test/Auction"
       component: "convex-use-cases:test:convex-auction-test"
     
+    - path: "test/Escrow"
+      component: "convex-use-cases:test:convex-escrow-test"
+    
     - path: "test/MultiPlayerPingPong"
       component: "convex-use-cases:test:convex-multiplayerpingpong-test"
 

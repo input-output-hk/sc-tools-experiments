@@ -92,6 +92,51 @@ test-suite convex-auction-test
     , tasty-hunit
     , tasty-quickcheck
 
+test-suite convex-escrow-test
+  import:         lang
+  type:           exitcode-stdio-1.0
+  hs-source-dirs: test
+  ghc-options:
+    -fobject-code -fno-ignore-interface-pragmas
+    -fno-omit-interface-pragmas -fno-specialise -Wno-unused-packages
+
+  main-is:        Escrow/Spec/Spec.hs
+  other-modules:
+    Escrow.Scripts
+    Escrow.Spec.Unit
+    Escrow.Validator
+
+  -- Escrow.Spec.Prop
+  -- Escrow.Spec.Attacks
+  -- Escrow.Utils
+  build-depends:
+    , base                                         >=4.14.0
+    , bytestring
+    , cardano-api
+    , cardano-ledger-api
+    , cardano-ledger-conway
+    , cardano-ledger-core
+    , cardano-ledger-shelley
+    , convex-base
+    , convex-coin-selection
+    , convex-mockchain
+    , convex-optics
+    , convex-testing-interface
+    , convex-wallet
+    , katip
+    , lens
+    , mtl
+    , plutus-ledger-api
+    , plutus-ledger-api:plutus-ledger-api-testlib
+    , plutus-tx
+    , plutus-tx-plugin
+    , pretty-show
+    , prettyprinter
+    , QuickCheck
+    , tasty
+    , tasty-hunit
+    , tasty-quickcheck
+
 test-suite convex-multiplayerpingpong-test
   import:         lang
   type:           exitcode-stdio-1.0
