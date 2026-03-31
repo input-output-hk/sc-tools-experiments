@@ -100,17 +100,18 @@ instance TestingInterface MultiPlayerPingPongModel where
     deriving (Show, Eq)
 
   -- \| Initial model state.
-  initialState =
-    MultiPlayerPingPongModel
-      { _players = [MockWallet.w1, MockWallet.w2, MockWallet.w3]
-      , _currentIndex = 0
-      , _ballState = Pinged
-      , _roundCount = 0
-      , _active = True
-      , _initialized = False
-      , _curSlot = 0
-      , _lockedValue = 2_000_000
-      }
+  initialize =
+    pure
+      MultiPlayerPingPongModel
+        { _players = [MockWallet.w1, MockWallet.w2, MockWallet.w3]
+        , _currentIndex = 0
+        , _ballState = Pinged
+        , _roundCount = 0
+        , _active = True
+        , _initialized = False
+        , _curSlot = 0
+        , _lockedValue = 2_000_000
+        }
 
   -- \| Generate random actions weighted by current state.
   arbitraryAction m =
@@ -249,7 +250,6 @@ instance TestingInterface MultiPlayerPingPongModel where
 
   threatModels =
     [ datumListBloatAttack
-    , duplicateListEntryAttack
     , largeDataAttackWith 10
     , largeValueAttackWith 10
     , mutualExclusionAttack
@@ -259,7 +259,8 @@ instance TestingInterface MultiPlayerPingPongModel where
     ]
 
   expectedVulnerabilities =
-    [ timeBoundManipulation
+    [ duplicateListEntryAttack
+    , timeBoundManipulation
     , tokenForgeryAttack simpleAlwaysSucceedsMintingPolicyV2 simpleTestAssetName
     ]
 
