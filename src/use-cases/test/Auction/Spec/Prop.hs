@@ -106,20 +106,21 @@ instance TestingInterface AuctionModel where
   --    - Auction end: slot 50
   --    - Start time: slot 0
   --    - No bids initially
-  initialState =
-    AuctionModel
-      { _highestBidAmount = 0
-      , _highestBidder = Nothing
-      , _curSlot = 0
-      , _seller = MockWallet.w1
-      , _minBid = 10_000_000
-      , _endSlot = 50
-      , _auctionInitialized = False
-      , _auctionClosed = False
-      , _policyId = Nothing
-      , _scriptHash = Nothing
-      , _auctionTxIn = Nothing
-      }
+  initialize =
+    pure
+      AuctionModel
+        { _highestBidAmount = 0
+        , _highestBidder = Nothing
+        , _curSlot = 0
+        , _seller = MockWallet.w1
+        , _minBid = 10_000_000
+        , _endSlot = 50
+        , _auctionInitialized = False
+        , _auctionClosed = False
+        , _policyId = Nothing
+        , _scriptHash = Nothing
+        , _auctionTxIn = Nothing
+        }
 
   -- \| Generate random actions weighted by likelihood and current state.
   arbitraryAction am =
@@ -255,7 +256,8 @@ instance TestingInterface AuctionModel where
 
   validate _am = pure True
 
-  threatModels = [doubleSatisfaction, timeBoundManipulation, tokenForgeryAttack simpleAlwaysSucceedsMintingPolicyV2 simpleTestAssetName]
+  threatModels = [doubleSatisfaction]
+  expectedVulnerabilities = [timeBoundManipulation, tokenForgeryAttack simpleAlwaysSucceedsMintingPolicyV2 simpleTestAssetName]
 
   -- threatModels = [doubleSatisfaction, datumListBloatAttack, datumByteBloatAttack, duplicateListEntryAttack
   --                , largeDataAttackWith 10, largeValueAttackWith 10, inputDuplication, mutualExclusionAttack

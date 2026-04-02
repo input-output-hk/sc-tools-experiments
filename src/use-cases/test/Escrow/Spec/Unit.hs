@@ -32,10 +32,4 @@ unitTests :: TestTree
 unitTests =
   testGroup
     "unit tests"
-<<<<<<< HEAD
     []
-=======
-    [ 
-    ]
-
->>>>>>> 7fc62ba (Getting the last commit from chore/only-sc-tools-changes)
