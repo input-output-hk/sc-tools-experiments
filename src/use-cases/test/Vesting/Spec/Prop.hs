@@ -4,7 +4,7 @@ module Vesting.Spec.Prop (
   propBasedTests,
 ) where
 
-import Convex.TestingInterface (RunOptions, propRunActions, propRunActionsWithOptions)
+import Convex.TestingInterface (RunOptions, propRunActionsWithOptions)
 import Test.Tasty (TestTree, testGroup)
 import Vesting.Model (VestingModel)
 
