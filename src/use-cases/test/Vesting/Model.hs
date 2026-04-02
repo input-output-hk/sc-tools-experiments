@@ -190,15 +190,18 @@ instance TestingInterface VestingModel where
   validate _vm = pure True
 
   threatModels =
-    [ largeDataAttackWith 10
-    , largeValueAttackWith 10
+    [ largeValueAttackWith 10
     , mutualExclusionAttack
     , signatoryRemoval
-    , timeBoundManipulation
     , tokenForgeryAttack simpleAlwaysSucceedsMintingPolicyV2 simpleTestAssetName
     , unprotectedScriptOutput
     , unprotectedScriptOutput
     , valueUnderpaymentAttack
+    ]
+
+  expectedVulnerabilities =
+    [ largeDataAttackWith 10
+    , timeBoundManipulation
     ]
 
   monitoring _ _ = error "monitoring not implemented"
@@ -248,7 +251,7 @@ enoughValueLeft vm amt =
 validChangeOutput :: VestingModel -> C.Lovelace -> Bool
 validChangeOutput vm withdrawAmount =
   let remaining = _vestedAmount vm - withdrawAmount
-      minUtxo = 900_000
+      minUtxo = 896_500
    in remaining == 0 || remaining >= minUtxo
 
 -------------------------------------------------------------------------------

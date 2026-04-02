@@ -14,6 +14,8 @@ import Convex.Class (
  )
 import Convex.CoinSelection (BalanceTxError)
 import Convex.MockChain.Utils (mockchainFails, mockchainSucceeds)
+
+-- import Convex.TestingInterface (Options, mockchainSucceedsWithOptions, mockchainFailsWithOptions)
 import Convex.Utils (failOnError, inBabbage)
 import Convex.Wallet (verificationKeyHash)
 import Convex.Wallet.MockWallet qualified as MockWallet
