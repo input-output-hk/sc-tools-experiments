@@ -41,7 +41,7 @@ propBasedTests :: TestTree
 propBasedTests =
   testGroup
     "property-based tests"
-    [ QC.testProperty "Property-based test auction contract" (propRunActions @AuctionModel)
+    [ propRunActions @AuctionModel "Property-based test auction contract"
     ]
 
 -------------------------------------------------------------------------------

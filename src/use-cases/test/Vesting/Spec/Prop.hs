@@ -6,7 +6,6 @@ module Vesting.Spec.Prop (
 
 import Convex.TestingInterface (propRunActions)
 import Test.Tasty (TestTree, testGroup)
-import Test.Tasty.QuickCheck (testProperty)
 import Vesting.Model (VestingModel)
 
 -------------------------------------------------------------------------------
@@ -17,5 +16,5 @@ propBasedTests :: TestTree
 propBasedTests =
   testGroup
     "property-based tests"
-    [ testProperty "Property-based test vesting script" (propRunActions @VestingModel)
+    [ propRunActions @VestingModel "Property-based test vesting script"
     ]
