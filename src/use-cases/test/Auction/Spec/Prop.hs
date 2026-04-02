@@ -260,8 +260,8 @@ instance TestingInterface AuctionModel where
   -- threatModels = [doubleSatisfaction, datumListBloatAttack, datumByteBloatAttack, duplicateListEntryAttack
   --                , largeDataAttackWith 10, largeValueAttackWith 10, inputDuplication, mutualExclusionAttack
   --                , negativeIntegerAttack, redeemerAssetSubstitution, selfReferenceInjection, signatoryRemoval
-  --                , timeBoundManipulation, tokenForgeryAttack, unprotectedScriptOutput
-  --                , unprotectedScriptOutput, valueUnderpaymentAttack]
+  --                , timeBoundManipulation, tokenForgeryAttack simpleAlwaysSucceedsMintingPolicyV2 simpleTestAssetName
+  --                , unprotectedScriptOutput , unprotectedScriptOutput, valueUnderpaymentAttack]
 
   monitoring _ _ = error "monitoring not implemented"
 

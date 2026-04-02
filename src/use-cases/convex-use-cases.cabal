@@ -47,53 +47,6 @@ library
     , cardano-ledger-shelley
     , cardano-slotting
 
--- , mtl
--- , transformers
-
-test-suite convex-vesting-test
-  import:         lang
-  type:           exitcode-stdio-1.0
-  hs-source-dirs: test
-  ghc-options:
-    -fobject-code -fno-ignore-interface-pragmas
-    -fno-omit-interface-pragmas -fno-specialise -Wno-unused-packages
-
-  main-is:        Vesting/Spec/Spec.hs
-  other-modules:
-    Vesting.Model
-    Vesting.Scripts
-    Vesting.Spec.Prop
-    Vesting.Spec.Unit
-    Vesting.Utils
-    Vesting.Validator
-
-  build-depends:
-    , base                                         >=4.14.0
-    , cardano-api
-    , cardano-ledger-api
-    , cardano-ledger-conway
-    , cardano-ledger-core
-    , cardano-ledger-shelley
-    , convex-base
-    , convex-coin-selection
-    , convex-mockchain
-    , convex-optics
-    , convex-testing-interface
-    , convex-wallet
-    , lens
-    , mtl
-    , plutus-ledger-api
-    , plutus-ledger-api:plutus-ledger-api-testlib
-    , plutus-tx
-    , plutus-tx-plugin
-    , pretty-show
-    , prettyprinter
-    , QuickCheck
-    , tasty
-    , tasty-hunit
-    , tasty-quickcheck
-
--- , containers
 test-suite convex-auction-test
   import:         lang
   type:           exitcode-stdio-1.0
@@ -139,4 +92,90 @@ test-suite convex-auction-test
     , tasty-hunit
     , tasty-quickcheck
 
--- , containers
+test-suite convex-multiplayerpingpong-test
+  import:         lang
+  type:           exitcode-stdio-1.0
+  hs-source-dirs: test
+  ghc-options:
+    -fobject-code -fno-ignore-interface-pragmas
+    -fno-omit-interface-pragmas -fno-specialise -Wno-unused-packages
+
+  main-is:        MultiPlayerPingPong/Spec/Spec.hs
+  other-modules:
+    MultiPlayerPingPong.Scripts
+    MultiPlayerPingPong.Spec.Prop
+    MultiPlayerPingPong.Spec.Unit
+    MultiPlayerPingPong.Validator
+
+  -- MultiPlayerPingPong.Spec.Attacks
+  -- MultiPlayerPingPong.Utils
+  build-depends:
+    , base                                         >=4.14.0
+    , bytestring
+    , cardano-api
+    , cardano-ledger-api
+    , cardano-ledger-conway
+    , cardano-ledger-core
+    , cardano-ledger-shelley
+    , convex-base
+    , convex-coin-selection
+    , convex-mockchain
+    , convex-optics
+    , convex-testing-interface
+    , convex-wallet
+    , katip
+    , lens
+    , mtl
+    , plutus-ledger-api
+    , plutus-ledger-api:plutus-ledger-api-testlib
+    , plutus-tx
+    , plutus-tx-plugin
+    , pretty-show
+    , prettyprinter
+    , QuickCheck
+    , tasty
+    , tasty-hunit
+    , tasty-quickcheck
+
+test-suite convex-vesting-test
+  import:         lang
+  type:           exitcode-stdio-1.0
+  hs-source-dirs: test
+  ghc-options:
+    -fobject-code -fno-ignore-interface-pragmas
+    -fno-omit-interface-pragmas -fno-specialise -Wno-unused-packages
+
+  main-is:        Vesting/Spec/Spec.hs
+  other-modules:
+    Vesting.Model
+    Vesting.Scripts
+    Vesting.Spec.Prop
+    Vesting.Spec.Unit
+    Vesting.Utils
+    Vesting.Validator
+
+  build-depends:
+    , base                                         >=4.14.0
+    , cardano-api
+    , cardano-ledger-api
+    , cardano-ledger-conway
+    , cardano-ledger-core
+    , cardano-ledger-shelley
+    , convex-base
+    , convex-coin-selection
+    , convex-mockchain
+    , convex-optics
+    , convex-testing-interface
+    , convex-wallet
+    , lens
+    , mtl
+    , plutus-ledger-api
+    , plutus-ledger-api:plutus-ledger-api-testlib
+    , plutus-tx
+    , plutus-tx-plugin
+    , pretty-show
+    , prettyprinter
+    , QuickCheck
+    , tasty
+    , tasty-hunit
+    , tasty-quickcheck
