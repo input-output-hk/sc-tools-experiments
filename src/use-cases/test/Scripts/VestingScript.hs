@@ -17,10 +17,14 @@ import PlutusTx (BuiltinData, CompiledCode)
 import PlutusTx qualified
 import PlutusTx.Prelude (BuiltinUnit)
 
--- | Compiled validator for 'Scripts.Vesting.validator'
-vestingValidatorCompiled :: CompiledCode (BuiltinData -> BuiltinUnit)
-vestingValidatorCompiled = $$(PlutusTx.compile [||Vesting.validator||])
+-- | Compiling a parameterized validator for 'Scripts.Vesting.validator'
+vestingValidatorCompiled :: Vesting.VestingParams -> CompiledCode (BuiltinData -> BuiltinUnit)
+vestingValidatorCompiled params =
+  case $$(PlutusTx.compile [||Vesting.validator||])
+    `PlutusTx.applyCode` PlutusTx.liftCodeDef params of
+    Left err -> error err
+    Right cc -> cc
 
 -- | Serialized validator for 'Scripts.Vesting.validator'
-vestingValidatorScript :: C.PlutusScript C.PlutusScriptV3
-vestingValidatorScript = compiledCodeToScript vestingValidatorCompiled
+vestingValidatorScript :: Vesting.VestingParams -> C.PlutusScript C.PlutusScriptV3
+vestingValidatorScript = compiledCodeToScript . vestingValidatorCompiled

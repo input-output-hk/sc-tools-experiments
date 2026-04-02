@@ -27,6 +27,9 @@ unitTests =
         "secure some funds with the vesting script"
         (mockchainSucceeds $ failOnError (Utils.lockVestingTest @C.ConwayEra 10))
     , testCase
+        "secure funds twice with the vesting script"
+        (mockchainSucceeds $ failOnError (Utils.lockTwiceVestingTest @C.ConwayEra 10))
+    , testCase
         "retrieve some funds"
         (mockchainSucceeds $ failOnError (Utils.retrieveFundsTest @C.ConwayEra 10 10 20 10 10_000_000))
     , testCase
@@ -38,6 +41,18 @@ unitTests =
     , testCase
         "can retrieve in steps according to the vesting schedule"
         (mockchainSucceeds $ failOnError (Utils.retrieveFundsInSteps @C.ConwayEra 10 15))
+    , testCase
+        "can lock twice and retrieve part of the funds (up to 80 ADA) after first deadline"
+        (mockchainSucceeds $ failOnError (Utils.lockTwiceAndRetrieveFundsTest @C.ConwayEra 15 0 2000 15 80_000_000))
+    , testCase
+        "can lock twice and retrieve everything (minus fees) at the end"
+        (mockchainSucceeds $ failOnError (Utils.lockTwiceAndRetrieveFundsTest @C.ConwayEra 15 0 2000 20 119_103_000))
+    , testCase
+        "cannot remain less than 40 ADA after first deadline when locking twice"
+        (mockchainFails (failOnError (Utils.lockTwiceAndRetrieveFundsTest @C.ConwayEra 15 0 2000 15 81_000_000)) (\_ -> pure ()))
+    , testCase
+        "cannot retrieve more than allowed after second deadline when locking twice"
+        (mockchainFails (failOnError (Utils.lockTwiceAndRetrieveFundsTest @C.ConwayEra 15 0 2000 20 121_000_000)) (\_ -> pure ()))
     ]
 
 -------------------------------------------------------------------------------

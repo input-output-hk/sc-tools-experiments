@@ -36,7 +36,7 @@ common lang
     -Wredundant-constraints -Widentities
 
 library
-  import:         lang
+  import:        lang
 
   -- exposed-modules:
   --   Cardano.Api.Extras
@@ -47,23 +47,23 @@ library
   --   Convex.Query
   --   Convex.UTxOCompatibility
 
-  hs-source-dirs: lib
-  build-depends:
-    , aeson
-    , base                >=4.14.0
-    , containers          >=0.6.5
-    , contra-tracer
-    , convex-base
-    , convex-mockchain
-    , convex-optics
-    , convex-wallet
-    , data-default
-    , exceptions
-    , lens
-    , ordered-containers
-    , primitive
-    , servant-client
-    , text
+  -- hs-source-dirs: lib
+  -- build-depends:
+  --   , aeson
+  --   , base                >=4.14.0
+  --   , containers          >=0.6.5
+  --   , contra-tracer
+  --   , convex-base
+  --   , convex-mockchain
+  --   , convex-optics
+  --   , convex-wallet
+  --   , data-default
+  --   , exceptions
+  --   , lens
+  --   , ordered-containers
+  --   , primitive
+  --   , servant-client
+  --   , text
 
   -- cardano dependencies
   build-depends:

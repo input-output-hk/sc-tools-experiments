@@ -12,7 +12,7 @@ import Contracts.Vesting qualified as Vesting
 import Control.Monad.Except (runExceptT)
 import Convex.MockChain.Defaults qualified as Defaults
 import Convex.PlutusLedger.V1 (transPubKeyHash)
-import Convex.TestingInterface (Gen, TestingInterface (..))
+import Convex.TestingInterface (TestingInterface (..))
 import Convex.Utils (slotToUtcTime, utcTimeToPosixTime)
 import Convex.Wallet (Wallet, verificationKeyHash)
 import Convex.Wallet.MockWallet qualified as MockWallet
@@ -43,12 +43,12 @@ mkVestingParams startTime =
         { Vesting.vpOwner = transPubKeyHash $ verificationKeyHash MockWallet.w1
         , Vesting.vpTranche1 =
             Vesting.Vesting
-              { Vesting.vDate = utcTimeToPosixTime $ dt1
+              { Vesting.vDate = utcTimeToPosixTime dt1
               , Vesting.vAmount = lovelaceValue 20_000_000
               }
         , Vesting.vpTranche2 =
             Vesting.Vesting
-              { Vesting.vDate = utcTimeToPosixTime $ dt2
+              { Vesting.vDate = utcTimeToPosixTime dt2
               , Vesting.vAmount = lovelaceValue 40_000_000
               }
         }
@@ -69,13 +69,11 @@ data VestingModel = VestingModel
   }
   deriving (Show, Eq, Generic)
 
--- unstableMakeIsData ''VestingModel
+-- vmDeadlineUpperBound :: Integer
+-- vmDeadlineUpperBound = 1000
 
-vmDeadlineUpperBound :: Integer
-vmDeadlineUpperBound = 1000
-
-arbitraryTime :: Gen C.SlotNo
-arbitraryTime = fromInteger <$> Gen.chooseInteger (0, vmDeadlineUpperBound)
+-- arbitraryTime :: Gen C.SlotNo
+-- arbitraryTime = fromInteger <$> Gen.chooseInteger (0, vmDeadlineUpperBound)
 
 instance TestingInterface VestingModel where
   data Action VestingModel
@@ -105,9 +103,10 @@ instance TestingInterface VestingModel where
     w `notElem` _vested vm -- After a wallet has vested the contract shuts down
       && transPubKeyHash (verificationKeyHash w) /= Vesting.vpOwner (mkVestingParams 0) -- The vesting owner shouldn't vest
       -- && slot < _t1Slot vm
-  precondition _vm (Retrieve _w _amt) =
+  precondition vm (Retrieve w amt) =
     -- error "precondition (Retrieve) not implemented"
-    True -- Anyone can retrieve funds
+    enoughValueLeft (_t2Slot vm) vm amt -- @TODO: adjust slots
+      && transPubKeyHash (verificationKeyHash w) == Vesting.vpOwner (mkVestingParams 0) -- Only the owner can retrieve funds
 
   -- Vest the sum of the two tranches
   nextState vm (Vest w) =
@@ -136,7 +135,7 @@ instance TestingInterface VestingModel where
       -- error "perform (Retrieve) not implemented"
       C.liftIO $ putStrLn $ "Retrieving " ++ show amt ++ " lovelace from the Vesting script: " ++ show vm
       runExceptT $
-        Utils.retrieveFundsTest @C.ConwayEra (_t1Slot vm) (_t1Slot vm) (_t2Slot vm) (_t2Slot vm + 5) amt -- @TODO: adjust slots
+        Utils.retrieveFundsTest @C.ConwayEra (_t1Slot vm) (_t1Slot vm) (_t2Slot vm) (_t1Slot vm + 5) amt -- @TODO: adjust slots
       >>= \case
         Left err -> fail $ "Retrieving funds script test failed: " <> show err
         Right _txId -> pure ()
@@ -144,3 +143,17 @@ instance TestingInterface VestingModel where
   validate _vm = pure True
 
   monitoring _ _ = error "monitoring not implemented"
+
+-------------------------------------------------------------------------------
+-- Helper functions for the VestingModel
+-------------------------------------------------------------------------------
+
+enoughValueLeft :: C.SlotNo -> VestingModel -> C.Lovelace -> Bool
+enoughValueLeft slot vm amt =
+  let tranche1Released = if slot >= _t1Slot vm then _t1Amount vm else 0
+      tranche2Released = if slot >= _t2Slot vm then _t2Amount vm else 0
+      totalReleased = tranche1Released + tranche2Released
+      totalValue = _t1Amount vm + _t2Amount vm
+      remainingValue = totalValue - totalReleased
+      valueAfterRetrieval = _vestedAmount vm - amt
+   in valueAfterRetrieval >= remainingValue

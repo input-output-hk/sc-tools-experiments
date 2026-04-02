@@ -11,7 +11,7 @@ import PlutusLedgerApi.V1.Interval (contains)
 import PlutusLedgerApi.V1.Value (geq, lovelaceValueOf)
 import PlutusLedgerApi.V3 (Address, Extended (..), Interval (..), LowerBound (..), POSIXTime, POSIXTimeRange, PubKeyHash, TxInInfo (txInInfoOutRef, txInInfoResolved), TxInfo (txInfoInputs, txInfoOutputs), TxOut (txOutAddress, txOutValue), TxOutRef, UpperBound (..), Value, from, getDatum)
 import PlutusLedgerApi.V3.Contexts (ScriptContext (..), ScriptInfo (..), txInfoValidRange, txSignedBy)
-import PlutusTx (unstableMakeIsData)
+import PlutusTx (makeLift, unstableMakeIsData)
 import PlutusTx.Builtins.Internal (unitval)
 import PlutusTx.IsData.Class (UnsafeFromData (unsafeFromBuiltinData))
 import PlutusTx.List (find)
@@ -29,8 +29,11 @@ data VestingParams = VestingParams
   , vpTranche2 :: Vesting
   }
 
-unstableMakeIsData ''Vesting
-unstableMakeIsData ''VestingParams
+-- unstableMakeIsData ''Vesting
+makeLift ''Vesting
+
+-- unstableMakeIsData ''VestingParams
+makeLift ''VestingParams
 
 {-# INLINEABLE availableFrom #-}
 
@@ -50,13 +53,13 @@ availableFrom (Vesting d v) range =
 remainingFrom :: Vesting -> POSIXTimeRange -> Value
 remainingFrom t@Vesting{vAmount = v} vr = v - availableFrom t vr
 
-{-# INLINEABLE validator #-}
-validator :: BuiltinData -> BuiltinUnit
-validator
+{-# INLINEABLE mkValidator #-}
+mkValidator :: VestingParams -> BuiltinData -> BuiltinUnit
+mkValidator
+  params
   ( unsafeFromBuiltinData ->
       ctx@ScriptContext
         { scriptContextTxInfo = txI
-        , scriptContextScriptInfo = SpendingScript _ d
         }
     )
     | not (remainingActual `geq` remainingExpected) =
@@ -66,6 +69,8 @@ validator
               <> show (lovelaceValueOf remainingActual)
               <> " expected: "
               <> show (lovelaceValueOf remainingExpected)
+              <> " time range: "
+              <> showInterval validRange
           )
     | not (txSignedBy txI owner) =
         traceError
@@ -77,19 +82,14 @@ validator
           )
     | otherwise = unitval
    where
-    dat :: VestingParams
-    dat = case d of
-      Just datum -> unsafeFromBuiltinData . getDatum $ datum
-      Nothing -> traceError "Datum not found"
-
     owner :: PubKeyHash
-    owner = vpOwner dat
+    owner = vpOwner params
 
     vt1 :: Vesting
-    vt1 = vpTranche1 dat
+    vt1 = vpTranche1 params
 
     vt2 :: Vesting
-    vt2 = vpTranche2 dat
+    vt2 = vpTranche2 params
 
     validRange :: POSIXTimeRange
     validRange = txInfoValidRange txI
@@ -99,10 +99,13 @@ validator
 
     remainingExpected :: Value
     remainingExpected = remainingFrom vt1 validRange + remainingFrom vt2 validRange
-validator _ = traceError "Invalid script context"
+
+{-# INLINEABLE validator #-}
+validator :: VestingParams -> BuiltinData -> BuiltinUnit
+validator = mkValidator
 
 -------------------------------------------------------------------------------
--- Replace the functions below with UTXO indexers
+-- @TODO: Replace the functions below with UTXO indexers
 -------------------------------------------------------------------------------
 
 {-# INLINEABLE ownInputRef #-}
