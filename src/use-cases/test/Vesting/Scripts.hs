@@ -5,17 +5,17 @@
 {-# OPTIONS_GHC -fplugin-opt PlutusTx.Plugin:defer-errors #-}
 
 -- | Scripts used for testing
-module Scripts.VestingScript (
+module Vesting.Scripts (
   vestingValidatorScript,
   Vesting.VestingParams (..),
 ) where
 
 import Cardano.Api qualified as C
-import Contracts.Vesting qualified as Vesting
 import Convex.PlutusTx (compiledCodeToScript)
 import PlutusTx (BuiltinData, CompiledCode)
 import PlutusTx qualified
 import PlutusTx.Prelude (BuiltinUnit)
+import Vesting.Validator qualified as Vesting
 
 -- | Compiling a parameterized validator for 'Scripts.Vesting.validator'
 vestingValidatorCompiled :: Vesting.VestingParams -> CompiledCode (BuiltinData -> BuiltinUnit)

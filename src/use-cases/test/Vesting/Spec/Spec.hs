@@ -1,4 +1,6 @@
-import Specs.VestingSpec qualified
+import Vesting.Spec.Prop qualified
+import Vesting.Spec.Unit qualified
+
 import Test.Tasty (
   TestTree,
   defaultMain,
@@ -12,6 +14,6 @@ tests :: TestTree
 tests =
   testGroup
     "vesting tests"
-    [ Specs.VestingSpec.unitTests
-    , Specs.VestingSpec.propBasedTests
+    [ Vesting.Spec.Unit.unitTests
+    , Vesting.Spec.Prop.propBasedTests
     ]

@@ -4,18 +4,18 @@
 {-# LANGUAGE NoImplicitPrelude #-}
 {-# OPTIONS_GHC -Wno-incomplete-patterns #-}
 
-module Contracts.Vesting where
+module Vesting.Validator where
 
 import GHC.Real (Integral (toInteger))
 import PlutusLedgerApi.V1.Interval (contains)
 import PlutusLedgerApi.V1.Value (geq, lovelaceValueOf)
 import PlutusLedgerApi.V3 (Address, Extended (..), Interval (..), LowerBound (..), POSIXTime, POSIXTimeRange, PubKeyHash, TxInInfo (txInInfoOutRef, txInInfoResolved), TxInfo (txInfoInputs, txInfoOutputs), TxOut (txOutAddress, txOutValue), TxOutRef, UpperBound (..), Value, from, getDatum)
 import PlutusLedgerApi.V3.Contexts (ScriptContext (..), ScriptInfo (..), txInfoValidRange, txSignedBy)
-import PlutusTx (makeLift, unstableMakeIsData)
+import PlutusTx (makeLift)
 import PlutusTx.Builtins.Internal (unitval)
 import PlutusTx.IsData.Class (UnsafeFromData (unsafeFromBuiltinData))
 import PlutusTx.List (find)
-import PlutusTx.Prelude (BuiltinData, BuiltinString, BuiltinUnit, Maybe (..), mconcat, not, otherwise, traceError, zero, ($), (+), (-), (.), (<>), (==))
+import PlutusTx.Prelude (BuiltinData, BuiltinString, BuiltinUnit, Maybe (..), mconcat, not, otherwise, traceError, zero, ($), (+), (-), (<>), (==))
 import PlutusTx.Show (Show (..))
 
 data Vesting = Vesting
