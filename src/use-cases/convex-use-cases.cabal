@@ -27,15 +27,10 @@ common lang
     ImportQualifiedPost
     MultiParamTypeClasses
     NumericUnderscores
-<<<<<<< HEAD
     OverloadedStrings
     ScopedTypeVariables
     StandaloneDeriving
     TemplateHaskell
-=======
-    ScopedTypeVariables
-    StandaloneDeriving
->>>>>>> b871120 (Rebasing on top of chore/remove-sc-tools-projects)
 
   ghc-options:
     -Wall -Wnoncanonical-monad-instances -Wunused-packages
@@ -43,9 +38,6 @@ common lang
     -Wredundant-constraints -Widentities
 
 library
-<<<<<<< HEAD
-  import:        lang
-=======
   import:         lang
 
   -- exposed-modules:
@@ -74,7 +66,6 @@ library
     , primitive
     , servant-client
     , text
->>>>>>> b871120 (Rebasing on top of chore/remove-sc-tools-projects)
 
   -- cardano dependencies
   build-depends:
@@ -82,7 +73,6 @@ library
     , cardano-ledger-core
     , cardano-ledger-shelley
     , cardano-slotting
-<<<<<<< HEAD
 
 test-suite convex-auction-test
   import:         lang
@@ -130,15 +120,6 @@ test-suite convex-auction-test
     , tasty-quickcheck
 
 test-suite convex-escrow-test
-<<<<<<< HEAD
-=======
-    , mtl
-    , transformers
-
-test-suite convex-use-cases-test
->>>>>>> b871120 (Rebasing on top of chore/remove-sc-tools-projects)
-=======
->>>>>>> 1284772 (Adding the Escrow contract to the use-cases test suite)
   import:         lang
   type:           exitcode-stdio-1.0
   hs-source-dirs: test
@@ -146,10 +127,6 @@ test-suite convex-use-cases-test
     -fobject-code -fno-ignore-interface-pragmas
     -fno-omit-interface-pragmas -fno-specialise -Wno-unused-packages
 
-<<<<<<< HEAD
-<<<<<<< HEAD
-=======
->>>>>>> 1284772 (Adding the Escrow contract to the use-cases test suite)
   main-is:        Escrow/Spec/Spec.hs
   other-modules:
     Escrow.Scripts
@@ -248,15 +225,6 @@ test-suite convex-vesting-test
     Vesting.Spec.Unit
     Vesting.Utils
     Vesting.Validator
-=======
-  main-is:        Spec.hs
-  other-modules:
-    Contracts.Vesting
-    Model.VestingModel
-    Scripts.VestingScript
-    Specs.VestingSpec
-    Utils.VestingUtils
->>>>>>> b871120 (Rebasing on top of chore/remove-sc-tools-projects)
 
   build-depends:
     , base                                         >=4.14.0
@@ -265,10 +233,6 @@ test-suite convex-vesting-test
     , cardano-ledger-conway
     , cardano-ledger-core
     , cardano-ledger-shelley
-<<<<<<< HEAD
-=======
-    , containers
->>>>>>> b871120 (Rebasing on top of chore/remove-sc-tools-projects)
     , convex-base
     , convex-coin-selection
     , convex-mockchain

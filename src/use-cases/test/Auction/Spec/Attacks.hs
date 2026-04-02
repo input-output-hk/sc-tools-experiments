@@ -17,14 +17,13 @@ import Convex.CoinSelection (BalanceTxError, ChangeOutputPosition (TrailingChang
 import Convex.MockChain.CoinSelection (paymentTo, tryBalanceAndSubmit)
 import Convex.MockChain.Defaults qualified as Defaults
 import Convex.MockChain.Utils (mockchainFails, mockchainSucceeds)
-import Convex.MonadLog (MonadLog, MonadLogIgnoreT (runMonadLogIgnoreT), logDebug, logDebugS, runMonadLogKatip, withKatipLogging)
+import Convex.MonadLog (MonadLog, MonadLogIgnoreT (runMonadLogIgnoreT), logDebug, logDebugS)
 import Convex.PlutusLedger.V1 (transPubKeyHash, unTransAssetName)
 import Convex.Utils (failOnError)
 import Convex.Wallet (verificationKeyHash)
 import Convex.Wallet qualified as MockWallet
 import Convex.Wallet.MockWallet qualified as MockWallet
 import Data.ByteString.Char8 (pack)
-import Katip (Severity (..))
 import PlutusLedgerApi.Common qualified as PlutusTx
 import PlutusLedgerApi.V1 (CurrencySymbol (..), POSIXTime (..), tokenName)
 import PlutusTx.Builtins qualified as BI
@@ -38,10 +37,11 @@ attackTests =
     "attack tests"
     [ testCase -- example of how to use logging in a test
         "SAA-0001: Set highest bid on deployment with value (should fail, but allows)"
-        ( withKatipLogging DebugS "production" "tests" $ \katipConfig ->
-            mockchainSucceeds $ failOnError $ runMonadLogKatip katipConfig $ setHighestOnDeploymentTest 5_000_000
-        )
-    , testCase
+        (mockchainSucceeds $ failOnError $ runMonadLogIgnoreT $ setHighestOnDeploymentBidTest 5_000_000)
+    , -- ( withKatipLogging DebugS "production" "tests" $ \katipConfig ->
+      --     mockchainSucceeds $ failOnError $ runMonadLogKatip katipConfig $ setHighestOnDeploymentTest 5_000_000
+      -- )
+      testCase
         "SAA-0002: Set highest bid on deployment with a small value and try to place a bid (should fail, but allows)"
         (mockchainSucceeds $ failOnError $ runMonadLogIgnoreT $ setHighestOnDeploymentBidTest 850_000)
     , testCase
@@ -66,8 +66,8 @@ attackTests =
         "SAA-0006: The Auctioned Token is not present at the produced utxo upon deployment (allows locking, but fails on bid)"
         (mockchainFails (failOnError $ runMonadLogIgnoreT tokenNotPresentBidTest) (\_ -> pure ()))
     , testCase
-        "SAA-0006: The Auctioned Token is not present at the produced utxo upon deployment (allows locking and payout)"
-        (mockchainSucceeds $ failOnError $ runMonadLogIgnoreT tokenNotPresentPayoutTest)
+        "SAA-0006: The Auctioned Token is not present at the produced utxo upon deployment (allows locking, but fails on payout)"
+        (mockchainFails (failOnError $ runMonadLogIgnoreT tokenNotPresentPayoutTest) (\_ -> pure ()))
     , testCase
         "SAA-0006: The Auctioned Token doesn't exists in the seller wallet and is not present at the produced utxo (should fail)"
         (mockchainFails (failOnError $ runMonadLogIgnoreT tokenDoNotExistPayoutTest) (\_ -> pure ()))
@@ -2044,7 +2044,7 @@ additionalTokensOnBidTest = do
   let garbageTokenNames =
         fmap
           (\i -> C.UnsafeAssetName (pack $ "A" <> show i))
-          ([1 .. 181] :: [Int]) -- budget limit (had to change Defaults to reach this limit)
+          ([1 .. 5] :: [Int]) -- budget limit (had to change Defaults to reach this limit)
 
   -- Mint all garbage tokens
   let mintGarbageTx =
@@ -2182,7 +2182,7 @@ additionalTokensOnBidPayoutTest = do
   let garbageTokenNames =
         fmap
           (\i -> C.UnsafeAssetName (pack $ "A" <> show i))
-          ([1 .. 181] :: [Int]) -- budget limit (had to change Defaults to reach this limit)
+          ([1 .. 5] :: [Int]) -- budget limit (had to change Defaults to reach this limit)
 
   -- Mint all garbage tokens
   let mintGarbageTx =

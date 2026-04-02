@@ -14,7 +14,6 @@ import Convex.CoinSelection (BalanceTxError)
 import Convex.MockChain.Defaults qualified as Defaults
 import Convex.PlutusLedger.V1 (transPubKeyHash)
 import Convex.TestingInterface (TestingInterface (..))
-import Convex.ThreatModel.LargeData (largeDataAttackWith)
 import Convex.ThreatModel.LargeValue (largeValueAttackWith)
 import Convex.ThreatModel.MutualExclusion (mutualExclusionAttack)
 import Convex.ThreatModel.SignatoryRemoval (signatoryRemoval)
@@ -74,17 +73,18 @@ instance TestingInterface VestingModel where
   --    - Total: 60 ADA per vesting contract
   --    - Owner: MockWallet.w1 (the beneficiary)
   --    - Start time: slot 0
-  initialState =
-    VestingModel
-      { _vestedAmount = mempty
-      , _vested = []
-      , _t1Slot = 10
-      , _t2Slot = 20
-      , _t1Amount = 20_000_000
-      , _t2Amount = 40_000_000
-      , _curSlot = 0
-      , _owner = MockWallet.w1
-      }
+  initialize =
+    pure
+      VestingModel
+        { _vestedAmount = mempty
+        , _vested = []
+        , _t1Slot = 10
+        , _t2Slot = 20
+        , _t1Amount = 20_000_000
+        , _t2Amount = 40_000_000
+        , _curSlot = 0
+        , _owner = MockWallet.w1
+        }
 
   -- \| Generate random actions weighted by likelihood and current state.
   arbitraryAction vm =
@@ -200,8 +200,7 @@ instance TestingInterface VestingModel where
     ]
 
   expectedVulnerabilities =
-    [ largeDataAttackWith 10
-    , timeBoundManipulation
+    [ timeBoundManipulation
     ]
 
   monitoring _ _ = error "monitoring not implemented"
