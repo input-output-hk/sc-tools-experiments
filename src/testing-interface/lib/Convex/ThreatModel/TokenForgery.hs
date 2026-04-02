@@ -50,12 +50,17 @@ module Convex.ThreatModel.TokenForgery (
   tokenForgeryAttackV3,
   tokenForgeryAttackWith,
   tokenForgeryAttackWithV3,
+
+  -- * Helpers
+  simpleAlwaysSucceedsMintingPolicyV2,
+  simpleTestAssetName,
 ) where
 
 import Cardano.Api qualified as C
 import Convex.ThreatModel
 import Convex.ThreatModel.TxModifier (addPlutusScriptMint, addPlutusScriptMintV3)
 import GHC.Exts (fromList)
+import PlutusLedgerApi.Test.Examples (alwaysSucceedingNAryFunction)
 
 {- | Check for Token Forgery vulnerabilities with a Plutus V2 minting policy.
 
@@ -210,3 +215,33 @@ tokenForgeryAttackWithV3 redeemer mintScript assetName = Named "Token Forgery At
   shouldNotValidate $
     changeValueOf output newValue
       <> addPlutusScriptMintV3 mintScript assetName (C.Quantity 1) redeemer
+
+-- ============================================================================
+-- Helper functions for threat model usage
+-- ============================================================================
+
+{- | A simple Plutus minting policy that always validates (for testing).
+
+This provides a reusable always-succeeds minting policy suitable for
+testing token forgery vulnerabilities. It's commonly used to create
+throwaway minting policies when testing spending validators.
+
+Usage:
+@
+  threatModels = [ tokenForgeryAttack simpleAlwaysSucceedsMintingPolicyV3 simpleTestAssetName ]
+@
+-}
+simpleAlwaysSucceedsMintingPolicyV2 :: C.PlutusScript C.PlutusScriptV2
+simpleAlwaysSucceedsMintingPolicyV2 =
+  C.PlutusScriptSerialised $
+    alwaysSucceedingNAryFunction 2
+
+{- | A simple asset name for testing (empty string).
+
+This provides a basic asset name for use with token forgery attacks
+and other threat model testing where the asset name is not critical.
+
+The empty asset name is a common convention for test tokens.
+-}
+simpleTestAssetName :: C.AssetName
+simpleTestAssetName = C.UnsafeAssetName ""

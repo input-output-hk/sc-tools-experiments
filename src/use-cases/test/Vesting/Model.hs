@@ -14,6 +14,14 @@ import Convex.CoinSelection (BalanceTxError)
 import Convex.MockChain.Defaults qualified as Defaults
 import Convex.PlutusLedger.V1 (transPubKeyHash)
 import Convex.TestingInterface (TestingInterface (..))
+import Convex.ThreatModel.LargeData (largeDataAttackWith)
+import Convex.ThreatModel.LargeValue (largeValueAttackWith)
+import Convex.ThreatModel.MutualExclusion (mutualExclusionAttack)
+import Convex.ThreatModel.SignatoryRemoval (signatoryRemoval)
+import Convex.ThreatModel.TimeBoundManipulation (timeBoundManipulation)
+import Convex.ThreatModel.TokenForgery (simpleAlwaysSucceedsMintingPolicyV2, simpleTestAssetName, tokenForgeryAttack)
+import Convex.ThreatModel.UnprotectedScriptOutput (unprotectedScriptOutput)
+import Convex.ThreatModel.ValueUnderpayment (valueUnderpaymentAttack)
 import Convex.Utils (inBabbage, slotToUtcTime, utcTimeToPosixTime)
 import Convex.Wallet (Wallet, verificationKeyHash)
 import Convex.Wallet.MockWallet qualified as MockWallet
@@ -180,6 +188,18 @@ instance TestingInterface VestingModel where
       pure () -- do nothing
 
   validate _vm = pure True
+
+  threatModels =
+    [ largeDataAttackWith 10
+    , largeValueAttackWith 10
+    , mutualExclusionAttack
+    , signatoryRemoval
+    , timeBoundManipulation
+    , tokenForgeryAttack simpleAlwaysSucceedsMintingPolicyV2 simpleTestAssetName
+    , unprotectedScriptOutput
+    , unprotectedScriptOutput
+    , valueUnderpaymentAttack
+    ]
 
   monitoring _ _ = error "monitoring not implemented"
 

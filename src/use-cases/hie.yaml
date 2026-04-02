@@ -1,7 +1,7 @@
 cradle:
   cabal:
-    - path: "test"
+    - path: "test/Vesting"
       component: "convex-use-cases:test:convex-auction-test"
 
-    - path: "test"
+    - path: "test/Auction"
       component: "convex-use-cases:test:convex-vesting-test"

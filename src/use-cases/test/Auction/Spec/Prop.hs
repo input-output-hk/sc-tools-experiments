@@ -21,6 +21,9 @@ import Convex.MockChain.CoinSelection (tryBalanceAndSubmit)
 import Convex.MockChain.Defaults qualified as Defaults
 import Convex.PlutusLedger.V1 (transPubKeyHash, unTransAssetName)
 import Convex.TestingInterface (TestingInterface (..), propRunActions)
+import Convex.ThreatModel.DoubleSatisfaction (doubleSatisfaction)
+import Convex.ThreatModel.TimeBoundManipulation (timeBoundManipulation)
+import Convex.ThreatModel.TokenForgery (simpleAlwaysSucceedsMintingPolicyV2, simpleTestAssetName, tokenForgeryAttack)
 import Convex.Utils (slotToUtcTime, utcTimeToPosixTime)
 import Convex.Wallet (Wallet, verificationKeyHash)
 import Convex.Wallet qualified as MockWallet
@@ -212,7 +215,7 @@ instance TestingInterface AuctionModel where
   -- \| perform executes actions on the actual blockchain/mockchain.
   perform am PrepareAuction =
     do
-      C.liftIO $ putStrLn $ ">>> Preparing auction (minting NFT and locking in script) at slot " ++ show (_curSlot am)
+      -- C.liftIO $ putStrLn $ ">>> Preparing auction (minting NFT and locking in script) at slot " ++ show (_curSlot am)
       let auctionParams = paramsFromModel am
       runExceptT $
         prepareAuctionPBT auctionParams
@@ -221,7 +224,7 @@ instance TestingInterface AuctionModel where
         Right _ -> pure ()
   perform am (PlaceBid w amt) =
     do
-      C.liftIO $ putStrLn $ ">>> Placing bid of " ++ show amt ++ " lovelace from " ++ show w ++ " at slot " ++ show (_curSlot am)
+      -- C.liftIO $ putStrLn $ ">>> Placing bid of " ++ show amt ++ " lovelace from " ++ show w ++ " at slot " ++ show (_curSlot am)
       if not (_auctionInitialized am)
         then fail "Auction not initialized"
         else
@@ -234,7 +237,7 @@ instance TestingInterface AuctionModel where
               Right _ -> pure ()
   perform am CloseAuction =
     do
-      C.liftIO $ putStrLn $ ">>> Closing auction at slot " ++ show (_curSlot am)
+      -- C.liftIO $ putStrLn $ ">>> Closing auction at slot " ++ show (_curSlot am)
       if not (_auctionInitialized am)
         then fail "Auction not initialized"
         else
@@ -245,14 +248,20 @@ instance TestingInterface AuctionModel where
             >>= \case
               Left err -> fail $ "CloseAuction failed: " <> show err
               Right _ -> pure ()
-  perform am (WaitSlots slots) =
+  perform _am (WaitSlots _slots) =
     do
-      C.liftIO $
-        putStrLn $
-          ">>> Waiting " ++ show slots ++ " slots (now at " ++ show (_curSlot am + slots) ++ ")"
+      -- C.liftIO $ putStrLn $ ">>> Waiting " ++ show _slots ++ " slots (now at " ++ show (_curSlot _am + _slots) ++ ")"
       pure () -- do nothing
 
   validate _am = pure True
+
+  threatModels = [doubleSatisfaction, timeBoundManipulation, tokenForgeryAttack simpleAlwaysSucceedsMintingPolicyV2 simpleTestAssetName]
+
+  -- threatModels = [doubleSatisfaction, datumListBloatAttack, datumByteBloatAttack, duplicateListEntryAttack
+  --                , largeDataAttackWith 10, largeValueAttackWith 10, inputDuplication, mutualExclusionAttack
+  --                , negativeIntegerAttack, redeemerAssetSubstitution, selfReferenceInjection, signatoryRemoval
+  --                , timeBoundManipulation, tokenForgeryAttack, unprotectedScriptOutput
+  --                , unprotectedScriptOutput, valueUnderpaymentAttack]
 
   monitoring _ _ = error "monitoring not implemented"
 
