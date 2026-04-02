@@ -26,8 +26,18 @@ test-show-details: direct
 tests: True
 
 packages:
+  src/base
+  src/blockfrost
+  src/maestro
+  src/coin-selection
+  src/devnet
+  src/mockchain
+  src/node-client
+  src/optics
   src/testing-interface
+  src/tx-mod
   src/use-cases
+  src/wallet
 
 source-repository-package
   type: git
