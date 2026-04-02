@@ -3,6 +3,7 @@
 module Main where
 
 import Auction.Spec.Attacks (attackTests)
+import Auction.Spec.Prop (propBasedTests)
 import Auction.Spec.Unit (unitTests)
 import Test.Tasty (TestTree, defaultMain, testGroup)
 
@@ -19,4 +20,5 @@ tests =
     "auction tests"
     [ unitTests
     , attackTests
+    , propBasedTests
     ]

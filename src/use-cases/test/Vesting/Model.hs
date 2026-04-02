@@ -64,7 +64,6 @@ instance TestingInterface VestingModel where
   --    - Total: 60 ADA per vesting contract
   --    - Owner: MockWallet.w1 (the beneficiary)
   --    - Start time: slot 0
-  --
   initialState =
     VestingModel
       { _vestedAmount = mempty
