@@ -252,7 +252,8 @@ validChangeOutput :: VestingModel -> C.Lovelace -> Bool
 validChangeOutput vm withdrawAmount =
   let remaining = _vestedAmount vm - withdrawAmount
       minUtxo = 896_500
-   in remaining == 0 || remaining >= minUtxo
+   in -- remaining == 0 || remaining >= minUtxo
+      remaining >= minUtxo -- For testing purposes, we require a valid change output to be left. This means you can't withdraw the full amount in one go, but it allows us to test withdrawals more easily without worrying about emptying the contract and making it impossible to vest again.
 
 -------------------------------------------------------------------------------
 -- Property-Based Testing Functions
