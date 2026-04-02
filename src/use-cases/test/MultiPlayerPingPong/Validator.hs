@@ -397,7 +397,7 @@ validateStop
   -> MultiPingPongDatum
   -> [PubKeyHash]
   -> BuiltinUnit
-validateStop ownTxOut inputDatum signatories =
+validateStop _ownTxOut inputDatum signatories =
   let
     MultiPingPongDatum
       { players = ps

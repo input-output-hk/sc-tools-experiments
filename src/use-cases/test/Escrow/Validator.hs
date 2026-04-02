@@ -18,10 +18,8 @@ import PlutusLedgerApi.V3 (
   PubKeyHash,
   Redeemer (getRedeemer),
   ScriptHash,
-  TxInInfo (txInInfoOutRef, txInInfoResolved),
-  TxInfo (txInfoInputs, txInfoOutputs),
+  TxInfo (txInfoOutputs),
   TxOut (txOutAddress, txOutDatum, txOutValue),
-  TxOutRef,
   Value,
   addressCredential,
  )

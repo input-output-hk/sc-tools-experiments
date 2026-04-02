@@ -3320,6 +3320,6 @@ fivePlayerThreeRotationsRoundCountTest = do
 
   -- Executes 15 valid hits; final datum is:
   -- currentIndex = 0, ballState = Ponged, roundCount = 3, active = True.
-  runHits txIn0 1 hitters
+  runHits txIn0 (1 :: Int) hitters
 
   return ()
