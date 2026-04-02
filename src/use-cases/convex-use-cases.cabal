@@ -130,12 +130,15 @@ test-suite convex-auction-test
     , tasty-quickcheck
 
 test-suite convex-escrow-test
+<<<<<<< HEAD
 =======
     , mtl
     , transformers
 
 test-suite convex-use-cases-test
 >>>>>>> b871120 (Rebasing on top of chore/remove-sc-tools-projects)
+=======
+>>>>>>> 1284772 (Adding the Escrow contract to the use-cases test suite)
   import:         lang
   type:           exitcode-stdio-1.0
   hs-source-dirs: test
@@ -144,6 +147,9 @@ test-suite convex-use-cases-test
     -fno-omit-interface-pragmas -fno-specialise -Wno-unused-packages
 
 <<<<<<< HEAD
+<<<<<<< HEAD
+=======
+>>>>>>> 1284772 (Adding the Escrow contract to the use-cases test suite)
   main-is:        Escrow/Spec/Spec.hs
   other-modules:
     Escrow.Scripts
