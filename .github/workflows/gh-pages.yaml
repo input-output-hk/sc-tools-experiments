@@ -24,7 +24,7 @@ jobs:
         id: cabal-setup
         with:
           ghc-version: '9.6.6'
-          cabal-version: '3.10.3.0'
+          cabal-version: '3.16.1.0'
 
       - uses: actions/checkout@v6
 
@@ -37,7 +37,7 @@ jobs:
       - name: Build haddocks
         run: |
           cabal update
-          cabal haddock-project --local --output=haddocks
+          cabal haddock-project --output=haddocks
 
       - name: Upload GH pages artifact
         uses: actions/upload-pages-artifact@v4.0.0
@@ -60,7 +60,7 @@ jobs:
       url: ${{ steps.deployment.outputs.page_url }}
 
     # Deploy only from the main branch
-    if: ${{ github.ref == 'main' }}
+    if: ${{ github.ref_name == 'main' }}
 
     # Specify runner + deployment step
     runs-on: ubuntu-latest
