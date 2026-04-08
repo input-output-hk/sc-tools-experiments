@@ -2,7 +2,7 @@
 
 module Main where
 
--- import Escrow.Spec.Prop (propBasedTests)
+import Escrow.Spec.Prop (propBasedTests)
 import Escrow.Spec.Unit (unitTests)
 import Test.Tasty (TestTree, defaultMain, testGroup)
 
@@ -18,5 +18,5 @@ tests =
   testGroup
     "escrow tests"
     [ unitTests
-    -- , propBasedTests
+    , propBasedTests
     ]

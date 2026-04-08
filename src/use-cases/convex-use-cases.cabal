@@ -130,12 +130,10 @@ test-suite convex-escrow-test
   main-is:        Escrow/Spec/Spec.hs
   other-modules:
     Escrow.Scripts
+    Escrow.Spec.Prop
     Escrow.Spec.Unit
     Escrow.Validator
 
-  -- Escrow.Spec.Prop
-  -- Escrow.Spec.Attacks
-  -- Escrow.Utils
   build-depends:
     , base                                         >=4.14.0
     , bytestring
