@@ -38,34 +38,13 @@ common lang
     -Wredundant-constraints -Widentities
 
 library
-  import:         lang
-
-  -- exposed-modules:
-  --   Cardano.Api.Extras
-  --   Convex.CoinSelection
-  --   Convex.CoinSelection.Class
-  -- Convex.MockChain.CoinSelection
-  --   Convex.MockChain.Staking
-  --   Convex.Query
-  --   Convex.UTxOCompatibility
-
-  hs-source-dirs: lib
+  import:          lang
+  exposed-modules: Convex.UseCases.Utils
+  hs-source-dirs:  lib
   build-depends:
-    , aeson
-    , base                >=4.14.0
-    , containers          >=0.6.5
-    , contra-tracer
+    , base              >=4.14.0
     , convex-base
     , convex-mockchain
-    , convex-optics
-    , convex-wallet
-    , data-default
-    , exceptions
-    , lens
-    , ordered-containers
-    , primitive
-    , servant-client
-    , text
 
   -- cardano dependencies
   build-depends:
@@ -104,6 +83,7 @@ test-suite convex-auction-test
     , convex-mockchain
     , convex-optics
     , convex-testing-interface
+    , convex-use-cases
     , convex-wallet
     , katip
     , lens
@@ -149,6 +129,7 @@ test-suite convex-escrow-test
     , convex-mockchain
     , convex-optics
     , convex-testing-interface
+    , convex-use-cases
     , convex-wallet
     , katip
     , lens
@@ -179,8 +160,6 @@ test-suite convex-multiplayerpingpong-test
     MultiPlayerPingPong.Spec.Unit
     MultiPlayerPingPong.Validator
 
-  -- MultiPlayerPingPong.Spec.Attacks
-  -- MultiPlayerPingPong.Utils
   build-depends:
     , base                                         >=4.14.0
     , bytestring
@@ -194,6 +173,7 @@ test-suite convex-multiplayerpingpong-test
     , convex-mockchain
     , convex-optics
     , convex-testing-interface
+    , convex-use-cases
     , convex-wallet
     , katip
     , lens
@@ -219,11 +199,9 @@ test-suite convex-vesting-test
 
   main-is:        Vesting/Spec/Spec.hs
   other-modules:
-    Vesting.Model
     Vesting.Scripts
     Vesting.Spec.Prop
     Vesting.Spec.Unit
-    Vesting.Utils
     Vesting.Validator
 
   build-depends:
@@ -238,6 +216,7 @@ test-suite convex-vesting-test
     , convex-mockchain
     , convex-optics
     , convex-testing-interface
+    , convex-use-cases
     , convex-wallet
     , lens
     , mtl
