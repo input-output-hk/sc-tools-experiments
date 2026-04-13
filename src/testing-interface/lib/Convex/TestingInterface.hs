@@ -16,15 +16,18 @@ module Convex.TestingInterface (
   -- * Testing interface
   TestingInterface (..),
   ModelState,
+  ThreatModelsFor (..),
 
   -- * Running Tests
   propRunActions,
   propRunActionsWithOptions,
   RunOptions (..),
   defaultRunOptions,
+  genAction,
 
   -- * The Testing Monad
   TestingMonadT (..),
+  runTestingMonadT,
   mockchainSucceedsWithOptions,
   mockchainFailsWithOptions,
   Options (..),
@@ -55,7 +58,7 @@ module Convex.TestingInterface (
   TestTree,
 ) where
 
-import Control.Monad (foldM, forM, unless, when)
+import Control.Monad (forM, unless, when)
 import Control.Monad.IO.Class (MonadIO, liftIO)
 import Test.HUnit (Assertion)
 import Test.QuickCheck (Arbitrary (..), Gen, Property, counterexample, discard, elements, frequency, oneof, property)
@@ -69,6 +72,7 @@ import Cardano.Api qualified as C
 import Cardano.Ledger.Core qualified as L
 import Control.Exception (SomeException, catch, throwIO, try)
 import Control.Lens ((&), (.~), (^.))
+import Control.Monad.Except (ExceptT, runExceptT)
 import Control.Monad.Trans (MonadTrans (..))
 import Convex.Class (MonadBlockchain, MonadMockchain, coverageData, getTxs)
 import Convex.CoinSelection (BalanceTxError, coverageFromBalanceTxError)
@@ -76,7 +80,8 @@ import Convex.MockChain (MockChainState (..), MockchainT, initialStateFor, runMo
 import Convex.MockChain.Defaults qualified as Defaults
 import Convex.MonadLog (MonadLog)
 import Convex.NodeParams (NodeParams (..))
-import Convex.ThreatModel (ExceptT, SigningWallet (AutoSign), ThreatModel, ThreatModelOutcome (..), getThreatModelName, runExceptT, runThreatModelCheck, threatModelEnvs)
+import Convex.ThreatModel (SigningWallet (AutoSign), ThreatModel (..), ThreatModelOutcome (..), getThreatModelName, runThreatModelCheck, threatModelEnvs)
+import Convex.ThreatModel.All (allThreatModels)
 import Convex.Wallet.MockWallet qualified as Wallet
 import Data.Aeson (ToJSON (..), (.=))
 import Data.Aeson qualified as Aeson
@@ -85,6 +90,7 @@ import Data.Aeson.Key qualified as Key
 import Data.ByteString.Lazy.Char8 qualified as LBS
 import Data.Foldable (foldl', for_, traverse_)
 import Data.IORef (IORef, modifyIORef, newIORef, readIORef)
+import Data.List (deleteFirstsBy)
 import Data.Map qualified as Map
 import Data.Maybe (fromMaybe)
 import Data.Set qualified as Set
@@ -114,7 +120,7 @@ correctly.
 
 Minimal complete definition: 'Action', 'initialize', 'arbitraryAction', 'nextState', 'perform'
 -}
-class (Show state, Eq state) => TestingInterface state where
+class (Show state, Eq state, Show (Action state)) => TestingInterface state where
   {- | Actions that can be performed on the contract.
   This is typically a data type with one constructor per contract operation.
   -}
@@ -135,16 +141,12 @@ class (Show state, Eq state) => TestingInterface state where
   precondition :: state -> Action state -> Bool
   precondition _ _ = True
 
-  {- | Update the model state after an action is performed.
-  This should reflect the expected effect of the action on the contract state.
-  -}
-  nextState :: state -> Action state -> state
-
   {- | Perform the action on the real blockchain (mockchain).
   This should execute the actual transaction(s) that implement the action.
   The current model state is provided to allow access to tracked blockchain state.
+  The returned state should reflect the expected effect of the action on the contract state.
   -}
-  perform :: (MonadIO m) => state -> Action state -> TestingMonadT m ()
+  perform :: (MonadIO m) => state -> Action state -> TestingMonadT m state
 
   {- | Validate that the blockchain state matches the model state.
   Default: no validation (always succeeds).
@@ -157,26 +159,6 @@ class (Show state, Eq state) => TestingInterface state where
   -}
   monitoring :: state -> Action state -> Property -> Property
   monitoring _ _ = id
-
-  {- | Threat models to run against the last transaction.
-  Each threat model will be evaluated against the final transaction
-  with the UTxO state captured before that transaction executed.
-  Default: no threat models.
-  -}
-  threatModels :: [ThreatModel ()]
-  threatModels = []
-
-  {- | Threat models that are expected to find vulnerabilities.
-  These are run like 'threatModels' but with inverted pass/fail semantics:
-
-  * OK when a vulnerability IS detected
-  * FAIL when a vulnerability is NOT detected
-
-  Output is quiet — no verbose transaction dumps.
-  Default: empty, backward compatible.
-  -}
-  expectedVulnerabilities :: [ThreatModel ()]
-  expectedVulnerabilities = []
 
   {- | Whether to discard (skip) test cases where the invalid action fails due to
   a user-level error (e.g., off-chain balancing failure) rather than an
@@ -193,8 +175,35 @@ class (Show state, Eq state) => TestingInterface state where
   Override this in your 'TestingInterface' instance if you need finer
   control over which failure modes are accepted in negative testing.
   -}
-  discarNegativeTestForUserExceptions :: Bool
-  discarNegativeTestForUserExceptions = False
+  discardNegativeTestForUserExceptions :: Bool
+  discardNegativeTestForUserExceptions = False
+
+class (TestingInterface state) => ThreatModelsFor state where
+  {- | Threat models to run against the transactions.
+  Each threat model will be evaluated against the transaction generated by a
+  succesful test run with the UTxO state captured before each transaction executed.
+  Default: the list of all threat models that don't take parameters.
+  -}
+  threatModels :: [ThreatModel ()]
+  threatModels = deleteFirstsBy eqName allThreatModels (expectedVulnerabilities @state)
+   where
+    eqName (Named s _) (Named t _) = s == t
+    eqName _ _ =
+      error $
+        "Unexpected unnamed threat model."
+          ++ "please override the default implementation of `ThreatModelsFor.threatModels`"
+
+  {- | Threat models that are expected to find vulnerabilities.
+  These are run like 'threatModels' but with inverted pass/fail semantics:
+
+  * OK when a vulnerability IS detected
+  * FAIL when a vulnerability is NOT detected
+
+  Output is quiet — no verbose transaction dumps.
+  Default: empty, backward compatible.
+  -}
+  expectedVulnerabilities :: [ThreatModel ()]
+  expectedVulnerabilities = []
 
 {- | Tests run in the mockchain monad extended with balancing error handling.
 
@@ -247,17 +256,9 @@ suchThatMaybe gen p = go (100 :: Int)
     a <- gen
     if p a then pure (Just a) else go (retries - 1)
 
--- | Generate a list of valid actions
-genActions :: (TestingInterface state) => state -> Int -> Gen [Action state]
-genActions _ 0 = pure []
-genActions s n = do
-  maybeAction <- arbitraryAction s `suchThatMaybe` precondition s
-  case maybeAction of
-    Nothing -> pure [] -- Stop if no valid action can be generated
-    Just action -> do
-      let s' = nextState s action
-      actions <- genActions s' (n - 1)
-      pure (action : actions)
+-- | Generate a valid actions
+genAction :: (TestingInterface state, Monad m) => state -> PropertyM m (Maybe (Action state))
+genAction s = pick $ arbitraryAction s `suchThatMaybe` precondition s
 
 -- | Options for running property tests
 data RunOptions = RunOptions
@@ -284,13 +285,13 @@ defaultRunOptions =
 {- | Main property for testing a testing interface.
 Generates random action sequences and checks that the implementation matches the model.
 -}
-propRunActions :: forall state. (TestingInterface state, Show (Action state)) => String -> TestTree
+propRunActions :: forall state. (ThreatModelsFor state) => String -> TestTree
 propRunActions name = propRunActionsWithOptions @state name defaultRunOptions
 
 -- | Run testing interface tests with custom options
 propRunActionsWithOptions
   :: forall state
-   . (TestingInterface state, Show (Action state))
+   . (ThreatModelsFor state)
   => String
   -> RunOptions
   -> TestTree
@@ -330,7 +331,7 @@ propRunActionsWithOptions groupName opts =
 -- | Negative test: check that invalid actions fail
 negativeTest
   :: forall state
-   . (TestingInterface state, Show (Action state))
+   . (TestingInterface state)
   => RunOptions
   -> Property
 negativeTest opts = monadicIO $ do
@@ -339,17 +340,14 @@ negativeTest opts = monadicIO $ do
   (prefixResult, prefixState) <- runTestingMonadT params $ do
     initialState <- runInitialization @state opts
 
-    (actions, badAction) <- lift $ pick $ do
-      -- Generate a valid prefix (builds up state)
-      prefix <- genActions initialState 10
-      let finalState = foldl nextState initialState prefix
-      -- Generate an action that VIOLATES the precondition in that state
+    finalState <- runActions opts 10 initialState
+
+    -- Generate an action that VIOLATES the precondition in that state
+    lift $ pick $ do
       maybeInvalid <- arbitraryAction finalState `suchThatMaybe` (not . precondition finalState)
       case maybeInvalid of
         Nothing -> discard -- tell QuickCheck to skip this case
-        Just bad -> pure (prefix, bad)
-
-    ((,) badAction) <$> foldM (runAction opts) initialState actions
+        Just bad -> pure (bad, finalState)
 
   -- Phase 2: Run the bad action starting from the state left by the valid prefix
   case prefixResult of
@@ -364,7 +362,7 @@ negativeTest opts = monadicIO $ do
       -- but if it failed after submission (i.e. validator rejection), we count it as a success.
       case result' of
         -- we try another round of bad actions
-        Left _ | discarNegativeTestForUserExceptions @state -> discard
+        Left _ | discardNegativeTestForUserExceptions @state -> discard
         Left _ -> pure (property True)
         Right result ->
           case result of
@@ -384,7 +382,7 @@ When threat models are present, each is run in isolation with exception handling
 -}
 positiveTest
   :: forall state
-   . (TestingInterface state, Show (Action state))
+   . (TestingInterface state)
   => RunOptions
   -> Maybe (IO (IORef ThreatModelResults))
   -- ^ IORef for collecting results (Nothing = no threat models, don't collect)
@@ -397,9 +395,8 @@ positiveTest opts mGetTmResultsRef tms evs = monadicIO $ do
   let RunOptions{mcOptions = Options{coverageRef, params}} = opts
   result <- runTestingMonadT params $ do
     initialState <- runInitialization @state opts
-    actions <- lift $ pick $ genActions initialState 10
 
-    finalState <- foldM (runAction opts) initialState actions
+    finalState <- runActions opts 10 initialState
 
     -- Run threat models in isolation
     -- Note: runThreatModelCheck handles rebalancing failures internally (returns TMSkipped)
@@ -426,33 +423,6 @@ positiveTest opts mGetTmResultsRef tms evs = monadicIO $ do
       (outcome, tmFinalState) <-
         runMockchainIO (runThreatModelCheck AutoSign tm envs) params state0
       pure (name, outcome, mcsCoverageData tmFinalState)
-
-    --    tmResultsWithCov <- case (lastTx, lastUtxoBefore, lastMockChainState) of
-    --      (Just tx, Just utxo, Just mcState) -> do
-    --        let pparams' = params ^. ledgerProtocolParameters
-    --            env = ThreatModelEnv tx utxo pparams'
-    --        -- Check which threat models have already failed (from previous QuickCheck iterations)
-    --        existingResults <- case mGetTmResultsRef of
-    --          Just getTmRef -> liftIO $ do
-    --            tmRef <- getTmRef
-    --            readIORef tmRef
-    --          Nothing -> pure Map.empty
-    --        let isTMFailed (TMFailed _) = True
-    --            isTMFailed _ = False
-    --            alreadyFailed name = any isTMFailed (fromMaybe [] (Map.lookup name existingResults))
-    --            -- Only filter threat models (tms) for early-stop; expected vulnerabilities (evs) always run
-    --            tmsToRun = filter (not . alreadyFailed . fromMaybe "Unnamed" . getThreatModelName) tms
-    --            allToRun = tmsToRun <> evs -- evs always run, no filtering
-    --            -- Run each threat model in an isolated MockchainT context
-    --        liftIO $ forM allToRun $ \tm -> do
-    --          let name = fromMaybe "Unnamed" (getThreatModelName tm)
-    --          case detectSigningWallet tx of
-    --            Left err -> pure (name, TMError err, mempty)
-    --            Right wallet -> do
-    --              (outcome, tmFinalState) <-
-    --                runMockchainIO (runThreatModelCheck wallet tm [env]) params mcState
-    --              pure (name, outcome, mcsCoverageData tmFinalState)
-    --      _ -> pure []
 
     -- Extract just the (name, outcome) pairs for downstream processing
     let tmResults = [(n, o) | (n, o, _) <- tmResultsWithCov]
@@ -624,9 +594,23 @@ expectedVulnTestCase getTmResultsRef idx tm =
                             <> show total
                             <> " transactions applicable)"
 
+-- | Generate a number of actions (with a given maximum) and run them.
+runActions
+  :: (TestingInterface state, MonadIO m)
+  => RunOptions
+  -> Int
+  -> state
+  -> TestingMonadT (PropertyM m) state
+runActions _ 0 s = pure s
+runActions opts i s = do
+  mAction <- lift $ genAction s
+  case mAction of
+    Just action -> runAction opts s action >>= runActions opts (i - 1)
+    Nothing -> pure s
+
 -- | Execute a single action and update the model state
 runAction
-  :: (TestingInterface state, Show (Action state), MonadIO m)
+  :: (TestingInterface state, MonadIO m)
   => RunOptions
   -> state
   -> Action state
@@ -643,10 +627,7 @@ runAction opts modelState action = do
       "Precondition failed for action: " ++ show action
 
   -- Perform the action on the blockchain
-  perform modelState action
-
-  -- Update model state
-  let modelState' = nextState modelState action
+  modelState' <- perform modelState action
 
   -- Validate blockchain state matches model
   valid <- validate modelState'

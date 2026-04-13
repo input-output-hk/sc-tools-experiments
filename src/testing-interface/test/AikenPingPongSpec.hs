@@ -48,6 +48,7 @@ import Convex.MockChain.Defaults qualified as Defaults
 import Convex.TestingInterface (
   RunOptions,
   TestingInterface (..),
+  ThreatModelsFor (..),
   propRunActionsWithOptions,
  )
 import Convex.ThreatModel.Cardano.Api (dummyTxId)
@@ -178,14 +179,7 @@ instance TestingInterface AikenPingPongModel where
       (PingPong.Ponged, PingPong.Stop) -> True
       (PingPong.Ponged, PingPong.Pong) -> False
 
-  nextState model (AikenPlayRound redeemer) =
-    let newState = case redeemer of
-          PingPong.Ping -> PingPong.Pinged
-          PingPong.Pong -> PingPong.Ponged
-          PingPong.Stop -> PingPong.Stopped
-     in model{apmState = newState}
-
-  perform _model (AikenPlayRound redeemer) = do
+  perform model (AikenPlayRound redeemer) = do
     -- liftIO $ putStrLn $ "[Aiken] Playing round: " ++ show redeemer
     -- Find the UTxO at the script address
     let scriptHash = C.hashScript (plutusScript aikenPingPongScript)
@@ -208,6 +202,11 @@ instance TestingInterface AikenPingPongModel where
             (execBuildTx $ playAikenPingPongRound aikenPingPongScript Defaults.networkId lovelace redeemer txIn)
             TrailingChange
             []
+    let newState = case redeemer of
+          PingPong.Ping -> PingPong.Pinged
+          PingPong.Pong -> PingPong.Ponged
+          PingPong.Stop -> PingPong.Stopped
+     in pure $ model{apmState = newState}
 
   validate model = do
     -- Query the actual state from the blockchain
@@ -244,6 +243,7 @@ instance TestingInterface AikenPingPongModel where
 
   monitoring _state _action prop = prop
 
+instance ThreatModelsFor AikenPingPongModel where
   -- The secure Aiken validator should RESIST all these attacks
   threatModels = [unprotectedScriptOutput, largeValueAttackWith 10, largeDataAttackWith 10]
 

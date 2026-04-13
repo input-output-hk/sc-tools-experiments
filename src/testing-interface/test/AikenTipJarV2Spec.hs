@@ -56,6 +56,7 @@ import Convex.MockChain.Utils (mockchainSucceeds)
 import Convex.TestingInterface (
   RunOptions,
   TestingInterface (..),
+  ThreatModelsFor (..),
   propRunActionsWithOptions,
  )
 import Convex.ThreatModel.Cardano.Api (dummyTxId)
@@ -450,22 +451,7 @@ instance TestingInterface TipJarV2Model where
 
   precondition model _ = not (tmHasBeenClaimed model)
 
-  nextState model action = case action of
-    TipV2 msg ->
-      -- Messages are prepended (Aiken list.push adds to head)
-      model
-        { tmMessages = msg : tmMessages model
-        , tmValue = tmValue model + 5_000_000
-        }
-    OwnerClaimV2 ->
-      -- Claiming resets the model and marks as claimed (sequence ends)
-      model
-        { tmMessages = []
-        , tmValue = 0
-        , tmHasBeenClaimed = True -- Mark as claimed
-        }
-
-  perform _model action = case action of
+  perform model action = case action of
     TipV2 msg -> do
       -- Find the UTxO at the script address
       utxoSet <- fromLedgerUTxO C.shelleyBasedEra <$> getUtxo
@@ -484,6 +470,12 @@ instance TestingInterface TipJarV2Model where
             _ -> fail "Expected inline datum"
           let txBody = execBuildTx $ addTipV2 @C.ConwayEra Defaults.networkId txIn currentDatum lovelace 5_000_000 msg
           void $ balanceAndSubmit mempty Wallet.w1 txBody TrailingChange []
+      -- Messages are prepended (Aiken list.push adds to head)
+      pure $
+        model
+          { tmMessages = msg : tmMessages model
+          , tmValue = tmValue model + 5_000_000
+          }
     OwnerClaimV2 -> do
       -- Find the UTxO at the script address
       utxoSet <- fromLedgerUTxO C.shelleyBasedEra <$> getUtxo
@@ -495,6 +487,13 @@ instance TestingInterface TipJarV2Model where
           let tipJarValue = C.fromMaryValue val
               txBody = execBuildTx $ claimJarV2 @C.ConwayEra Defaults.networkId txIn tipJarValue Wallet.w1
           void $ balanceAndSubmit mempty Wallet.w1 txBody TrailingChange []
+      -- Claiming resets the model and marks as claimed (sequence ends)
+      pure $
+        model
+          { tmMessages = []
+          , tmValue = 0
+          , tmHasBeenClaimed = True -- Mark as claimed
+          }
 
   validate model = do
     -- Query the actual state from the blockchain
@@ -530,6 +529,7 @@ instance TestingInterface TipJarV2Model where
 
   monitoring _state _action prop = prop
 
+instance ThreatModelsFor TipJarV2Model where
   -- Threat models to test vulnerability detection.
   -- Note: We intentionally exclude datumByteBloatAttackWith and largeValueAttackWith here
   -- because they WOULD find vulnerabilities (which is expected for this contract).

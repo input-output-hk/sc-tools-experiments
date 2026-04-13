@@ -77,6 +77,7 @@ import Convex.TestingInterface (
   Options (Options, params),
   RunOptions (disableNegativeTesting, mcOptions),
   TestingInterface (..),
+  ThreatModelsFor (..),
   propRunActionsWithOptions,
  )
 import Convex.ThreatModel.Cardano.Api (dummyTxId)
@@ -722,26 +723,7 @@ instance TestingInterface MultisigV2Model where
   precondition model ForgeTokenAndUse =
     not (mmv2HasBeenUsed model)
 
-  nextState model action = case action of
-    SignMultisigV2 sc ->
-      model
-        { mmv2SignedUsers = walletPkhBytes (signerToWallet sc) : mmv2SignedUsers model
-        }
-    UseMultisigV2 ->
-      model
-        { mmv2HasBeenUsed = True
-        }
-    ForgeTokenAndUse ->
-      -- Exploit drains the treasury
-      model
-        { mmv2Value = 0
-        , mmv2RequiredSigners = []
-        , mmv2SignedUsers = []
-        , mmv2ReleaseValue = 0
-        , mmv2HasBeenUsed = True
-        }
-
-  perform _model action = case action of
+  perform model action = case action of
     SignMultisigV2 sc -> do
       let w = signerToWallet sc
       result <- findMultisigV2Utxos
@@ -754,6 +736,10 @@ instance TestingInterface MultisigV2Model where
                 Signer1 -> []
                 Signer2 -> [C.WitnessPaymentKey (getWallet w)]
           void $ balanceAndSubmit mempty Wallet.w1 txBody TrailingChange additionalWitnesses
+      pure $
+        model
+          { mmv2SignedUsers = walletPkhBytes (signerToWallet sc) : mmv2SignedUsers model
+          }
     UseMultisigV2 -> do
       result <- findMultisigV2Utxos
       case result of
@@ -767,6 +753,10 @@ instance TestingInterface MultisigV2Model where
               -- If signer is not w1, we need to provide their witness since w1 is used for balancing
               additionalWitnesses = if w1IsSigner then [] else [C.WitnessPaymentKey (getWallet signer)]
           void $ balanceAndSubmit mempty Wallet.w1 txBody TrailingChange additionalWitnesses
+      pure $
+        model
+          { mmv2HasBeenUsed = True
+          }
     ForgeTokenAndUse -> do
       -- For the property test, we need a simplified approach.
       -- The attacker will use w3 and create their own UTxO first.
@@ -802,11 +792,21 @@ instance TestingInterface MultisigV2Model where
         ((txIn, value, _) : _) -> do
           let exploitTxBody = execBuildTx $ createFakeDatumAndUse @C.ConwayEra Defaults.networkId txIn value Wallet.w3
           void $ balanceAndSubmit mempty Wallet.w3 exploitTxBody TrailingChange []
+      -- Exploit drains the treasury
+      pure $
+        model
+          { mmv2Value = 0
+          , mmv2RequiredSigners = []
+          , mmv2SignedUsers = []
+          , mmv2ReleaseValue = 0
+          , mmv2HasBeenUsed = True
+          }
 
   validate _model = pure True
 
   monitoring _state _action prop = prop
 
+instance ThreatModelsFor MultisigV2Model where
   -- Note: threatModels empty for same reasons as v1
   threatModels = []
 

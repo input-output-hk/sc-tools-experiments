@@ -57,10 +57,12 @@ import Convex.TestingInterface (
   Options (Options, params),
   RunOptions (mcOptions),
   TestingInterface (..),
-  TestingMonadT (..),
+  ThreatModelsFor (..),
+  genAction,
   mockchainFailsWithOptions,
   mockchainSucceedsWithOptions,
   propRunActionsWithOptions,
+  runTestingMonadT,
  )
 import Convex.ThreatModel (
   SigningWallet (SignWith),
@@ -76,7 +78,6 @@ import Convex.ThreatModel (
 import Convex.ThreatModel.LargeData (largeDataAttackWith)
 import Convex.ThreatModel.LargeValue (largeValueAttackWith)
 import Convex.ThreatModel.UnprotectedScriptOutput (unprotectedScriptOutput)
-import Convex.Utils (failOnError)
 import Convex.Wallet.MockWallet qualified as Wallet
 import Data.Map qualified as Map
 import PingPongCoverageSpec (pingPongCoverageTests)
@@ -140,15 +141,6 @@ instance TestingInterface PingPongModel where
       (PingPong.Ponged, PingPong.Stop) -> True
       (PingPong.Ponged, PingPong.Pong) -> False
 
-  nextState _model action =
-    case action of
-      PlayRound redeemer ->
-        let newState = case redeemer of
-              PingPong.Ping -> PingPong.Pinged
-              PingPong.Pong -> PingPong.Ponged
-              PingPong.Stop -> PingPong.Stopped
-         in newState
-
   perform _model action = case action of
     PlayRound redeemer -> do
       -- liftIO $ putStrLn $ "Playing round: " ++ show redeemer
@@ -174,6 +166,10 @@ instance TestingInterface PingPongModel where
                 TrailingChange
                 []
             )
+      pure $ case redeemer of
+        PingPong.Ping -> PingPong.Pinged
+        PingPong.Pong -> PingPong.Ponged
+        PingPong.Stop -> PingPong.Stopped
 
   validate model = do
     -- Query the actual state from the blockchain
@@ -210,6 +206,7 @@ instance TestingInterface PingPongModel where
 
   monitoring _state _action prop = prop
 
+instance ThreatModelsFor PingPongModel where
   threatModels = [basicThreatModel, unprotectedScriptOutput, largeValueAttackWith 10, largeDataAttackWith 10]
   expectedVulnerabilities = []
 
@@ -254,15 +251,23 @@ threat model against all submitted transactions.
 
 This demonstrates how to integrate threat models with TestingInterface.
 -}
-propPingPongWithThreatModel :: RunOptions -> [Action PingPongModel] -> Property
-propPingPongWithThreatModel opts actions = monadicIO $ do
+propPingPongWithThreatModel :: RunOptions -> Property
+propPingPongWithThreatModel opts = monadicIO $ do
   let Options{params} = mcOptions opts
 
   -- Run the mockchain and collect transactions
-  result <- run $ runMockchain0IOWith Wallet.initialUTxOs params $ failOnError $ unTestingMonadT $ do
+  result <- runTestingMonadT params $ do
     initialState <- initialize @PingPongModel
-    -- Execute all actions
-    _ <- foldMActions initialState actions
+    -- Generate and execute actions
+    let go (0 :: Int) s = pure s
+        go i s = do
+          mAction <- lift $ genAction s
+          case mAction of
+            Just action -> perform s action >>= go (i - 1)
+            Nothing -> pure s
+
+    _ <- go 10 initialState
+
     -- Collect submitted transactions
     txs <- Convex.Class.getTxs
     -- Get the current UTxO set
@@ -270,7 +275,8 @@ propPingPongWithThreatModel opts actions = monadicIO $ do
     pure (txs, ledgerUtxo)
 
   case result of
-    ((txs, ledgerUtxo), _finalState) -> do
+    (Left err, _) -> fail (show err)
+    (Right (txs, ledgerUtxo), _finalState) -> do
       -- Convert ledger UTxO to cardano-api UTxO
       let utxo = fromLedgerUTxO C.shelleyBasedEra ledgerUtxo
           pparams' = params ^. ledgerProtocolParameters
@@ -289,12 +295,6 @@ propPingPongWithThreatModel opts actions = monadicIO $ do
       -- This demonstrates the integration pattern
       monitor (counterexample $ "Tested " ++ show (length txs) ++ " transactions")
       pure $ runThreatModel basicThreatModel envs
- where
-  foldMActions :: PingPongModel -> [Action PingPongModel] -> TestingMonadT IO PingPongModel
-  foldMActions s [] = pure s
-  foldMActions s (a : as) = do
-    perform s a
-    foldMActions (nextState s a) as
 
 {- | Test that demonstrates the VULNERABLE pingPong's vulnerability to output redirection.
 

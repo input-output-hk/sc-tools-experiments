@@ -20,7 +20,7 @@ import Convex.CoinSelection (BalanceTxError, ChangeOutputPosition (TrailingChang
 import Convex.MockChain.CoinSelection (tryBalanceAndSubmit)
 import Convex.MockChain.Defaults qualified as Defaults
 import Convex.PlutusLedger.V1 (transPubKeyHash, unTransAssetName)
-import Convex.TestingInterface (TestingInterface (..), propRunActions)
+import Convex.TestingInterface (TestingInterface (..), ThreatModelsFor (..), propRunActions)
 import Convex.ThreatModel.DoubleSatisfaction (doubleSatisfaction)
 import Convex.ThreatModel.TimeBoundManipulation (timeBoundManipulation)
 import Convex.ThreatModel.TokenForgery (simpleAlwaysSucceedsMintingPolicyV2, simpleTestAssetName, tokenForgeryAttack)
@@ -191,28 +191,6 @@ instance TestingInterface AuctionModel where
   -- Time can always advance
   precondition _ (WaitSlots _) = True
 
-  -- \| nextState updates the model based on actions.
-  nextState am PrepareAuction =
-    am
-      { _auctionInitialized = True
-      , _curSlot = _curSlot am + 1
-      }
-  nextState am (PlaceBid w amt) =
-    am
-      { _highestBidAmount = amt
-      , _highestBidder = Just w
-      , _curSlot = _curSlot am + 1 -- advancing time by 1 slot
-      }
-  nextState am CloseAuction =
-    am
-      { _auctionClosed = True
-      , _curSlot = _curSlot am + 1 -- advancing time by 1 slot
-      }
-  nextState am (WaitSlots slots) =
-    am
-      { _curSlot = _curSlot am + slots
-      }
-
   -- \| perform executes actions on the actual blockchain/mockchain.
   perform am PrepareAuction =
     do
@@ -222,7 +200,12 @@ instance TestingInterface AuctionModel where
         prepareAuctionPBT auctionParams
       >>= \case
         Left err -> fail $ "PrepareAuction failed: " <> show err
-        Right _ -> pure ()
+        Right _ ->
+          pure $
+            am
+              { _auctionInitialized = True
+              , _curSlot = _curSlot am + 1
+              }
   perform am (PlaceBid w amt) =
     do
       -- C.liftIO $ putStrLn $ ">>> Placing bid of " ++ show amt ++ " lovelace from " ++ show w ++ " at slot " ++ show (_curSlot am)
@@ -236,6 +219,12 @@ instance TestingInterface AuctionModel where
             >>= \case
               Left err -> fail $ "PlaceBid failed: " <> show err
               Right _ -> pure ()
+      pure $
+        am
+          { _highestBidAmount = amt
+          , _highestBidder = Just w
+          , _curSlot = _curSlot am + 1 -- advancing time by 1 slot
+          }
   perform am CloseAuction =
     do
       -- C.liftIO $ putStrLn $ ">>> Closing auction at slot " ++ show (_curSlot am)
@@ -249,23 +238,32 @@ instance TestingInterface AuctionModel where
             >>= \case
               Left err -> fail $ "CloseAuction failed: " <> show err
               Right _ -> pure ()
-  perform _am (WaitSlots _slots) =
+      pure $
+        am
+          { _auctionClosed = True
+          , _curSlot = _curSlot am + 1 -- advancing time by 1 slot
+          }
+  perform am (WaitSlots slots) =
     do
-      -- C.liftIO $ putStrLn $ ">>> Waiting " ++ show _slots ++ " slots (now at " ++ show (_curSlot _am + _slots) ++ ")"
-      pure () -- do nothing
+      -- C.liftIO $ putStrLn $ ">>> Waiting " ++ show slots ++ " slots (now at " ++ show (_curSlot am + slots) ++ ")"
+      pure $
+        am
+          { _curSlot = _curSlot am + slots
+          }
 
   validate _am = pure True
 
+  monitoring _ _ = error "monitoring not implemented"
+
+instance ThreatModelsFor AuctionModel where
   threatModels = [doubleSatisfaction]
   expectedVulnerabilities = [timeBoundManipulation, tokenForgeryAttack simpleAlwaysSucceedsMintingPolicyV2 simpleTestAssetName]
 
-  -- threatModels = [doubleSatisfaction, datumListBloatAttack, datumByteBloatAttack, duplicateListEntryAttack
-  --                , largeDataAttackWith 10, largeValueAttackWith 10, inputDuplication, mutualExclusionAttack
-  --                , negativeIntegerAttack, redeemerAssetSubstitution, selfReferenceInjection, signatoryRemoval
-  --                , timeBoundManipulation, tokenForgeryAttack simpleAlwaysSucceedsMintingPolicyV2 simpleTestAssetName
-  --                , unprotectedScriptOutput , unprotectedScriptOutput, valueUnderpaymentAttack]
-
-  monitoring _ _ = error "monitoring not implemented"
+-- threatModels = [doubleSatisfaction, datumListBloatAttack, datumByteBloatAttack, duplicateListEntryAttack
+--                , largeDataAttackWith 10, largeValueAttackWith 10, inputDuplication, mutualExclusionAttack
+--                , negativeIntegerAttack, redeemerAssetSubstitution, selfReferenceInjection, signatoryRemoval
+--                , timeBoundManipulation, tokenForgeryAttack simpleAlwaysSucceedsMintingPolicyV2 simpleTestAssetName
+--                , unprotectedScriptOutput , unprotectedScriptOutput, valueUnderpaymentAttack]
 
 -------------------------------------------------------------------------------
 -- Helper functions for the AuctionModel

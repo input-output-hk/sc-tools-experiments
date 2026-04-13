@@ -61,6 +61,7 @@ import Convex.TestingInterface (
   Options (Options, params),
   RunOptions (mcOptions),
   TestingInterface (..),
+  ThreatModelsFor (..),
   propRunActionsWithOptions,
  )
 import Convex.ThreatModel.Cardano.Api (dummyTxId)
@@ -682,17 +683,7 @@ instance TestingInterface MultisigModel where
   precondition model UseMultisig =
     not (null (mmSignedUsers model)) && not (mmHasBeenUsed model)
 
-  nextState model action = case action of
-    SignMultisig sc ->
-      model
-        { mmSignedUsers = walletPkhBytes (signerToWallet sc) : mmSignedUsers model
-        }
-    UseMultisig ->
-      model
-        { mmHasBeenUsed = True -- Mark as used - no re-init allowed
-        }
-
-  perform _model action = case action of
+  perform model action = case action of
     SignMultisig sc -> do
       let w = signerToWallet sc
       result <- findMultisigUtxos
@@ -705,6 +696,10 @@ instance TestingInterface MultisigModel where
                 Signer1 -> []
                 Signer2 -> [C.WitnessPaymentKey (getWallet w)]
           void $ balanceAndSubmit mempty Wallet.w1 txBody TrailingChange additionalWitnesses
+      pure $
+        model
+          { mmSignedUsers = walletPkhBytes (signerToWallet sc) : mmSignedUsers model
+          }
     UseMultisig -> do
       result <- findMultisigUtxos
       case result of
@@ -719,6 +714,10 @@ instance TestingInterface MultisigModel where
               -- If signer is not w1, we need to provide their witness since w1 is used for balancing
               additionalWitnesses = if w1IsSigner then [] else [C.WitnessPaymentKey (getWallet signer)]
           void $ balanceAndSubmit mempty Wallet.w1 txBody TrailingChange additionalWitnesses
+      pure $
+        model
+          { mmHasBeenUsed = True -- Mark as used - no re-init allowed
+          }
 
   -- Simplified validation that always returns True
   -- This is acceptable for a CTF contract since we're primarily testing vulnerabilities
@@ -726,6 +725,7 @@ instance TestingInterface MultisigModel where
 
   monitoring _state _action prop = prop
 
+instance ThreatModelsFor MultisigModel where
   -- NOTE: threatModels is empty for multisig because most action sequences
   -- end with UseMultisig (which doesn't create a script output). Threat models
   -- like unprotectedScriptOutput require a script output, causing 100% test discard.

@@ -43,6 +43,7 @@ import Convex.MockChain.Utils (mockchainSucceeds)
 import Convex.TestingInterface (
   RunOptions,
   TestingInterface (..),
+  ThreatModelsFor (..),
   propRunActionsWithOptions,
  )
 import Convex.Utils (failOnError)
@@ -345,24 +346,16 @@ instance TestingInterface HelloWorldModel where
   precondition model (LockFunds _) = not (hwLocked model)
   precondition model UnlockCorrect = hwLocked model
 
-  nextState model action = case action of
-    LockFunds amount ->
-      model
-        { hwLocked = True
-        , hwValue = amount
-        , hwTxIn = Nothing -- Will be set by perform
-        }
-    UnlockCorrect ->
-      model
-        { hwLocked = False
-        , hwValue = 0
-        , hwTxIn = Nothing
-        }
-
-  perform _model action = case action of
+  perform model action = case action of
     LockFunds amount -> do
       let txBody = execBuildTx $ lockFunds @C.ConwayEra Defaults.networkId amount
       void $ balanceAndSubmit mempty Wallet.w1 txBody TrailingChange []
+      pure $
+        model
+          { hwLocked = True
+          , hwValue = amount
+          , hwTxIn = Nothing -- Will be set by perform
+          }
     UnlockCorrect -> do
       result <- findHelloWorldUtxo
       case result of
@@ -377,6 +370,12 @@ instance TestingInterface HelloWorldModel where
                     Wallet.w2
                     (HelloWorldRedeemer correctPassword)
           void $ balanceAndSubmit mempty Wallet.w2 txBody TrailingChange []
+      pure $
+        model
+          { hwLocked = False
+          , hwValue = 0
+          , hwTxIn = Nothing
+          }
 
   validate model = do
     result <- findHelloWorldUtxo
@@ -390,6 +389,7 @@ instance TestingInterface HelloWorldModel where
 
   monitoring _state _action prop = prop
 
+instance ThreatModelsFor HelloWorldModel where
   -- No threat models for this simple contract
   threatModels = []
 

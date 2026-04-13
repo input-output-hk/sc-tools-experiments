@@ -216,6 +216,8 @@ inputDuplication = Named "Input Duplication" $ do
                in if C.hashScript cardanoScript == targetHash
                     then Just (PlutusV3Script serialisedV3)
                     else Nothing
+            -- TODO: V4 scripts are not supported yet
+            Plutus.PlutusV4 -> Nothing
             -- V1 scripts are not supported for new inputs in Conway era
             Plutus.PlutusV1 -> Nothing
   tryConvertScript _ (Ledger.NativeScript _) = Nothing

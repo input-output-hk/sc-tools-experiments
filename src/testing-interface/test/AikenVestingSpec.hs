@@ -55,6 +55,7 @@ import Convex.MockChain.Utils (mockchainSucceeds)
 import Convex.TestingInterface (
   RunOptions,
   TestingInterface (..),
+  ThreatModelsFor (..),
   propRunActionsWithOptions,
  )
 import Convex.ThreatModel.Cardano.Api (dummyTxId)
@@ -431,41 +432,22 @@ instance TestingInterface VestingModel where
   precondition model UnlockAfterDeadline = vmLocked model
   precondition model UnlockBeforeDeadline = vmLocked model
 
-  nextState model action = case action of
-    LockVesting amount lockSlot ->
-      let beneficiaryBytes = PlutusTx.toBuiltin $ C.serialiseToRawBytes (verificationKeyHash Wallet.w1)
-       in model
-            { vmLocked = True
-            , vmLockSlot = Just lockSlot
-            , vmValue = amount
-            , vmTxIn = Just (C.TxIn dummyTxId (C.TxIx 0))
-            , vmBeneficiary = Just beneficiaryBytes
-            }
-    UnlockAfterDeadline ->
-      model
-        { vmLocked = False
-        , vmLockSlot = Nothing
-        , vmValue = 0
-        , vmTxIn = Nothing
-        , vmBeneficiary = Nothing
-        }
-    UnlockBeforeDeadline ->
-      -- The exploit succeeds, so state changes same as legitimate unlock
-      model
-        { vmLocked = False
-        , vmLockSlot = Nothing
-        , vmValue = 0
-        , vmTxIn = Nothing
-        , vmBeneficiary = Nothing
-        }
-
-  perform _model action = case action of
+  perform model action = case action of
     LockVesting amount lockSlot -> do
       -- Reset clock to slot 0 before locking to ensure lock slot is in the future
       setSlot (C.SlotNo 0)
       let lockTime = slotToPosixMs lockSlot
           txBody = execBuildTx $ lockVesting @C.ConwayEra Defaults.networkId Wallet.w1 lockTime amount
       void $ balanceAndSubmit mempty Wallet.w1 txBody TrailingChange []
+      let beneficiaryBytes = PlutusTx.toBuiltin $ C.serialiseToRawBytes (verificationKeyHash Wallet.w1)
+       in pure $
+            model
+              { vmLocked = True
+              , vmLockSlot = Just lockSlot
+              , vmValue = amount
+              , vmTxIn = Just (C.TxIn dummyTxId (C.TxIx 0))
+              , vmBeneficiary = Just beneficiaryBytes
+              }
     UnlockAfterDeadline -> do
       result <- findVestingUtxos
       case result of
@@ -483,6 +465,14 @@ instance TestingInterface VestingModel where
               upperSlot = C.SlotNo (lockSlotNum + 100)
               txBody = execBuildTx $ unlockVesting @C.ConwayEra txIn Wallet.w1 lowerSlot upperSlot
           void $ balanceAndSubmit mempty Wallet.w1 txBody TrailingChange []
+      pure $
+        model
+          { vmLocked = False
+          , vmLockSlot = Nothing
+          , vmValue = 0
+          , vmTxIn = Nothing
+          , vmBeneficiary = Nothing
+          }
     UnlockBeforeDeadline -> do
       result <- findVestingUtxos
       case result of
@@ -498,6 +488,15 @@ instance TestingInterface VestingModel where
               upperSlot = C.SlotNo (lockSlotNum + 1)
               txBody = execBuildTx $ unlockVesting @C.ConwayEra txIn Wallet.w1 lowerSlot upperSlot
           void $ balanceAndSubmit mempty Wallet.w1 txBody TrailingChange []
+      -- The exploit succeeds, so state changes same as legitimate unlock
+      pure $
+        model
+          { vmLocked = False
+          , vmLockSlot = Nothing
+          , vmValue = 0
+          , vmTxIn = Nothing
+          , vmBeneficiary = Nothing
+          }
 
   validate model = do
     result <- findVestingUtxos
@@ -511,6 +510,7 @@ instance TestingInterface VestingModel where
 
   monitoring _state _action prop = prop
 
+instance ThreatModelsFor VestingModel where
   -- Threat models are empty because vesting is a one-shot spend contract:
   -- - Lock: Creates script output with inline datum
   -- - Unlock: Spends script output, funds go to beneficiary (NO continuation)

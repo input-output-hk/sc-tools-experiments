@@ -48,6 +48,7 @@ import Convex.MockChain.Utils (mockchainSucceeds)
 import Convex.TestingInterface (
   RunOptions,
   TestingInterface (..),
+  ThreatModelsFor (..),
   propRunActionsWithOptions,
  )
 import Convex.ThreatModel.Cardano.Api (dummyTxId)
@@ -465,22 +466,7 @@ instance TestingInterface TipJarModel where
 
   precondition model _ = not (tmHasBeenClaimed model)
 
-  nextState model action = case action of
-    Tip msg ->
-      -- Messages are prepended (Aiken list.push adds to head)
-      model
-        { tmMessages = msg : tmMessages model
-        , tmValue = tmValue model + 5_000_000
-        }
-    OwnerClaim ->
-      -- Claiming resets the model and marks as claimed (sequence ends)
-      model
-        { tmMessages = []
-        , tmValue = 0
-        , tmHasBeenClaimed = True
-        }
-
-  perform _model action = case action of
+  perform model action = case action of
     Tip msg -> do
       -- liftIO $ putStrLn $ "[TipJar] Adding tip with message length: " ++ show (PlutusTx.lengthOfByteString msg)
       -- Find the UTxO at the script address
@@ -503,6 +489,11 @@ instance TestingInterface TipJarModel where
           -- The threat model's rebalanceAndSignTx looks for a change output to the wallet address.
           -- If we used w2 here, the threat model would fail with "No change output found".
           void $ balanceAndSubmit mempty Wallet.w1 txBody TrailingChange []
+      pure $
+        model
+          { tmMessages = msg : tmMessages model
+          , tmValue = tmValue model + 5_000_000
+          }
     OwnerClaim -> do
       -- liftIO $ putStrLn "[TipJar] Owner claiming tipjar"
       -- Find the UTxO at the script address
@@ -515,6 +506,12 @@ instance TestingInterface TipJarModel where
           let tipJarValue = C.fromMaryValue val
               txBody = execBuildTx $ claimJar @C.ConwayEra Defaults.networkId txIn tipJarValue Wallet.w1
           void $ balanceAndSubmit mempty Wallet.w1 txBody TrailingChange []
+      pure $
+        model
+          { tmMessages = []
+          , tmValue = 0
+          , tmHasBeenClaimed = True
+          }
 
   validate model = do
     -- Query the actual state from the blockchain
@@ -550,6 +547,7 @@ instance TestingInterface TipJarModel where
 
   monitoring _state _action prop = prop
 
+instance ThreatModelsFor TipJarModel where
   -- Threat models to test vulnerability detection.
   -- Note: largeDataAttackWith, largeValueAttackWith, and datumByteBloatAttackWith
   -- all FAIL (detecting vulnerabilities), so only unprotectedScriptOutput is included.

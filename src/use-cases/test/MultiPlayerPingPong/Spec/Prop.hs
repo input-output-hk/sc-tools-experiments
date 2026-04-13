@@ -19,7 +19,7 @@ import Convex.MockChain (utxoSet)
 import Convex.MockChain.CoinSelection (tryBalanceAndSubmit)
 import Convex.MockChain.Defaults qualified as Defaults
 import Convex.PlutusLedger.V1 (transPubKeyHash)
-import Convex.TestingInterface (TestingInterface (..), propRunActions)
+import Convex.TestingInterface (TestingInterface (..), ThreatModelsFor (..), propRunActions)
 import Convex.ThreatModel.DatumBloat (datumListBloatAttack)
 import Convex.ThreatModel.DuplicateListEntry (duplicateListEntryAttack)
 import Convex.ThreatModel.LargeData (largeDataAttackWith)
@@ -153,34 +153,6 @@ instance TestingInterface MultiPlayerPingPongModel where
   precondition m (StopGame w) = _initialized m && _active m && w `elem` _players m
   precondition _ (WaitSlots _) = True
 
-  -- \| nextState updates the model based on actions.
-  nextState m PrepareGame =
-    m
-      { _initialized = True
-      , _curSlot = _curSlot m + 1
-      }
-  nextState m HitTurn =
-    m
-      { _currentIndex = nextIx
-      , _ballState = flipBallState (_ballState m)
-      , _roundCount = nextRounds
-      , _curSlot = _curSlot m + 1
-      }
-   where
-    n = fromIntegral (length (_players m))
-    nextIx = (_currentIndex m + 1) `mod` n
-    nextRounds = if nextIx == 0 then _roundCount m + 1 else _roundCount m
-  nextState m (HitTurnAs _) = nextState m HitTurn
-  nextState m (StopGame _) =
-    m
-      { _active = False
-      , _curSlot = _curSlot m + 1
-      }
-  nextState m (WaitSlots slots) =
-    m
-      { _curSlot = _curSlot m + slots
-      }
-
   -- \| perform executes actions on the mockchain.
   perform m PrepareGame = do
     -- C.liftIO $ putStrLn "Performing PrepareGame action"
@@ -189,6 +161,11 @@ instance TestingInterface MultiPlayerPingPongModel where
       >>= \case
         Left err -> fail $ "PrepareGame failed: " <> show err
         Right _ -> pure ()
+    pure $
+      m
+        { _initialized = True
+        , _curSlot = _curSlot m + 1
+        }
   perform m HitTurn = do
     let currentPlayer = walletAtIndex (_players m) (_currentIndex m)
 
@@ -210,6 +187,7 @@ instance TestingInterface MultiPlayerPingPongModel where
           >>= \case
             Left err -> fail $ "HitTurn failed: " <> show err
             Right _ -> pure ()
+    pure $ nextStateForHitTurn m
   perform m (HitTurnAs w) = do
     -- C.liftIO $ putStrLn $ "Performing HitTurnAs for wallet " <> show (playerPkh w)
 
@@ -229,6 +207,7 @@ instance TestingInterface MultiPlayerPingPongModel where
           >>= \case
             Left err -> fail $ "HitTurnAs failed: " <> show err
             Right _ -> pure ()
+    pure $ nextStateForHitTurn m
   perform m (StopGame w) = do
     -- C.liftIO $ putStrLn $ "Performing StopGame with signer " <> show (playerPkh w)
 
@@ -244,10 +223,35 @@ instance TestingInterface MultiPlayerPingPongModel where
           >>= \case
             Left err -> fail $ "StopGame failed: " <> show err
             Right _ -> pure ()
-  perform _ (WaitSlots _) = pure ()
+    pure $
+      m
+        { _active = False
+        , _curSlot = _curSlot m + 1
+        }
+  perform m (WaitSlots slots) =
+    pure $
+      m
+        { _curSlot = _curSlot m + slots
+        }
 
   validate _ = pure True
 
+  monitoring _ _ = error "monitoring not implemented"
+
+nextStateForHitTurn :: MultiPlayerPingPongModel -> MultiPlayerPingPongModel
+nextStateForHitTurn m =
+  m
+    { _currentIndex = nextIx
+    , _ballState = flipBallState (_ballState m)
+    , _roundCount = nextRounds
+    , _curSlot = _curSlot m + 1
+    }
+ where
+  n = fromIntegral (length (_players m))
+  nextIx = (_currentIndex m + 1) `mod` n
+  nextRounds = if nextIx == 0 then _roundCount m + 1 else _roundCount m
+
+instance ThreatModelsFor MultiPlayerPingPongModel where
   threatModels =
     [ datumListBloatAttack
     , largeDataAttackWith 10
@@ -263,8 +267,6 @@ instance TestingInterface MultiPlayerPingPongModel where
     , timeBoundManipulation
     , tokenForgeryAttack simpleAlwaysSucceedsMintingPolicyV2 simpleTestAssetName
     ]
-
-  monitoring _ _ = error "monitoring not implemented"
 
 -------------------------------------------------------------------------------
 -- Helper functions for the model

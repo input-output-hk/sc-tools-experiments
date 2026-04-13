@@ -74,6 +74,7 @@ import Convex.TestingInterface (
   Options (Options, params),
   RunOptions (mcOptions),
   TestingInterface (..),
+  ThreatModelsFor (..),
   propRunActionsWithOptions,
  )
 import Convex.ThreatModel (SigningWallet (SignWith), ThreatModelEnv (..), runThreatModelMQuiet)
@@ -858,59 +859,26 @@ instance TestingInterface LendingModel where
     -- Contract requires lender to be set (expect Some(lender_addr) in Repay handler)
     any lsFunded (lmLoans model)
 
-  nextState model action = case action of
-    RequestLoanAction walletIdx borrowedAmt interest ->
-      model
-        { lmLoans =
-            lmLoans model
-              ++ [ LoanState
-                     { lsTxIn = Nothing -- Set by perform (we don't track exact TxIn in model)
-                     , lsBorrower = walletPlutusAddress (indexToWallet walletIdx)
-                     , lsBorrowedAmount = borrowedAmt
-                     , lsInterest = interest
-                     , lsCollateralValue = 10_000_000 -- Fixed collateral
-                     , lsFunded = False
-                     , lsRepaid = False
-                     }
-                 ]
-        }
-    LendAction ->
-      let loans = lmLoans model
-       in if any (\l -> not (lsFunded l) && not (lsRepaid l)) loans
-            then -- Normal path: fund first unfunded loan
-              model
-                { lmLoans =
-                    updateFirst
-                      (\l -> not (lsFunded l) && not (lsRepaid l))
-                      (\l -> l{lsFunded = True})
-                      loans
-                }
-            else -- Re-fund: pick first loan (contract allows this)
-              model
-                { lmLoans =
-                    updateFirst
-                      (const True)
-                      (\l -> l{lsFunded = True})
-                      loans
-                }
-    RepayAction ->
-      -- Repay consumes the loan UTxO (no continuation), so remove from model
-      let loans = lmLoans model
-          removeFirst _ [] = []
-          removeFirst p (x : xs)
-            | p x = xs
-            | otherwise = x : removeFirst p xs
-       in if any (\l -> lsFunded l && not (lsRepaid l)) loans
-            then -- Normal path: remove first funded-but-not-repaid loan
-              model{lmLoans = removeFirst (\l -> lsFunded l && not (lsRepaid l)) loans}
-            else -- Remove first funded loan
-              model{lmLoans = removeFirst lsFunded loans}
-
-  perform _model action = case action of
+  perform model action = case action of
     RequestLoanAction walletIdx borrowed interest -> do
       let wallet = indexToWallet walletIdx
           txBody = execBuildTx $ requestLoan @C.ConwayEra Defaults.networkId wallet borrowed interest 10_000_000
       void $ balanceAndSubmit mempty wallet txBody TrailingChange []
+      pure $
+        model
+          { lmLoans =
+              lmLoans model
+                ++ [ LoanState
+                       { lsTxIn = Nothing -- Set by perform (we don't track exact TxIn in model)
+                       , lsBorrower = walletPlutusAddress (indexToWallet walletIdx)
+                       , lsBorrowedAmount = borrowed
+                       , lsInterest = interest
+                       , lsCollateralValue = 10_000_000 -- Fixed collateral
+                       , lsFunded = False
+                       , lsRepaid = False
+                       }
+                   ]
+          }
     LendAction -> do
       result <- findLendingUtxos
       -- Try unfunded first (normal path), then any loan (re-fund)
@@ -925,6 +893,25 @@ instance TestingInterface LendingModel where
           let txBody = execBuildTx $ lendFunds Defaults.networkId txIn datum value Wallet.w3
           -- Use w1 for balance because threat model rebalancer uses w1
           void $ balanceAndSubmit mempty Wallet.w1 txBody TrailingChange []
+      let loans = lmLoans model
+       in pure $
+            if any (\l -> not (lsFunded l) && not (lsRepaid l)) loans
+              then -- Normal path: fund first unfunded loan
+                model
+                  { lmLoans =
+                      updateFirst
+                        (\l -> not (lsFunded l) && not (lsRepaid l))
+                        (\l -> l{lsFunded = True})
+                        loans
+                  }
+              else -- Re-fund: pick first loan (contract allows this)
+                model
+                  { lmLoans =
+                      updateFirst
+                        (const True)
+                        (\l -> l{lsFunded = True})
+                        loans
+                  }
     RepayAction -> do
       result <- findLendingUtxos
       -- Try funded first, then any loan (unfunded will fail on-chain)
@@ -941,12 +928,25 @@ instance TestingInterface LendingModel where
           let borrowerWallet = plutusAddressToWallet (ldBorrower datum)
               txBody = execBuildTx $ repayLoan txIn datum borrowerWallet
           void $ balanceAndSubmit mempty borrowerWallet txBody TrailingChange []
+      -- Repay consumes the loan UTxO (no continuation), so remove from model
+      let loans = lmLoans model
+          removeFirst _ [] = []
+          removeFirst p (x : xs)
+            | p x = xs
+            | otherwise = x : removeFirst p xs
+       in pure $
+            if any (\l -> lsFunded l && not (lsRepaid l)) loans
+              then -- Normal path: remove first funded-but-not-repaid loan
+                model{lmLoans = removeFirst (\l -> lsFunded l && not (lsRepaid l)) loans}
+              else -- Remove first funded loan
+                model{lmLoans = removeFirst lsFunded loans}
 
   -- Simplified validation
   validate _model = pure True
 
   monitoring _state _action prop = prop
 
+instance ThreatModelsFor LendingModel where
   -- threatModels is empty - vulnerabilities are tested via expectedVulnerabilities
   -- or via standalone tests.
   threatModels = []

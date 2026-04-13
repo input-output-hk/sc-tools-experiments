@@ -13,7 +13,7 @@ import Convex.Class (MonadMockchain, setSlot)
 import Convex.CoinSelection (BalanceTxError)
 import Convex.MockChain.Defaults qualified as Defaults
 import Convex.PlutusLedger.V1 (transPubKeyHash)
-import Convex.TestingInterface (TestingInterface (..))
+import Convex.TestingInterface (TestingInterface (..), ThreatModelsFor (..))
 import Convex.ThreatModel.LargeValue (largeValueAttackWith)
 import Convex.ThreatModel.MutualExclusion (mutualExclusionAttack)
 import Convex.ThreatModel.SignatoryRemoval (signatoryRemoval)
@@ -134,31 +134,6 @@ instance TestingInterface VestingModel where
           && validChangeOutput vm amt -- Only test withdrawals after first tranche is available
       WaitSlots _ -> True -- Time can always advance
 
-  -- \| nextState updates the model based on actions.
-  -- Vest the sum of the two tranches
-  nextState vm action =
-    -- trace
-    --   ("NEXT STATE\n"
-    --     <> "Old state: " <> show vm <> "\n"
-    --     <> "Action: " <> show action)
-    --   $
-    case action of
-      Vest w amt ->
-        vm
-          { _vestedAmount = _vestedAmount vm + amt
-          , _vested = w : _vested vm
-          , _curSlot = _curSlot vm + 1 -- advancing time in 1 slot
-          }
-      Retrieve amt ->
-        vm
-          { _vestedAmount = _vestedAmount vm - amt
-          , _curSlot = _curSlot vm + 1 -- advancing time in 1 slot
-          }
-      WaitSlots slots ->
-        vm
-          { _curSlot = _curSlot vm + slots
-          }
-
   -- \| perform executes actions on the actual blockchain.
   perform vm (Vest w amt) =
     do
@@ -167,7 +142,13 @@ instance TestingInterface VestingModel where
         lockVestingPBT @C.ConwayEra (_t1Slot vm) w amt
       >>= \case
         Left err -> fail $ "Vest failed: " <> show err
-        Right _txId -> pure ()
+        Right _txId ->
+          pure $
+            vm
+              { _vestedAmount = _vestedAmount vm + amt
+              , _vested = w : _vested vm
+              , _curSlot = _curSlot vm + 1 -- advancing time in 1 slot
+              }
   perform vm (Retrieve amt) =
     do
       -- C.liftIO $ putStrLn $ ">>> Withdrawing " ++ show amt ++ " lovelace at slot " ++ show (_curSlot vm)
@@ -181,14 +162,25 @@ instance TestingInterface VestingModel where
           amt
       >>= \case
         Left err -> fail $ "Withdraw failed: " <> show err
-        Right _txId -> pure ()
-  perform _vm (WaitSlots _slots) =
+        Right _txId ->
+          pure $
+            vm
+              { _vestedAmount = _vestedAmount vm - amt
+              , _curSlot = _curSlot vm + 1 -- advancing time in 1 slot
+              }
+  perform vm (WaitSlots slots) =
     do
       -- C.liftIO $ putStrLn $ ">>> Waiting " ++ show _slots ++ " slots (now at " ++ show (_curSlot vm + _slots) ++ ")"
-      pure () -- do nothing
+      pure $
+        vm
+          { _curSlot = _curSlot vm + slots
+          }
 
   validate _vm = pure True
 
+  monitoring _ _ = error "monitoring not implemented"
+
+instance ThreatModelsFor VestingModel where
   threatModels =
     [ largeValueAttackWith 10
     , mutualExclusionAttack
@@ -202,8 +194,6 @@ instance TestingInterface VestingModel where
   expectedVulnerabilities =
     [ timeBoundManipulation
     ]
-
-  monitoring _ _ = error "monitoring not implemented"
 
 -------------------------------------------------------------------------------
 -- Helper functions for the VestingModel

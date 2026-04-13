@@ -66,6 +66,7 @@ import Convex.MockChain.Utils (mockchainSucceeds)
 import Convex.TestingInterface (
   RunOptions (disableNegativeTesting),
   TestingInterface (..),
+  ThreatModelsFor (..),
   propRunActionsWithOptions,
  )
 import Convex.ThreatModel.Cardano.Api (dummyTxId)
@@ -926,19 +927,7 @@ instance TestingInterface BankModel where
   precondition model (WithdrawAction amt) =
     bmAccountBalance model >= fromIntegral amt
 
-  nextState model action = case action of
-    DepositAction amt ->
-      model
-        { bmBankValue = bmBankValue model + amt
-        , bmAccountBalance = bmAccountBalance model + fromIntegral amt
-        }
-    WithdrawAction amt ->
-      model
-        { bmBankValue = bmBankValue model - amt
-        , bmAccountBalance = bmAccountBalance model - fromIntegral amt
-        }
-
-  perform _model action = case action of
+  perform model action = case action of
     DepositAction amt -> do
       [(bankTxIn, bankValue)] <- findBankUtxos bankLevel00
       [(accountTxIn, accountValue, accountDatum)] <- findAccountUtxos bankLevel00
@@ -955,6 +944,11 @@ instance TestingInterface BankModel where
                 amt
                 Wallet.w1
       void $ balanceAndSubmit mempty Wallet.w1 txBody TrailingChange []
+      pure $
+        model
+          { bmBankValue = bmBankValue model + amt
+          , bmAccountBalance = bmAccountBalance model + fromIntegral amt
+          }
     WithdrawAction amt -> do
       [(bankTxIn, bankValue)] <- findBankUtxos bankLevel00
       [(accountTxIn, accountValue, accountDatum)] <- findAccountUtxos bankLevel00
@@ -971,11 +965,17 @@ instance TestingInterface BankModel where
                 amt
                 Wallet.w1
       void $ balanceAndSubmit mempty Wallet.w1 txBody TrailingChange []
+      pure $
+        model
+          { bmBankValue = bmBankValue model - amt
+          , bmAccountBalance = bmAccountBalance model - fromIntegral amt
+          }
 
   validate _model = pure True
 
   monitoring _state _action prop = prop
 
+instance ThreatModelsFor BankModel where
   threatModels = [unprotectedScriptOutput, negativeIntegerAttack, valueUnderpaymentAttack, mutualExclusionAttack]
 
 -- ----------------------------------------------------------------------------

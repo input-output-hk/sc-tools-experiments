@@ -76,6 +76,7 @@ import Convex.TestingInterface (
   Options (Options, params),
   RunOptions (disableNegativeTesting, mcOptions),
   TestingInterface (..),
+  ThreatModelsFor (..),
   propRunActionsWithOptions,
  )
 import Convex.ThreatModel.Cardano.Api (dummyTxId)
@@ -746,36 +747,7 @@ instance TestingInterface MultisigV3Model where
   precondition model SignReplayExploit =
     not (mmv3HasBeenUsed model)
 
-  nextState model action = case action of
-    SignMultisigV3 sc ->
-      model
-        { mmv3SignedUsers = walletPkhBytes (signerToWallet sc) : mmv3SignedUsers model
-        }
-    MintValidationToken ->
-      model
-        { mmv3HasValidationToken = True
-        }
-    UseMultisigV3 ->
-      model
-        { mmv3Value = 0
-        , mmv3RequiredSigners = []
-        , mmv3SignedUsers = []
-        , mmv3ReleaseValue = 0
-        , mmv3HasBeenUsed = True
-        , mmv3HasValidationToken = False
-        }
-    SignReplayExploit ->
-      -- Exploit: w1 signs twice and drains
-      model
-        { mmv3Value = 0
-        , mmv3RequiredSigners = []
-        , mmv3SignedUsers = []
-        , mmv3ReleaseValue = 0
-        , mmv3HasBeenUsed = True
-        , mmv3HasValidationToken = False
-        }
-
-  perform _model action = case action of
+  perform model action = case action of
     SignMultisigV3 sc -> do
       let w = signerToWallet sc
       result <- findMultisigV3Utxos
@@ -784,10 +756,18 @@ instance TestingInterface MultisigV3Model where
         ((txIn, value, datum) : _) -> do
           let txBody = execBuildTx $ signMultisigV3 @C.ConwayEra Defaults.networkId txIn datum value w
           void $ balanceAndSubmit mempty Wallet.w1 txBody TrailingChange []
+      pure $
+        model
+          { mmv3SignedUsers = walletPkhBytes (signerToWallet sc) : mmv3SignedUsers model
+          }
     MintValidationToken -> do
       let w1Addr = addressInEra Defaults.networkId Wallet.w1
           txBody = execBuildTx $ mintValidationTokenV3WithCollateral @C.ConwayEra w1Addr Wallet.w1
       void $ balanceAndSubmit mempty Wallet.w1 txBody TrailingChange []
+      pure $
+        model
+          { mmv3HasValidationToken = True
+          }
     UseMultisigV3 -> do
       result <- findMultisigV3Utxos
       case result of
@@ -801,8 +781,17 @@ instance TestingInterface MultisigV3Model where
               releaseVal = fromInteger (mv3ReleaseValue datum) :: C.Lovelace
               txBody = execBuildTx $ useMultisigV3 @C.ConwayEra txIn beneficiaryAddr releaseVal signer
           void $ balanceAndSubmit mempty Wallet.w1 txBody TrailingChange []
+      pure $
+        model
+          { mmv3Value = 0
+          , mmv3RequiredSigners = []
+          , mmv3SignedUsers = []
+          , mmv3ReleaseValue = 0
+          , mmv3HasBeenUsed = True
+          , mmv3HasValidationToken = False
+          }
     SignReplayExploit -> do
-      -- w1 signs twice
+      -- Exploit: w1 signs twice and drains
       result1 <- findMultisigV3Utxos
       case result1 of
         [] -> fail "No UTxO found for sign replay"
@@ -832,11 +821,21 @@ instance TestingInterface MultisigV3Model where
                   let beneficiaryAddr = addressInEra Defaults.networkId Wallet.w1
                       useTxBody = execBuildTx $ useMultisigV3 @C.ConwayEra txIn3 beneficiaryAddr 10_000_000 Wallet.w1
                   void $ balanceAndSubmit mempty Wallet.w1 useTxBody TrailingChange []
+      pure $
+        model
+          { mmv3Value = 0
+          , mmv3RequiredSigners = []
+          , mmv3SignedUsers = []
+          , mmv3ReleaseValue = 0
+          , mmv3HasBeenUsed = True
+          , mmv3HasValidationToken = False
+          }
 
   validate _model = pure True
 
   monitoring _state _action prop = prop
 
+instance ThreatModelsFor MultisigV3Model where
   -- Note: threatModels empty for same reasons as v1/v2
   threatModels = []
 

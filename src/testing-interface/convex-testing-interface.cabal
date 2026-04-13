@@ -43,6 +43,7 @@ library
   exposed-modules:
     Convex.TestingInterface
     Convex.ThreatModel
+    Convex.ThreatModel.All
     Convex.ThreatModel.Cardano.Api
     Convex.ThreatModel.DatumBloat
     Convex.ThreatModel.DoubleSatisfaction
