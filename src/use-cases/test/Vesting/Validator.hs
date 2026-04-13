@@ -1,3 +1,4 @@
+{-# LANGUAGE DerivingStrategies #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE TemplateHaskell #-}
 {-# LANGUAGE ViewPatterns #-}
@@ -6,6 +7,8 @@
 
 module Vesting.Validator where
 
+import Data.Eq (Eq)
+import GHC.Show (Show)
 import PlutusLedgerApi.V1.Interval (contains)
 import PlutusLedgerApi.V1.Value (geq)
 import PlutusLedgerApi.V3 (
@@ -31,12 +34,14 @@ data Vesting = Vesting
   { vDate :: POSIXTime
   , vAmount :: Value
   }
+  deriving stock (Show, Eq)
 
 data VestingParams = VestingParams
   { vpOwner :: PubKeyHash
   , vpTranche1 :: Vesting
   , vpTranche2 :: Vesting
   }
+  deriving stock (Show, Eq)
 
 makeLift ''Vesting
 makeLift ''VestingParams

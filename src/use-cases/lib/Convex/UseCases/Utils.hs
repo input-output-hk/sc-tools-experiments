@@ -14,7 +14,7 @@ import Convex.Utxos (toApiUtxo)
 -- | Fetches the UTxOs at a given script address identified by its script hash.
 utxosAt
   :: forall era m
-   . (MonadMockchain era m, MonadFail m, C.IsBabbageBasedEra era)
+   . (MonadMockchain era m, C.IsBabbageBasedEra era)
   => C.ScriptHash -> m [(C.TxIn, C.TxOut C.CtxUTxO era)]
 utxosAt scriptHash = do
   utxos <- utxoSet

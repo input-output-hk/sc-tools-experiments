@@ -59,6 +59,11 @@ propBasedTests runOpts =
   - Tranche 1: 20 ADA unlocks at slot 10
   - Tranche 2: 40 ADA unlocks at slot 20
   - Total locked: 60 ADA per vesting contract
+
+  The 'params' field caches the 'VestingParams' so that 'paramsFromModel'
+  (which calls 'slotToUtcTime' twice and builds Plutus values) is only
+  computed once per test sequence when 'initialize' runs, not on every
+  'perform' call.
 -}
 data VestingModel = VestingModel
   { _vestedAmount :: C.Lovelace
@@ -74,11 +79,27 @@ data VestingModel = VestingModel
   , _t2Amount :: C.Lovelace
   -- ^ Lovelace locked in tranche 2
   , _curSlot :: C.SlotNo
-  -- ^ The current slot
+  -- ^ The current slot in the model (kept in sync with the chain via setSlot)
   , _owner :: Wallet
   -- ^ The beneficiary authorised to withdraw
+  , _params :: VestingParams
+  -- ^ Cached contract parameters (computed once in 'initialize')
+  , _scriptHash :: C.ScriptHash
+  -- ^ Cached script hash (computed once in 'initialize')
   }
   deriving (Show, Eq, Generic)
+
+-- Fixed contract parameters used across the whole test run.
+fixedOwner :: Wallet
+fixedOwner = MockWallet.w1
+
+fixedParams :: VestingParams
+fixedParams = buildParams fixedOwner 10 20 20_000_000 40_000_000
+
+fixedScriptHash :: C.ScriptHash
+fixedScriptHash =
+  let validator = C.PlutusScript C.plutusScriptVersion (vestingValidatorScript fixedParams)
+   in C.hashScript validator
 
 instance TestingInterface VestingModel where
   data Action VestingModel
@@ -90,13 +111,6 @@ instance TestingInterface VestingModel where
     -- \^ Advance blockchain time
     deriving (Show, Eq)
 
-  -- \| Initial model state.
-  --
-  --   Configuration:
-  --   - Two tranches: 20 ADA @ slot 10, 40 ADA @ slot 20
-  --   - Total: 60 ADA per vesting contract
-  --   - Owner: MockWallet.w1 (the beneficiary)
-  --   - Start time: slot 0
   initialize =
     pure
       VestingModel
@@ -104,81 +118,97 @@ instance TestingInterface VestingModel where
         , _vested = []
         , _t1Slot = 10
         , _t2Slot = 20
-        , _t1Amount = 20_000_000 -- 20 ADA
-        , _t2Amount = 40_000_000 -- 40 ADA
+        , _t1Amount = 20_000_000
+        , _t2Amount = 40_000_000
         , _curSlot = 0
-        , _owner = MockWallet.w1
+        , _owner = fixedOwner
+        , _params = fixedParams
+        , _scriptHash = fixedScriptHash
         }
 
-  -- \| Generate random actions weighted by the current model state.
   arbitraryAction vm =
-    QC.frequency
-      [ (vestWeight, genVest)
-      , (withdrawWeight, genWithdraw)
-      , (waitWeight, genWait)
-      ]
+    QC.frequency $
+      [(10, genVest) | nothingLocked]
+        ++ [(6, genWait)]
+        ++ [(8, genValidRetrieve) | canWithdraw vm]
+        ++ [(1, genInvalidRetrieve) | somethingLocked]
    where
-    vestWeight = if _vestedAmount vm == 0 then 5 else 2
-    withdrawWeight = if _vestedAmount vm > 0 then 5 else 2
-    waitWeight = 3
+    nothingLocked = _vestedAmount vm == 0
+    somethingLocked = _vestedAmount vm > 0
 
-    genVest = do
-      wallet <- QC.elements wallets
-      -- Vest the full amount (both tranches combined)
-      pure $ Vest wallet
+    genVest = Vest <$> QC.elements wallets
 
-    genWithdraw = do
-      -- Generate withdrawal amounts from 1 ADA up to total locked
-      let available = availableTrancheAmount vm
-      -- This refactoring was done to allow fast testing (using only ADAs, instead of Lovelaces)
-      let maxWithdraw = max 1 (C.unCoin available `div` 1_000_000) -- at least 1 ADA, even if nothing is vested yet
-      amt <- Gen.chooseInteger (1, maxWithdraw + 10)
+    -- Bias slot advances toward the two tranche unlock points.
+    -- List-comprehension guards ensure every (lo, hi) satisfies lo <= hi.
+    genWait =
+      WaitSlots . C.SlotNo <$> do
+        let cur = C.unSlotNo (_curSlot vm)
+            t1 = C.unSlotNo (_t1Slot vm)
+            t2 = C.unSlotNo (_t2Slot vm)
+        QC.frequency $
+          [(3, Gen.chooseWord64 (1, 3))]
+            ++ [(4, Gen.chooseWord64 (t1 - cur, t1 - cur + 1)) | cur < t1]
+            ++ [(4, Gen.chooseWord64 (t2 - cur, t2 - cur + 1)) | cur < t2]
+            ++ [(1, Gen.chooseWord64 (4, 12))]
 
-      pure $ Retrieve (C.Coin amt)
+    -- Generate a withdrawal amount that provably satisfies all preconditions.
+    -- 'canWithdraw' guarantees maxAda >= 1 before this branch is offered.
+    genValidRetrieve = do
+      let locked = _vestedAmount vm
+          available = availableTrancheAmount vm
+          cur = _curSlot vm
+          futureObl =
+            (if cur < _t1Slot vm then _t1Amount vm else 0)
+              + (if cur < _t2Slot vm then _t2Amount vm else 0)
+          maxLove = min available (locked - futureObl - minUtxoThreshold)
+          maxAda = C.unCoin maxLove `div` 1_000_000
+      amt <- Gen.chooseInteger (1, maxAda)
+      pure $ Retrieve (C.Coin (amt * 1_000_000))
 
-    genWait = do
-      -- Advance 1–15 slots
-      slots <- C.SlotNo <$> Gen.chooseWord64 (1, 15)
-      pure $ WaitSlots slots
+    -- Generate an amount that always exceeds total locked → always rejected
+    -- by the precondition without touching the chain.
+    genInvalidRetrieve = do
+      let locked = C.unCoin (_vestedAmount vm)
+          minBadAda = locked `div` 1_000_000 + 1
+      amt <- Gen.chooseInteger (minBadAda, minBadAda + 5)
+      pure $ Retrieve (C.Coin (amt * 1_000_000))
 
-  -- \| Preconditions determine which actions are valid in the current state.
   precondition vm action =
     case action of
       Vest _w -> True
+      WaitSlots _ -> True
       Retrieve amt ->
         _vestedAmount vm > 0
-          && amt >= 1_000_000 -- withdraw at least 1 ADA
-          && amt <= _vestedAmount vm -- cannot withdraw more than what is locked
-          && enoughValueLeft vm amt -- remaining funds satisfy future tranches
-          && validChangeOutput vm amt -- leftover UTxO must meet minUTxO
-      WaitSlots _ -> True
+          && amt >= 1_000_000
+          && amt <= _vestedAmount vm
+          && enoughValueLeft vm amt
+          && validChangeOutput vm amt
 
-  -- \| nextState: pure model transition.
   nextState vm action = case action of
     Vest w ->
       vm
         { _vestedAmount = _vestedAmount vm + (_t1Amount vm + _t2Amount vm)
         , _vested = w : _vested vm
-        , _curSlot = _curSlot vm + 1
         }
     Retrieve amt ->
       vm
         { _vestedAmount = _vestedAmount vm - amt
-        , _curSlot = _curSlot vm + 1
         }
     WaitSlots slots ->
       vm{_curSlot = _curSlot vm + slots}
 
-  -- \| perform: execute actions against the mockchain.
+  -- 'perform' uses the cached '_params' and '_scriptHash' from the model,
+  -- avoiding repeated 'slotToUtcTime' / script compilation on every action.
   perform vm (Vest w) = do
-    runExceptT (fundVestingPBT w (paramsFromModel vm))
+    runExceptT (fundVestingPBT w (_params vm) (_scriptHash vm))
       >>= \case
         Left err -> fail $ "Vest failed: " <> show err
         Right _ -> pure ()
   perform vm (Retrieve amt) = do
     runExceptT
       ( withdrawPBT
-          (paramsFromModel vm)
+          (_params vm)
+          (_scriptHash vm)
           (_curSlot vm)
           (_owner vm)
           amt
@@ -187,7 +217,10 @@ instance TestingInterface VestingModel where
       >>= \case
         Left err -> fail $ "Retrieve failed: " <> show err
         Right _ -> pure ()
-  perform _vm (WaitSlots _) = pure ()
+  perform vm (WaitSlots slots) =
+    -- Advance the chain clock so that subsequent Retrieve actions use the
+    -- correct validity range.
+    setSlot (_curSlot vm + slots)
 
   validate _vm = pure True
 
@@ -196,7 +229,6 @@ instance TestingInterface VestingModel where
     , mutualExclusionAttack
     , signatoryRemoval
     , tokenForgeryAttack simpleAlwaysSucceedsMintingPolicyV2 simpleTestAssetName
-    , unprotectedScriptOutput
     , unprotectedScriptOutput
     , valueUnderpaymentAttack
     ]
@@ -211,140 +243,122 @@ instance TestingInterface VestingModel where
 -- Helper functions
 -------------------------------------------------------------------------------
 
--- | Available wallets for vesting (funders, not necessarily the owner).
 wallets :: [Wallet]
 wallets = [MockWallet.w1, MockWallet.w2, MockWallet.w3]
 
-{- | Build 'VestingParams' from the current model state.
-  Slot numbers are converted to POSIX times via the era history bundled
-  with the mock chain.
+minUtxoThreshold :: C.Lovelace
+minUtxoThreshold = 896_500
+
+{- | Build VestingParams from raw slot/amount values.
+Called only once (at top-level) to populate the cache in 'initialize'.
 -}
-paramsFromModel :: VestingModel -> VestingParams
-paramsFromModel vm =
-  let dt1 = case slotToUtcTime Defaults.eraHistory Defaults.systemStart (_t1Slot vm) of
-        Left err -> error $ "paramsFromModel: cannot convert slot to utc time: " ++ show err
-        Right t -> t
-      dt2 = case slotToUtcTime Defaults.eraHistory Defaults.systemStart (_t2Slot vm) of
-        Left err -> error $ "paramsFromModel: cannot convert slot to utc time: " ++ show err
-        Right t -> t
+buildParams
+  :: Wallet
+  -> C.SlotNo
+  -- ^ tranche-1 slot
+  -> C.SlotNo
+  -- ^ tranche-2 slot
+  -> C.Lovelace
+  -> C.Lovelace
+  -> VestingParams
+buildParams owner t1Slot t2Slot t1Amt t2Amt =
+  let toTime s = case slotToUtcTime Defaults.eraHistory Defaults.systemStart s of
+        Left err -> error $ "buildParams: slot->utc: " ++ show err
+        Right t -> utcTimeToPosixTime t
    in VestingParams
-        { vpOwner = transPubKeyHash $ verificationKeyHash (_owner vm)
+        { vpOwner = transPubKeyHash $ verificationKeyHash owner
         , vpTranche1 =
             Vesting
-              { vDate = utcTimeToPosixTime dt1
-              , vAmount = lovelaceValue (fromIntegral $ C.unCoin $ _t1Amount vm)
+              { vDate = toTime t1Slot
+              , vAmount = lovelaceValue (fromIntegral $ C.unCoin t1Amt)
               }
         , vpTranche2 =
             Vesting
-              { vDate = utcTimeToPosixTime dt2
-              , vAmount = lovelaceValue (fromIntegral $ C.unCoin $ _t2Amount vm)
+              { vDate = toTime t2Slot
+              , vAmount = lovelaceValue (fromIntegral $ C.unCoin t2Amt)
               }
         }
 
--- | Calculate how much of the vested amount is currently available for withdrawal
+canWithdraw :: VestingModel -> Bool
+canWithdraw vm =
+  let locked = _vestedAmount vm
+      available = availableTrancheAmount vm
+      cur = _curSlot vm
+      futureObl =
+        (if cur < _t1Slot vm then _t1Amount vm else 0)
+          + (if cur < _t2Slot vm then _t2Amount vm else 0)
+      maxLove = min available (locked - futureObl - minUtxoThreshold)
+   in locked > 0
+        && available > 0
+        && maxLove >= 1_000_000
+
 availableTrancheAmount :: VestingModel -> C.Lovelace
 availableTrancheAmount vm =
-  let currentSlot = _curSlot vm
-      t1Available = if currentSlot >= _t1Slot vm then _t1Amount vm else 0
-      t2Available = if currentSlot >= _t2Slot vm then _t2Amount vm else 0
-   in t1Available + t2Available
+  let cur = _curSlot vm
+      t1 = if cur >= _t1Slot vm then _t1Amount vm else 0
+      t2 = if cur >= _t2Slot vm then _t2Amount vm else 0
+   in t1 + t2
 
-{- | A withdrawal is only valid if the value left in the contract after it
-  satisfies every tranche whose deadline has not yet passed.
--}
 enoughValueLeft :: VestingModel -> C.Lovelace -> Bool
 enoughValueLeft vm amt =
-  let currentSlot = _curSlot vm
-      tranche1Remaining = if currentSlot >= _t1Slot vm then 0 else _t1Amount vm
-      tranche2Remaining = if currentSlot >= _t2Slot vm then 0 else _t2Amount vm
-      totalRemaining = tranche1Remaining + tranche2Remaining
-      valueAfterWithdraw = _vestedAmount vm - amt
-   in valueAfterWithdraw >= totalRemaining
+  let cur = _curSlot vm
+      t1r = if cur >= _t1Slot vm then 0 else _t1Amount vm
+      t2r = if cur >= _t2Slot vm then 0 else _t2Amount vm
+   in (_vestedAmount vm - amt) >= (t1r + t2r)
 
-{- | The change output returned to the script must meet the minimum UTxO
-  threshold.  A full withdrawal (remainder == 0) is excluded from testing
-  so the contract can be reused across multiple withdrawals.
--}
 validChangeOutput :: VestingModel -> C.Lovelace -> Bool
 validChangeOutput vm withdrawAmount =
-  let remaining = _vestedAmount vm - withdrawAmount
-      minUtxo = 896_500
-   in remaining >= minUtxo
+  (_vestedAmount vm - withdrawAmount) >= minUtxoThreshold
 
 -------------------------------------------------------------------------------
 -- Mockchain transactions
 -------------------------------------------------------------------------------
 
--- | Lock the full vesting amount into the script.
 fundVestingPBT
   :: (MonadMockchain C.ConwayEra m, MonadFail m, MonadError (BalanceTxError C.ConwayEra) m)
   => Wallet
   -> VestingParams
+  -> C.ScriptHash
   -> m ()
-fundVestingPBT w params = do
-  let validator = C.PlutusScript C.plutusScriptVersion (vestingValidatorScript params)
-      scriptHash = C.hashScript validator
-      t1value = vAmount (vpTranche1 params)
+fundVestingPBT w params scriptHash = do
+  let t1value = vAmount (vpTranche1 params)
       t2value = vAmount (vpTranche2 params)
       total = getLovelace (lovelaceValueOf t1value + lovelaceValueOf t2value)
       totalLovelace = C.lovelaceToValue $ C.Coin total
-
-      -- The vesting validator uses no datum (BuiltinUnit redeemer)
       lockTx =
         execBuildTx $
           BuildTx.payToScriptInlineDatum
             Defaults.networkId
             scriptHash
-            () -- datum (unit)
+            ()
             C.NoStakeAddress
             totalLovelace
             >> BuildTx.setMinAdaDepositAll Defaults.bundledProtocolParameters
-
   void $ tryBalanceAndSubmit mempty w lockTx TrailingChange []
 
-{- | Spend the vesting UTxO, sending the withdrawable portion to the owner
-  and returning the remainder (if any) back to the script.
--}
 withdrawPBT
   :: (MonadMockchain C.ConwayEra m, MonadError (BalanceTxError C.ConwayEra) m, MonadFail m)
   => VestingParams
-  -- ^ Contract parameters
+  -> C.ScriptHash
   -> C.SlotNo
-  -- ^ Current slot (used for validity range)
   -> Wallet
-  -- ^ Owner wallet – must sign the transaction
   -> C.Lovelace
-  -- ^ Lovelace that must remain locked in the script after withdrawal
   -> C.Lovelace
-  -- ^ Total amount currently locked in the script (for calculating change)
   -> m ()
-withdrawPBT params curSlot ownerWallet amt lockedAmt = do
-  let validator = C.PlutusScript C.plutusScriptVersion (vestingValidatorScript params)
-      scriptHash = C.hashScript validator
-
-  -- Find the script UTxO on chain
+withdrawPBT params scriptHash curSlot ownerWallet amt lockedAmt = do
   vestingUtxos <- utxosAt @C.ConwayEra scriptHash
   when (null vestingUtxos) $ fail "No vesting UTxO found on chain"
-
   let (txIn, _) = head vestingUtxos
-
+  -- The chain slot was already advanced by 'perform (WaitSlots _)' via
+  -- setSlot, so we only need to set it here as a safety re-affirmation.
   setSlot curSlot
-
   let ownerPkh = verificationKeyHash ownerWallet
-
-  let withdrawTx =
+      withdrawTx =
         execBuildTx $ do
-          -- Validity range must start at curSlot so the validator can check
-          -- 'from trancheDate `contains` validRange'.
-          BuildTx.addValidityRangeSlots curSlot (curSlot + 1)
-          -- Owner must sign
+          BuildTx.addValidityRangeSlots curSlot (curSlot + 10)
           BuildTx.addRequiredSignature ownerPkh
-          -- Spend the script UTxO; the vesting validator takes no redeemer
-          -- (BuiltinUnit), so we pass unit here.
           BuildTx.spendPlutusInlineDatum txIn (vestingValidatorScript params) ()
-          -- Pay withdrawal amount to owner
           BuildTx.payToPublicKey Defaults.networkId ownerPkh (C.lovelaceToValue amt)
-          -- Return remaining to the script
           let remaining = lockedAmt - amt
           BuildTx.payToScriptInlineDatum
             Defaults.networkId
@@ -352,5 +366,4 @@ withdrawPBT params curSlot ownerWallet amt lockedAmt = do
             ()
             C.NoStakeAddress
             (C.lovelaceToValue remaining)
-
   void $ tryBalanceAndSubmit mempty ownerWallet withdrawTx TrailingChange []

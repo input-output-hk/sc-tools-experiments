@@ -16,8 +16,6 @@ import Test.Tasty (
   testGroup,
  )
 
--- import Vesting.Spec.Prop qualified
-
 import Vesting.Spec.Prop qualified
 import Vesting.Spec.Unit qualified
 
