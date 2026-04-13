@@ -20,7 +20,7 @@ import Convex.MockChain (utxoSet)
 import Convex.MockChain.CoinSelection (tryBalanceAndSubmit)
 import Convex.MockChain.Defaults qualified as Defaults
 import Convex.PlutusLedger.V1 (transPubKeyHash)
-import Convex.TestingInterface (TestingInterface (..), propRunActions)
+import Convex.TestingInterface (TestingInterface (..), ThreatModelsFor (expectedVulnerabilities, threatModels), propRunActions)
 import Convex.ThreatModel.DoubleSatisfaction (doubleSatisfaction)
 import Convex.ThreatModel.LargeValue (largeValueAttackWith)
 import Convex.ThreatModel.MutualExclusion (mutualExclusionAttack)
@@ -160,33 +160,17 @@ instance TestingInterface EscrowModel where
   -- Time can always advance
   precondition _ (WaitSlots _) = True
 
-  -- nextState updates the model based on actions.
-  nextState em LockFunds =
-    em
-      { _escrowInitialized = True
-      , _curSlot = _curSlot em + 1
-      }
-  nextState em RedeemFunds =
-    em
-      { _escrowSettled = True
-      , _curSlot = _curSlot em + 1
-      }
-  nextState em RefundFunds =
-    em
-      { _escrowSettled = True
-      , _curSlot = _curSlot em + 1
-      }
-  nextState em (WaitSlots slots) =
-    em
-      { _curSlot = _curSlot em + slots
-      }
-
   -- perform executes actions on the actual mockchain.
   perform em LockFunds =
     runExceptT (lockFundsPBT (paramsFromModel em) (_contributor em))
       >>= \case
         Left err -> fail $ "LockFunds failed: " <> show err
-        Right _ -> pure ()
+        Right _ ->
+          pure $
+            em
+              { _escrowInitialized = True
+              , _curSlot = _curSlot em + 1
+              }
   perform em RedeemFunds =
     if not (_escrowInitialized em)
       then fail "Escrow not initialized"
@@ -194,7 +178,12 @@ instance TestingInterface EscrowModel where
         runExceptT (redeemFundsPBT (paramsFromModel em) (_curSlot em) (_contributor em))
           >>= \case
             Left err -> fail $ "RedeemFunds failed: " <> show err
-            Right _ -> pure ()
+            Right _ ->
+              pure $
+                em
+                  { _escrowSettled = True
+                  , _curSlot = _curSlot em + 1
+                  }
   perform em RefundFunds =
     if not (_escrowInitialized em)
       then fail "Escrow not initialized"
@@ -202,12 +191,23 @@ instance TestingInterface EscrowModel where
         runExceptT (refundFundsPBT (paramsFromModel em) (_curSlot em) (_contributor em))
           >>= \case
             Left err -> fail $ "RefundFunds failed: " <> show err
-            Right _ -> pure ()
-  perform _em (WaitSlots _slots) =
-    pure ()
+            Right _ ->
+              pure $
+                em
+                  { _escrowSettled = True
+                  , _curSlot = _curSlot em + 1
+                  }
+  perform em (WaitSlots slots) =
+    pure $
+      em
+        { _curSlot = _curSlot em + slots
+        }
 
   validate _em = pure True
 
+  monitoring _ _ = error "monitoring not implemented"
+
+instance ThreatModelsFor EscrowModel where
   threatModels =
     [ doubleSatisfaction
     , largeValueAttackWith 10
@@ -217,8 +217,6 @@ instance TestingInterface EscrowModel where
     , valueUnderpaymentAttack
     ]
   expectedVulnerabilities = [timeBoundManipulation]
-
-  monitoring _ _ = error "monitoring not implemented"
 
 -------------------------------------------------------------------------------
 -- Helpers

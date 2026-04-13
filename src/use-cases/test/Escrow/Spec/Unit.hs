@@ -25,6 +25,7 @@ import Escrow.Validator (
  )
 import PlutusLedgerApi.V1 (Datum (Datum), POSIXTime (..), ToData (toBuiltinData), lovelaceValue)
 import Test.Tasty (TestTree, testGroup)
+import Test.Tasty.HUnit (testCase)
 
 -------------------------------------------------------------------------------
 -- Unit tests for the Escrow script
