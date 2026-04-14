@@ -49,9 +49,7 @@ library
   -- cardano dependencies
   build-depends:
     , cardano-api
-    , cardano-ledger-core
     , cardano-ledger-shelley
-    , cardano-slotting
 
 test-suite convex-auction-test
   import:         lang
