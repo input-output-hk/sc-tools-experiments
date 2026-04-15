@@ -41,3 +41,4 @@ aiken-contracts-example/build/
 aiken-contracts-example/plutus.json
 tmp/
 *.ignore.*
+test
