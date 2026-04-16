@@ -3,15 +3,16 @@
 module Main where
 
 import Escrow.Spec.Prop (propBasedTests)
+import Convex.Tasty.Streaming (defaultMainStreaming)
 import Escrow.Spec.Unit (unitTests)
-import Test.Tasty (TestTree, defaultMain, testGroup)
+import Test.Tasty (TestTree, testGroup)
 
 --------------------------------------------------------------------------------
 -- Main Test Entry Point
 --------------------------------------------------------------------------------
 
 main :: IO ()
-main = defaultMain tests
+main = defaultMainStreaming tests
 
 tests :: TestTree
 tests =

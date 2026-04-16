@@ -26,6 +26,7 @@ test-show-details: direct
 tests: True
 
 packages:
+  src/tasty-streaming
   src/testing-interface
   src/use-cases
 

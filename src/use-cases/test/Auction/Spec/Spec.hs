@@ -5,14 +5,15 @@ module Main where
 import Auction.Spec.Attacks (attackTests)
 import Auction.Spec.Prop (propBasedTests)
 import Auction.Spec.Unit (unitTests)
-import Test.Tasty (TestTree, defaultMain, testGroup)
+import Convex.Tasty.Streaming (defaultMainStreaming)
+import Test.Tasty (TestTree, testGroup)
 
 --------------------------------------------------------------------------------
 -- Main Test Entry Point
 --------------------------------------------------------------------------------
 
 main :: IO ()
-main = defaultMain tests
+main = defaultMainStreaming tests
 
 tests :: TestTree
 tests =

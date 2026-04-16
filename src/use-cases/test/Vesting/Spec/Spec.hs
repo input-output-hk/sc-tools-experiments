@@ -8,11 +8,11 @@ import Cardano.Ledger.Plutus.ExUnits (ExUnits (exUnitsMem))
 import Control.Lens ((%~), (&))
 import Convex.NodeParams (NodeParams (..))
 import Convex.NodeParams qualified as NP
+import Convex.Tasty.Streaming (defaultMainStreaming)
 import Convex.TestingInterface (Options (..), RunOptions (..), defaultOptions, defaultRunOptions)
 import Data.Functor.Identity (Identity)
 import Test.Tasty (
   TestTree,
-  defaultMain,
   testGroup,
  )
 import Vesting.Spec.Prop qualified
@@ -42,7 +42,7 @@ main =
     opts = modifyMemoryLimit defaultOptions
     runOpts = defaultRunOptions{mcOptions = opts}
    in
-    defaultMain (tests opts runOpts)
+    defaultMainStreaming (tests opts runOpts)
 
 tests :: Options C.ConwayEra -> RunOptions -> TestTree
 tests _opts runOpts =

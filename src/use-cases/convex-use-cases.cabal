@@ -103,6 +103,7 @@ test-suite convex-auction-test
     , convex-coin-selection
     , convex-mockchain
     , convex-optics
+    , convex-tasty-streaming
     , convex-testing-interface
     , convex-wallet
     , katip
@@ -146,6 +147,7 @@ test-suite convex-escrow-test
     , convex-coin-selection
     , convex-mockchain
     , convex-optics
+    , convex-tasty-streaming
     , convex-testing-interface
     , convex-wallet
     , katip
@@ -191,6 +193,7 @@ test-suite convex-multiplayerpingpong-test
     , convex-coin-selection
     , convex-mockchain
     , convex-optics
+    , convex-tasty-streaming
     , convex-testing-interface
     , convex-wallet
     , katip
@@ -235,6 +238,7 @@ test-suite convex-vesting-test
     , convex-coin-selection
     , convex-mockchain
     , convex-optics
+    , convex-tasty-streaming
     , convex-testing-interface
     , convex-wallet
     , lens

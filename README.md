@@ -104,6 +104,9 @@ spendPublicKeyOutput = mockchainSucceeds $ do
 
 See [src/coin-selection/test/Spec.hs](src/coin-selection/test/Spec.hs) for more details.
 
+Test suites integrated with `convex-tasty-streaming` support `--streaming-json` (real-time NDJSON output of test results) and `--list-tests-json` (structured JSON test-tree discovery without execution), intended for IDE integrations and external tooling.
+See [src/tasty-streaming/README.md](src/tasty-streaming/README.md) for integration instructions, the NDJSON event schema, and `jq` parsing examples.
+
 ## Working with cardano node
 
 The `node-client` package exposes a simple interface to some of node client functions from `cardano-api`. The main function is `foldClient`:
