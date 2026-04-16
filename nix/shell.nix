@@ -2,9 +2,6 @@
 
 let
 
-  cardano-node = inputs.cardano-node.packages."${system}".cardano-node;
-  cardano-cli = inputs.cardano-cli.legacyPackages."${system}".cardano-cli;
-
   allTools = {
     "ghc966".cabal = project.projectVariants.ghc966.tool "cabal" "latest";
     "ghc966".cabal-fmt = project.projectVariants.ghc966.tool "cabal-fmt" "latest";
@@ -98,8 +95,6 @@ let
     pkgs.bash
     pkgs.git
     pkgs.which
-    cardano-node
-    cardano-cli
   ];
 
   shell = project.shellFor {
@@ -116,8 +111,6 @@ let
     shellHook = ''
       ${preCommitCheck.shellHook}
       export PS1="\n\[\033[1;32m\][nix-shell:\w]\$\[\033[0m\] "
-      export CARDANO_NODE="${cardano-node}/bin/cardano-node";
-      export CARDANO_CLI="${cardano-cli}/bin/cardano-cli";
     '';
   };
 
