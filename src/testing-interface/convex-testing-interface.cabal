@@ -160,6 +160,7 @@ test-suite convex-testing-interface-test
     , convex-coin-selection
     , convex-mockchain
     , convex-optics
+    , convex-tasty-streaming
     , convex-testing-interface
     , convex-wallet
     , lens

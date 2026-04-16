@@ -2,6 +2,7 @@
 
 import Cardano.Api qualified as C
 import Convex.MockChain.Utils (mockchainFails)
+import Convex.Tasty.Streaming (defaultMainStreaming)
 import Convex.TestingInterface (
   CoverageConfig (..),
   Options,
@@ -12,7 +13,7 @@ import Convex.TestingInterface (
   writeCoverageReport,
  )
 import Convex.Utils (failOnError)
-import Test.Tasty (TestTree, defaultMain, testGroup)
+import Test.Tasty (TestTree, testGroup)
 import Test.Tasty.HUnit (testCase)
 
 import AikenBankSpec (aikenBankTests)
@@ -44,7 +45,7 @@ main = withCoverage config $ \opts0 runOpts0 ->
     opts = modifyTransactionLimits opts0 50_000
     runOpts = runOpts0{mcOptions = opts}
    in
-    defaultMain (tests opts runOpts)
+    defaultMainStreaming (tests opts runOpts)
  where
   config =
     CoverageConfig
