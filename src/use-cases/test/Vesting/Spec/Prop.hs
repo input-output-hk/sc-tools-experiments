@@ -17,7 +17,7 @@ import Convex.CoinSelection (BalanceTxError, ChangeOutputPosition (TrailingChang
 import Convex.MockChain.CoinSelection (tryBalanceAndSubmit)
 import Convex.MockChain.Defaults qualified as Defaults
 import Convex.PlutusLedger.V1 (transPubKeyHash)
-import Convex.TestingInterface (RunOptions, TestingInterface (..), propRunActionsWithOptions)
+import Convex.TestingInterface (RunOptions, TestingInterface (..), ThreatModelsFor (..), propRunActionsWithOptions)
 import Convex.ThreatModel.LargeValue (largeValueAttackWith)
 import Convex.ThreatModel.MutualExclusion (mutualExclusionAttack)
 import Convex.ThreatModel.SignatoryRemoval (signatoryRemoval)
@@ -184,26 +184,18 @@ instance TestingInterface VestingModel where
           && enoughValueLeft vm amt
           && validChangeOutput vm amt
 
-  nextState vm action = case action of
-    Vest w ->
-      vm
-        { _vestedAmount = _vestedAmount vm + (_t1Amount vm + _t2Amount vm)
-        , _vested = w : _vested vm
-        }
-    Retrieve amt ->
-      vm
-        { _vestedAmount = _vestedAmount vm - amt
-        }
-    WaitSlots slots ->
-      vm{_curSlot = _curSlot vm + slots}
-
   -- 'perform' uses the cached '_params' and '_scriptHash' from the model,
   -- avoiding repeated 'slotToUtcTime' / script compilation on every action.
   perform vm (Vest w) = do
     runExceptT (fundVestingPBT w (_params vm) (_scriptHash vm))
       >>= \case
         Left err -> fail $ "Vest failed: " <> show err
-        Right _ -> pure ()
+        Right _ ->
+          pure $
+            vm
+              { _vestedAmount = _vestedAmount vm + (_t1Amount vm + _t2Amount vm)
+              , _vested = w : _vested vm
+              }
   perform vm (Retrieve amt) = do
     runExceptT
       ( withdrawPBT
@@ -216,14 +208,22 @@ instance TestingInterface VestingModel where
       )
       >>= \case
         Left err -> fail $ "Retrieve failed: " <> show err
-        Right _ -> pure ()
+        Right _ ->
+          pure $
+            vm
+              { _vestedAmount = _vestedAmount vm - amt
+              }
   perform vm (WaitSlots slots) =
-    -- Advance the chain clock so that subsequent Retrieve actions use the
-    -- correct validity range.
-    setSlot (_curSlot vm + slots)
+    do
+      -- Advance the chain clock so that subsequent Retrieve actions use the
+      -- correct validity range.
+      setSlot (_curSlot vm + slots)
+      pure $ vm{_curSlot = _curSlot vm + slots}
 
   validate _vm = pure True
+  monitoring _ _ = error "monitoring not implemented"
 
+instance ThreatModelsFor VestingModel where
   threatModels =
     [ largeValueAttackWith 10
     , mutualExclusionAttack
@@ -236,8 +236,6 @@ instance TestingInterface VestingModel where
   expectedVulnerabilities =
     [ timeBoundManipulation
     ]
-
-  monitoring _ _ = error "monitoring not implemented"
 
 -------------------------------------------------------------------------------
 -- Helper functions
