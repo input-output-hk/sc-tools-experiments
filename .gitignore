@@ -44,3 +44,7 @@ tmp/
 
 # MacOS
 **/.DS_Store
+
+# vscode extension
+/vscode-extension/node_modules
+/vscode-extension/out
