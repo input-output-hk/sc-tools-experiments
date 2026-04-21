@@ -118,7 +118,7 @@ The type parameter @state@ represents the model's view of the world. It should
 track all relevant information needed to validate that the contract is behaving
 correctly.
 
-Minimal complete definition: 'Action', 'initialize', 'arbitraryAction', 'nextState', 'perform'
+Minimal complete definition: 'Action', 'initialize', 'arbitraryAction', 'perform'
 -}
 class (Show state, Eq state, Show (Action state)) => TestingInterface state where
   {- | Actions that can be performed on the contract.
