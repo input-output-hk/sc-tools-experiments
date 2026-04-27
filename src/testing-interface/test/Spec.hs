@@ -39,8 +39,9 @@ import Scripts qualified
 main :: IO ()
 main = withCoverage config $ \opts0 runOpts0 ->
   let
-    -- Use 30000 byte limit because the secure PingPong validator is larger
-    opts = modifyTransactionLimits opts0 30_000
+    -- Use 50000 byte limit because secure PingPong paths with datum-hash
+    -- spends is large
+    opts = modifyTransactionLimits opts0 50_000
     runOpts = runOpts0{mcOptions = opts}
    in
     defaultMain (tests opts runOpts)

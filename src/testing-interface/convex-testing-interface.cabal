@@ -49,10 +49,14 @@ library
     Convex.ThreatModel.DoubleSatisfaction
     Convex.ThreatModel.DuplicateListEntry
     Convex.ThreatModel.InputDuplication
+    Convex.ThreatModel.InvalidDatumIndex
+    Convex.ThreatModel.InvalidScriptPurpose
     Convex.ThreatModel.LargeData
     Convex.ThreatModel.LargeValue
+    Convex.ThreatModel.MissingOutputDatum
     Convex.ThreatModel.MutualExclusion
     Convex.ThreatModel.NegativeInteger
+    Convex.ThreatModel.OutputDatumHashMissing
     Convex.ThreatModel.Pretty
     Convex.ThreatModel.RedeemerAssetSubstitution
     Convex.ThreatModel.SelfReferenceInjection

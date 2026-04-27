@@ -5,10 +5,13 @@ import Convex.ThreatModel.DatumBloat (datumByteBloatAttack, datumListBloatAttack
 import Convex.ThreatModel.DoubleSatisfaction (doubleSatisfaction)
 import Convex.ThreatModel.DuplicateListEntry (duplicateListEntryAttack)
 import Convex.ThreatModel.InputDuplication (inputDuplication)
+import Convex.ThreatModel.InvalidDatumIndex (invalidDatumIndexAttack)
 import Convex.ThreatModel.LargeData (largeDataAttack)
 import Convex.ThreatModel.LargeValue (largeValueAttack)
+import Convex.ThreatModel.MissingOutputDatum (missingOutputDatumAttack)
 import Convex.ThreatModel.MutualExclusion (mutualExclusionAttack)
 import Convex.ThreatModel.NegativeInteger (negativeIntegerAttack)
+import Convex.ThreatModel.OutputDatumHashMissing (outputDatumHashMissingAttack)
 import Convex.ThreatModel.RedeemerAssetSubstitution (redeemerAssetSubstitution)
 import Convex.ThreatModel.SelfReferenceInjection (selfReferenceInjection)
 import Convex.ThreatModel.SignatoryRemoval (signatoryRemoval)
@@ -26,10 +29,13 @@ allThreatModels =
   , doubleSatisfaction
   , duplicateListEntryAttack
   , inputDuplication
+  , invalidDatumIndexAttack
   , largeDataAttack
   , largeValueAttack
+  , missingOutputDatumAttack
   , mutualExclusionAttack
   , negativeIntegerAttack
+  , outputDatumHashMissingAttack
   , redeemerAssetSubstitution
   , selfReferenceInjection
   , signatoryRemoval
