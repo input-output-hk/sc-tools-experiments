@@ -3,6 +3,8 @@
 {-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE ScopedTypeVariables #-}
+{-# LANGUAGE TypeApplications #-}
+{-# LANGUAGE TypeOperators #-}
 
 {- | Threat model for detecting input ordering bypass vulnerabilities.
 
@@ -34,12 +36,11 @@ import Data.Map qualified as Map
 import Data.Maybe (mapMaybe)
 
 import Convex.ThreatModel
-import Convex.ThreatModel.Cardano.Api (Era)
+import Convex.ThreatModel.Cardano.Api (Era, IsPlutusScriptInEra)
 
 -- | A Plutus script that can be either V2 or V3
-data SomePlutusScript
-  = PlutusV2Script (C.PlutusScript C.PlutusScriptV2)
-  | PlutusV3Script (C.PlutusScript C.PlutusScriptV3)
+data SomePlutusScript where
+  SomePlutusScript :: (IsPlutusScriptInEra lang) => C.PlutusScript lang -> SomePlutusScript
 
 {- | Check for input duplication / input ordering bypass vulnerabilities.
 
@@ -130,15 +131,10 @@ inputDuplication = Named "Input Duplication" $ do
 
   -- Try to find a Plutus script (V2 or V3) with the matching hash
   case findPlutusScriptByHash scriptHash scripts of
-    Just (PlutusV2Script plutusScript) -> do
+    Just (SomePlutusScript plutusScript) -> do
       -- Add the new script input with the V2 script, plus attacker output
       shouldNotValidate $
         addPlutusScriptInput plutusScript newValue newDatum redeemer C.ReferenceScriptNone
-          <> attackerOutput
-    Just (PlutusV3Script plutusScript) -> do
-      -- Add the new script input with the V3 script, plus attacker output
-      shouldNotValidate $
-        addPlutusScriptInputV3 plutusScript newValue newDatum redeemer C.ReferenceScriptNone
           <> attackerOutput
     Nothing ->
       -- Script not found in witness set - this shouldn't happen for a valid tx
@@ -201,23 +197,19 @@ inputDuplication = Named "Input Duplication" $ do
     -- Use withPlutusScript to get the language at runtime
     Ledger.withPlutusScript ps $ \(plutus :: Plutus.Plutus l) ->
       let binaryBytes = Plutus.unPlutusBinary (Plutus.plutusBinary plutus)
-       in case Plutus.plutusLanguage plutus of
-            Plutus.PlutusV2 ->
-              let serialisedV2 :: C.PlutusScript C.PlutusScriptV2
-                  serialisedV2 = C.PlutusScriptSerialised binaryBytes
-                  cardanoScript = C.PlutusScript C.PlutusScriptV2 serialisedV2
-               in if C.hashScript cardanoScript == targetHash
-                    then Just (PlutusV2Script serialisedV2)
-                    else Nothing
-            Plutus.PlutusV3 ->
-              let serialisedV3 :: C.PlutusScript C.PlutusScriptV3
-                  serialisedV3 = C.PlutusScriptSerialised binaryBytes
-                  cardanoScript = C.PlutusScript C.PlutusScriptV3 serialisedV3
-               in if C.hashScript cardanoScript == targetHash
-                    then Just (PlutusV3Script serialisedV3)
-                    else Nothing
-            -- TODO: V4 scripts are not supported yet
-            Plutus.PlutusV4 -> Nothing
-            -- V1 scripts are not supported for new inputs in Conway era
-            Plutus.PlutusV1 -> Nothing
+          serialised :: C.PlutusScript (C.FromLedgerPlutusLanguage l)
+          serialised = C.PlutusScriptSerialised binaryBytes
+          asScript
+            :: (lang ~ C.FromLedgerPlutusLanguage l, IsPlutusScriptInEra lang)
+            => C.PlutusScriptVersion lang -> Maybe SomePlutusScript
+          asScript ver =
+            if C.hashScript (C.PlutusScript ver serialised) == targetHash
+              then Just (SomePlutusScript serialised)
+              else Nothing
+       in case Plutus.isLanguage @l of
+            Plutus.SPlutusV1 -> asScript C.PlutusScriptV1
+            Plutus.SPlutusV2 -> asScript C.PlutusScriptV2
+            Plutus.SPlutusV3 -> asScript C.PlutusScriptV3
+            -- PlutusV4 is only available in Dijkstra
+            Plutus.SPlutusV4 -> Nothing
   tryConvertScript _ (Ledger.NativeScript _) = Nothing

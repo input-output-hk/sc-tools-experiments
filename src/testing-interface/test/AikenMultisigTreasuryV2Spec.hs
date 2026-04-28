@@ -82,7 +82,7 @@ import Convex.TestingInterface (
  )
 import Convex.ThreatModel.Cardano.Api (dummyTxId)
 
-import Convex.ThreatModel.TokenForgery (tokenForgeryAttackV3)
+import Convex.ThreatModel.TokenForgery (tokenForgeryAttack)
 import Convex.ThreatModel.UnprotectedScriptOutput (unprotectedScriptOutput)
 import Convex.Utils (failOnError)
 import Convex.Wallet (Wallet, addressInEra, getWallet, verificationKeyHash)
@@ -814,7 +814,7 @@ instance ThreatModelsFor MultisigV2Model where
   -- (inverted pass/fail, quiet output)
   expectedVulnerabilities =
     [ unprotectedScriptOutput
-    , tokenForgeryAttackV3 multisigV2MintScript validationTokenName
+    , tokenForgeryAttack multisigV2MintScript validationTokenName
     ]
 
 -- ----------------------------------------------------------------------------

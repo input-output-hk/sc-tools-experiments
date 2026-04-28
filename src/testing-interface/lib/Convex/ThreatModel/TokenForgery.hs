@@ -47,9 +47,7 @@ validates with extra minted tokens, the minting policy may be too permissive.
 module Convex.ThreatModel.TokenForgery (
   -- * Threat models
   tokenForgeryAttack,
-  tokenForgeryAttackV3,
   tokenForgeryAttackWith,
-  tokenForgeryAttackWithV3,
 
   -- * Helpers
   simpleAlwaysSucceedsMintingPolicyV2,
@@ -58,7 +56,8 @@ module Convex.ThreatModel.TokenForgery (
 
 import Cardano.Api qualified as C
 import Convex.ThreatModel
-import Convex.ThreatModel.TxModifier (addPlutusScriptMint, addPlutusScriptMintV3)
+import Convex.ThreatModel.Cardano.Api (IsPlutusScriptInEra)
+import Convex.ThreatModel.TxModifier (addPlutusScriptMint)
 import GHC.Exts (fromList)
 import PlutusLedgerApi.Test.Examples (alwaysSucceedingNAryFunction)
 
@@ -77,7 +76,8 @@ The redeemer used is @Constr 0 []@ (unit), which is common for simple
 minting policies. Use 'tokenForgeryAttackWith' for custom redeemers.
 -}
 tokenForgeryAttack
-  :: C.PlutusScript C.PlutusScriptV2
+  :: (IsPlutusScriptInEra lang)
+  => C.PlutusScript lang
   -- ^ The minting policy to test
   -> C.AssetName
   -- ^ The asset name to mint
@@ -86,29 +86,7 @@ tokenForgeryAttack = tokenForgeryAttackWith unitRedeemer
  where
   unitRedeemer = C.ScriptDataConstructor 0 []
 
-{- | Check for Token Forgery vulnerabilities with a Plutus V3 minting policy.
-
-Same as 'tokenForgeryAttack' but for Plutus V3 scripts.
-
-Usage:
-@
-  threatPrecondition $ tokenForgeryAttackV3 mintingPolicy assetName
-@
-
-The redeemer used is @Constr 0 []@ (unit), which is common for simple
-minting policies. Use 'tokenForgeryAttackWithV3' for custom redeemers.
--}
-tokenForgeryAttackV3
-  :: C.PlutusScript C.PlutusScriptV3
-  -- ^ The minting policy to test
-  -> C.AssetName
-  -- ^ The asset name to mint
-  -> ThreatModel ()
-tokenForgeryAttackV3 = tokenForgeryAttackWithV3 unitRedeemer
- where
-  unitRedeemer = C.ScriptDataConstructor 0 []
-
-{- | Check for Token Forgery vulnerabilities with a custom redeemer (V2).
+{- | Check for Token Forgery vulnerabilities with a custom redeemer.
 
 This variant allows specifying the redeemer to use when attempting to
 mint additional tokens. This is useful when the minting policy expects
@@ -123,14 +101,15 @@ a specific redeemer format.
 @
 -}
 tokenForgeryAttackWith
-  :: C.ScriptData
+  :: (IsPlutusScriptInEra lang)
+  => C.ScriptData
   -- ^ Redeemer for the minting policy
-  -> C.PlutusScript C.PlutusScriptV2
+  -> C.PlutusScript lang
   -- ^ The minting policy to test
   -> C.AssetName
   -- ^ The asset name to mint
   -> ThreatModel ()
-tokenForgeryAttackWith redeemer mintScript assetName = Named "Token Forgery Attack (V2)" $ do
+tokenForgeryAttackWith redeemer mintScript assetName = Named "Token Forgery Attack" $ do
   -- Find an output to add the minted tokens to
   -- Prefer a key address output (like the change output)
   output <- anyOutputSuchThat (isKeyAddressAny . addressOf)
@@ -152,7 +131,7 @@ tokenForgeryAttackWith redeemer mintScript assetName = Named "Token Forgery Atta
       ]
 
   -- Calculate the minted asset value
-  let scriptHash = C.hashScript $ C.PlutusScript C.PlutusScriptV2 mintScript
+  let scriptHash = C.hashScript $ C.PlutusScript plutusScriptVersion mintScript
       policyId = C.PolicyId scriptHash
       mintedValue = fromList [(C.AssetId policyId assetName, 1)]
       newValue = valueOf output <> mintedValue
@@ -162,59 +141,6 @@ tokenForgeryAttackWith redeemer mintScript assetName = Named "Token Forgery Atta
   shouldNotValidate $
     changeValueOf output newValue
       <> addPlutusScriptMint mintScript assetName (C.Quantity 1) redeemer
-
-{- | Check for Token Forgery vulnerabilities with a custom redeemer (V3).
-
-Same as 'tokenForgeryAttackWith' but for Plutus V3 scripts.
-
-@
-  -- Test with MintValidation redeemer (Constr 0 [])
-  tokenForgeryAttackWithV3 (ScriptDataConstructor 0 []) mintingPolicy assetName
-
-  -- Test with custom redeemer
-  tokenForgeryAttackWithV3 myRedeemer mintingPolicy assetName
-@
--}
-tokenForgeryAttackWithV3
-  :: C.ScriptData
-  -- ^ Redeemer for the minting policy
-  -> C.PlutusScript C.PlutusScriptV3
-  -- ^ The minting policy to test
-  -> C.AssetName
-  -- ^ The asset name to mint
-  -> ThreatModel ()
-tokenForgeryAttackWithV3 redeemer mintScript assetName = Named "Token Forgery Attack (V3)" $ do
-  -- Find an output to add the minted tokens to
-  -- Prefer a key address output (like the change output)
-  output <- anyOutputSuchThat (isKeyAddressAny . addressOf)
-
-  counterexampleTM $
-    paragraph
-      [ "Testing Token Forgery vulnerability:"
-      , "Attempting to mint additional tokens using the provided minting policy."
-      , "Adding minted tokens to output at " ++ show (prettyAddress $ addressOf output) ++ "."
-      ]
-
-  counterexampleTM $
-    paragraph
-      [ "If this validates, the minting policy is too permissive."
-      , "An attacker could forge tokens to:"
-      , "1) Bypass validation token requirements"
-      , "2) Steal assets protected by token checks"
-      , "3) Manipulate protocol state"
-      ]
-
-  -- Calculate the minted asset value
-  let scriptHash = C.hashScript $ C.PlutusScript C.PlutusScriptV3 mintScript
-      policyId = C.PolicyId scriptHash
-      mintedValue = fromList [(C.AssetId policyId assetName, 1)]
-      newValue = valueOf output <> mintedValue
-
-  -- Try to mint one additional token with the given policy and add it to the output
-  -- This SHOULD fail - if it validates, the policy is vulnerable
-  shouldNotValidate $
-    changeValueOf output newValue
-      <> addPlutusScriptMintV3 mintScript assetName (C.Quantity 1) redeemer
 
 -- ============================================================================
 -- Helper functions for threat model usage
