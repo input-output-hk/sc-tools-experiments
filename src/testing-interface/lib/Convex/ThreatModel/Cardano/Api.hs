@@ -1,3 +1,4 @@
+{-# LANGUAGE ConstraintKinds #-}
 {-# LANGUAGE DerivingStrategies #-}
 {-# LANGUAGE GADTs #-}
 {-# LANGUAGE LambdaCase #-}
@@ -8,6 +9,7 @@ module Convex.ThreatModel.Cardano.Api (
   -- * Types
   Era,
   LedgerEra,
+  IsPlutusScriptInEra,
 
   -- * TxOut accessors
   addressOfTxOut,
@@ -146,6 +148,7 @@ import PlutusTx.Coverage (CoverageData, coverageDataFromLogMsg)
 
 type Era = ConwayEra
 type LedgerEra = ShelleyLedgerEra Era
+type IsPlutusScriptInEra lang = (HasScriptLanguageInEra lang Era, IsPlutusScriptLanguage lang)
 
 addressOfTxOut :: TxOut ctx Era -> AddressAny
 addressOfTxOut (TxOut (AddressInEra ShelleyAddressInEra{} addr) _ _ _) = AddressShelley addr

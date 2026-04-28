@@ -210,11 +210,8 @@ prettyUpperBound :: TxValidityUpperBound Era -> Doc
 prettyUpperBound (TxValidityUpperBound _ Nothing) = text "∞"
 prettyUpperBound (TxValidityUpperBound _ (Just slot)) = text (show $ unSlotNo slot)
 
-prettyPlutusV2Script :: PlutusScript PlutusScriptV2 -> Doc
-prettyPlutusV2Script = prettyHash . hashScript . PlutusScript PlutusScriptV2
-
-prettyPlutusV3Script :: PlutusScript PlutusScriptV3 -> Doc
-prettyPlutusV3Script = prettyHash . hashScript . PlutusScript PlutusScriptV3
+prettyPlutusScript :: (IsPlutusScriptLanguage lang) => PlutusScript lang -> Doc
+prettyPlutusScript = prettyHash . hashScript . PlutusScript plutusScriptVersion
 
 prettySimpleScript :: SimpleScript -> Doc
 prettySimpleScript = prettyHash . hashScript . SimpleScript
@@ -273,16 +270,7 @@ prettyTxModifier (TxModifier txmod) = vcat [prettyMod m | m <- txmod]
   prettyMod (AddPlutusScriptInput script value datum redeemer rscript) =
     fblock
       (text "addPlutusScriptInput")
-      [ prettyPlutusV2Script script
-      , prettyValue value
-      , prettyDatum datum
-      , prettyScriptData redeemer
-      , prettyRefScript rscript
-      ]
-  prettyMod (AddPlutusScriptInputV3 script value datum redeemer rscript) =
-    fblock
-      (text "addPlutusScriptInputV3")
-      [ prettyPlutusV3Script script
+      [ prettyPlutusScript script
       , prettyValue value
       , prettyDatum datum
       , prettyScriptData redeemer
@@ -299,7 +287,7 @@ prettyTxModifier (TxModifier txmod) = vcat [prettyMod m | m <- txmod]
   prettyMod (AddPlutusScriptReferenceInput script value datum rscript) =
     fblock
       (text "addPlutusScriptReferenceInput")
-      [ prettyPlutusV2Script script
+      [ prettyPlutusScript script
       , prettyValue value
       , prettyDatum datum
       , prettyRefScript rscript
@@ -325,15 +313,7 @@ prettyTxModifier (TxModifier txmod) = vcat [prettyMod m | m <- txmod]
   prettyMod (AddPlutusScriptMint script assetName quantity redeemer) =
     fblock
       (text "addPlutusScriptMint")
-      [ prettyPlutusV2Script script
-      , text (show assetName)
-      , text (show quantity)
-      , prettyScriptData redeemer
-      ]
-  prettyMod (AddPlutusScriptMintV3 script assetName quantity redeemer) =
-    fblock
-      (text "addPlutusScriptMintV3")
-      [ prettyPlutusV3Script script
+      [ prettyPlutusScript script
       , text (show assetName)
       , text (show quantity)
       , prettyScriptData redeemer

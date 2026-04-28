@@ -164,14 +164,16 @@ data TxMod where
     -> Redeemer
     -> TxMod
   AddPlutusScriptInput
-    :: PlutusScript PlutusScriptV2
+    :: (IsPlutusScriptInEra lang)
+    => PlutusScript lang
     -> Value
     -> Datum
     -> Redeemer
     -> ReferenceScript Era
     -> TxMod
   AddPlutusScriptReferenceInput
-    :: PlutusScript PlutusScriptV2
+    :: (IsPlutusScriptInEra lang)
+    => PlutusScript lang
     -> Value
     -> Datum
     -> ReferenceScript Era
@@ -185,32 +187,19 @@ data TxMod where
     -> TxMod
   -- | Mint tokens using a Plutus V2 script
   AddPlutusScriptMint
-    :: PlutusScript PlutusScriptV2 -- The minting policy script
+    :: (IsPlutusScriptInEra lang)
+    => PlutusScript lang -- The minting policy script
     -> AssetName -- Name of asset to mint
     -> Quantity -- Amount (positive = mint, negative = burn)
     -> ScriptData -- Redeemer for the minting policy
-    -> TxMod
-  -- | Mint tokens using a Plutus V3 script
-  AddPlutusScriptMintV3
-    :: PlutusScript PlutusScriptV3 -- The minting policy script
-    -> AssetName -- Name of asset to mint
-    -> Quantity -- Amount (positive = mint, negative = burn)
-    -> ScriptData -- Redeemer for the minting policy
-    -> TxMod
-  -- | Add a plutus V3 script input
-  AddPlutusScriptInputV3
-    :: PlutusScript PlutusScriptV3
-    -> Value
-    -> Datum
-    -> Redeemer
-    -> ReferenceScript Era
     -> TxMod
   -- | Remove a required signer from the transaction
   RemoveRequiredSigner
     :: Hash PaymentKey
     -> TxMod
   ReplaceTx :: Tx Era -> UTxO Era -> TxMod
-  deriving stock (Show)
+
+deriving stock instance Show TxMod
 
 txMod :: TxMod -> TxModifier
 txMod m = TxModifier [m]
@@ -340,12 +329,12 @@ applyTxMod tx utxos (AddPlutusScriptReferenceInput script value datum rscript) =
 
   scriptInEra =
     ScriptInEra
-      PlutusScriptV2InConway
-      (PlutusScript PlutusScriptV2 script)
+      scriptLanguageInEra
+      (PlutusScript plutusScriptVersion script)
   newScript = toShelleyScript @Era scriptInEra
   scripts' = scripts ++ [newScript]
 
-  hash = hashScript $ PlutusScript PlutusScriptV2 script
+  hash = hashScript $ PlutusScript plutusScriptVersion script
   addr = scriptAddressAny hash
 applyTxMod tx utxos (AddReferenceScriptInput script value datum redeemer) =
   ( Tx (ShelleyTxBody era body{Conway.ctbSpendInputs = inputs'} scripts scriptData' auxData validity) wits
@@ -393,8 +382,8 @@ applyTxMod tx utxos (AddPlutusScriptInput script value datum redeemer rscript) =
 
   scriptInEra =
     ScriptInEra
-      PlutusScriptV2InConway
-      (PlutusScript PlutusScriptV2 script)
+      scriptLanguageInEra
+      (PlutusScript plutusScriptVersion script)
   newScript = toShelleyScript @Era scriptInEra
   scripts' = scripts ++ [newScript]
 
@@ -413,45 +402,7 @@ applyTxMod tx utxos (AddPlutusScriptInput script value datum redeemer rscript) =
     addScriptData idx datum' (toAlonzoData $ unsafeHashableScriptData redeemer, toAlonzoExUnits $ ExecutionUnits 0 0) $
       recomputeScriptData Nothing idxUpdate scriptData
 
-  hash = hashScript $ PlutusScript PlutusScriptV2 script
-  addr = scriptAddressAny hash
-applyTxMod tx utxos (AddPlutusScriptInputV3 script value datum redeemer rscript) =
-  ( Tx (ShelleyTxBody era body{Conway.ctbSpendInputs = inputs'} scripts' scriptData' auxData validity) wits
-  , utxos'
-  )
- where
-  Tx (ShelleyTxBody era body@Conway.ConwayTxBody{..} scripts scriptData auxData validity) wits = tx
-
-  txIn = mkNewTxIn utxos
-  input = toShelleyTxIn txIn
-  inputs' = Set.insert input ctbSpendInputs
-
-  txOut = makeTxOut addr value datum rscript
-  utxos' = UTxO . Map.insert txIn txOut . unUTxO $ utxos
-
-  scriptInEra =
-    ScriptInEra
-      PlutusScriptV3InConway
-      (PlutusScript PlutusScriptV3 script)
-  newScript = toShelleyScript @Era scriptInEra
-  scripts' = scripts ++ [newScript]
-
-  SJust (Ledger.AsIx idx) = Ledger.indexOf (Ledger.AsItem input) inputs'
-  idxUpdate idx'
-    | idx' >= idx = idx' + 1
-    | otherwise = idx'
-
-  datum' = case datum of
-    TxOutDatumNone -> error "Bad test!"
-    TxOutDatumHash{} -> error "Bad test!"
-    TxOutSupplementalDatum _ d -> toAlonzoData d
-    TxOutDatumInline _ d -> toAlonzoData d
-
-  scriptData' =
-    addScriptData idx datum' (toAlonzoData $ unsafeHashableScriptData redeemer, toAlonzoExUnits $ ExecutionUnits 0 0) $
-      recomputeScriptData Nothing idxUpdate scriptData
-
-  hash = hashScript $ PlutusScript PlutusScriptV3 script
+  hash = hashScript $ PlutusScript plutusScriptVersion script
   addr = scriptAddressAny hash
 applyTxMod tx utxos (AddSimpleScriptInput script value rscript False) =
   ( Tx (ShelleyTxBody era body{Conway.ctbSpendInputs = inputs'} scripts' scriptData' auxData validity) wits
@@ -624,7 +575,7 @@ applyTxMod tx utxos (AddPlutusScriptMint script assetName quantity redeemer) =
   Tx (ShelleyTxBody era body@Conway.ConwayTxBody{..} scripts scriptData auxData validity) wits = tx
 
   -- Convert cardano-api types to ledger types
-  scriptHash = hashScript $ PlutusScript PlutusScriptV2 script
+  scriptHash = hashScript $ PlutusScript plutusScriptVersion script
   ledgerPolicyId = Mary.PolicyID (toShelleyScriptHash scriptHash)
   ledgerAssetName = toMaryAssetName assetName
   Quantity qty = quantity
@@ -657,60 +608,8 @@ applyTxMod tx utxos (AddPlutusScriptMint script assetName quantity redeemer) =
   -- Add the script to the scripts list
   scriptInEra =
     ScriptInEra
-      PlutusScriptV2InConway
-      (PlutusScript PlutusScriptV2 script)
-  newScript = toShelleyScript @Era scriptInEra
-  scripts' = scripts ++ [newScript]
-
-  -- Add the minting redeemer with the correct index
-  scriptData' =
-    addMintingRedeemer
-      mintIdx
-      (toAlonzoData $ unsafeHashableScriptData redeemer, toAlonzoExUnits $ ExecutionUnits 0 0)
-      $ recomputeScriptDataForMint Nothing idxUpdate scriptData
-applyTxMod tx utxos (AddPlutusScriptMintV3 script assetName quantity redeemer) =
-  ( Tx (ShelleyTxBody era body{Conway.ctbMint = mint'} scripts' scriptData' auxData validity) wits
-  , utxos
-  )
- where
-  Tx (ShelleyTxBody era body@Conway.ConwayTxBody{..} scripts scriptData auxData validity) wits = tx
-
-  -- Convert cardano-api types to ledger types
-  scriptHash = hashScript $ PlutusScript PlutusScriptV3 script
-  ledgerPolicyId = Mary.PolicyID (toShelleyScriptHash scriptHash)
-  ledgerAssetName = toMaryAssetName assetName
-  Quantity qty = quantity
-
-  -- Add the asset to the mint field
-  newMintAsset = Mary.MultiAsset $ Map.singleton ledgerPolicyId (Map.singleton ledgerAssetName qty)
-  mint' = ctbMint <> newMintAsset
-
-  -- Calculate the mint index (sorted position of PolicyId in mint map keys)
-  Mary.MultiAsset mintMap = mint'
-  mintIdx = case Map.lookupIndex ledgerPolicyId mintMap of
-    Just idx' -> fromIntegral idx'
-    Nothing -> error "The impossible happened: PolicyId not in mint map after insertion"
-
-  -- Check if we need to update existing minting redeemer indices
-  -- (if our new PolicyId sorted before some existing ones)
-  Mary.MultiAsset oldMintMap = ctbMint
-  oldMintKeys = Map.keys oldMintMap
-  -- For each existing policy, check if its new index changed
-  idxUpdate oldIdx
-    | any
-        ( \p ->
-            Map.lookupIndex p mintMap == Just (fromIntegral oldIdx + 1)
-              && Map.lookupIndex p oldMintMap == Just (fromIntegral oldIdx)
-        )
-        oldMintKeys =
-        oldIdx + 1
-    | otherwise = oldIdx
-
-  -- Add the script to the scripts list
-  scriptInEra =
-    ScriptInEra
-      PlutusScriptV3InConway
-      (PlutusScript PlutusScriptV3 script)
+      scriptLanguageInEra
+      (PlutusScript plutusScriptVersion script)
   newScript = toShelleyScript @Era scriptInEra
   scripts' = scripts ++ [newScript]
 
@@ -752,15 +651,11 @@ addReferenceScriptInput :: ScriptHash -> Value -> Datum -> Redeemer -> TxModifie
 addReferenceScriptInput script value datum redeemer = txMod $ AddReferenceScriptInput script value datum redeemer
 
 -- | Add a plutus V2 script input.
-addPlutusScriptInput :: PlutusScript PlutusScriptV2 -> Value -> Datum -> Redeemer -> ReferenceScript Era -> TxModifier
+addPlutusScriptInput :: (IsPlutusScriptInEra lang) => PlutusScript lang -> Value -> Datum -> Redeemer -> ReferenceScript Era -> TxModifier
 addPlutusScriptInput script value datum redeemer rscript = txMod $ AddPlutusScriptInput script value datum redeemer rscript
 
--- | Add a plutus V3 script input.
-addPlutusScriptInputV3 :: PlutusScript PlutusScriptV3 -> Value -> Datum -> Redeemer -> ReferenceScript Era -> TxModifier
-addPlutusScriptInputV3 script value datum redeemer rscript = txMod $ AddPlutusScriptInputV3 script value datum redeemer rscript
-
 -- | Add a plutus script reference input.
-addPlutusScriptReferenceInput :: PlutusScript PlutusScriptV2 -> Value -> Datum -> ReferenceScript Era -> TxModifier
+addPlutusScriptReferenceInput :: (IsPlutusScriptInEra lang) => PlutusScript lang -> Value -> Datum -> ReferenceScript Era -> TxModifier
 addPlutusScriptReferenceInput script value datum rscript = txMod $ AddPlutusScriptReferenceInput script value datum rscript
 
 -- | Add a simple script input.
@@ -773,23 +668,14 @@ addSimpleScriptReferenceInput script value rscript = txMod $ AddSimpleScriptInpu
 
 -- | Smart constructor for minting with a Plutus V2 script
 addPlutusScriptMint
-  :: PlutusScript PlutusScriptV2
+  :: (IsPlutusScriptInEra lang)
+  => PlutusScript lang
   -> AssetName
   -> Quantity
   -> ScriptData -- Redeemer
   -> TxModifier
 addPlutusScriptMint script name qty redeemer =
   txMod $ AddPlutusScriptMint script name qty redeemer
-
--- | Smart constructor for minting with a Plutus V3 script
-addPlutusScriptMintV3
-  :: PlutusScript PlutusScriptV3
-  -> AssetName
-  -> Quantity
-  -> ScriptData -- Redeemer
-  -> TxModifier
-addPlutusScriptMintV3 script name qty redeemer =
-  txMod $ AddPlutusScriptMintV3 script name qty redeemer
 
 {- | Always-succeeds minting policy for testing
 Takes 2 arguments: redeemer and script context

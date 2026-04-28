@@ -46,7 +46,6 @@ module Convex.ThreatModel (
   removeOutput,
   addKeyInput,
   addPlutusScriptInput,
-  addPlutusScriptInputV3,
   addSimpleScriptInput,
   addReferenceScriptInput,
   addKeyReferenceInput,
