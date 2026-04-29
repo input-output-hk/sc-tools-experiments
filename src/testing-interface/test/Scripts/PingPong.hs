@@ -53,6 +53,7 @@ module Scripts.PingPong (
 
 import PlutusLedgerApi.V1.Address (Address (..))
 import PlutusLedgerApi.V1.Scripts (Datum (getDatum), DatumHash, Redeemer (..))
+import PlutusLedgerApi.V1.Value (Value)
 import PlutusLedgerApi.V2.Tx (OutputDatum (NoOutputDatum, OutputDatum, OutputDatumHash), TxOut (TxOut, txOutAddress, txOutDatum, txOutValue))
 import PlutusLedgerApi.V3.Contexts (
   ScriptContext (..),
@@ -179,31 +180,43 @@ validator
       -- Get current state from our input
       currentState = getStateFromTxOut datumMap "input" (txInInfoResolved ownInput)
 
-      -- SECURITY: Find continuation output AT OUR OWN ADDRESS
-      -- This is the key fix - we don't just take any output with valid datum
+      -- SECURITY: Find the first continuation output at our address for the
+      -- state-transition check.
       continuationOutput = findContinuationOutput ownAddress txInfoOutputs
 
-      -- SECURITY: Verify output value equals input value (prevent Large Value Attack)
-      -- An attacker could add junk tokens which increases min-UTxO and may lock funds
+      -- SECURITY: Verify every continuation output value equals input value
+      -- (prevent Large Value Attack on secondary outputs as well).
       inputValue = txOutValue (txInInfoResolved ownInput)
-      outputValue = txOutValue continuationOutput
+
+      -- SECURITY: Preserve continuation at script address: each consumed script
+      -- input at our address must yield a continuation output at our address.
+      ownInputCount = countInputsAtAddress ownAddress txInfoInputs
+      ownOutputCount = countOutputsAtAddress ownAddress txInfoOutputs
 
       -- Get next state from the continuation output at our address
       nextState = getStateFromTxOut datumMap "output" continuationOutput
+
+      validated = case validateContinuationOutputs ownAddress datumMap inputValue txInfoOutputs of
+        () ->
+          case (currentState, action, nextState) of
+            (Pinged, Pong, Ponged) ->
+              P.True -- BI.unitval
+            (Ponged, Ping, Pinged) ->
+              P.True -- BI.unitval
+            (Pinged, Stop, Stopped) ->
+              P.True -- BI.unitval
+            (Ponged, Stop, Stopped) ->
+              P.True -- BI.unitval
+            _ -> P.False
      in
-      if inputValue P./= outputValue
-        then P.traceError "Value mismatch: output value must equal input value"
-        else case (currentState, action, nextState) of
-          (Pinged, Pong, Ponged) ->
-            BI.unitval
-          (Ponged, Ping, Pinged) ->
-            BI.unitval
-          (Pinged, Stop, Stopped) ->
-            BI.unitval
-          (Ponged, Stop, Stopped) ->
-            BI.unitval
-          _ ->
-            P.traceError P.$ "Coverage: BRANCH_INVALID state=" `P.appendString` showState currentState `P.appendString` " action=" `P.appendString` showAction action `P.appendString` " nextState=" `P.appendString` showState nextState
+      -- SECURITY: Force strict datum parsing and exact value validation on ALL
+      -- continuation outputs at our script address.
+      if validated
+        then
+          if ownInputCount P./= ownOutputCount
+            then P.traceError "Output count mismatch at script address"
+            else BI.unitval
+        else P.traceError "Invalid state transition"
 validator _ = P.traceError "Invalid script purpose - expected SpendingScript"
 
 {- | Find our own input by matching the TxOutRef from SpendingScript
@@ -221,21 +234,46 @@ findOwnInput ref (inp@TxInInfo{txInInfoOutRef} : rest)
   | txInInfoOutRef P.== ref = inp
   | P.otherwise = findOwnInput ref rest
 
-{- | SECURITY CRITICAL: Find output at our own address.
-
-This is the key security fix. Instead of taking any output with a valid
-PingPong datum, we find the output that goes to OUR script address.
-
-This prevents an attacker from:
-1. Creating an output with valid datum to THEIR address
-2. Stealing the funds while satisfying the datum check
--}
 {-# INLINEABLE findContinuationOutput #-}
 findContinuationOutput :: Address -> [TxOut] -> TxOut
 findContinuationOutput _ [] = P.traceError "No continuation output at script address"
 findContinuationOutput ownAddr (out@TxOut{txOutAddress} : rest)
   | txOutAddress P.== ownAddr = out
   | P.otherwise = findContinuationOutput ownAddr rest
+
+{-# INLINEABLE countInputsAtAddress #-}
+countInputsAtAddress :: Address -> [TxInInfo] -> P.Integer
+countInputsAtAddress _ [] = 0
+countInputsAtAddress ownAddr (TxInInfo{txInInfoResolved} : rest)
+  | txOutAddress txInInfoResolved P.== ownAddr = 1 P.+ countInputsAtAddress ownAddr rest
+  | P.otherwise = countInputsAtAddress ownAddr rest
+
+{-# INLINEABLE countOutputsAtAddress #-}
+countOutputsAtAddress :: Address -> [TxOut] -> P.Integer
+countOutputsAtAddress _ [] = 0
+countOutputsAtAddress ownAddr (TxOut{txOutAddress} : rest)
+  | txOutAddress P.== ownAddr = 1 P.+ countOutputsAtAddress ownAddr rest
+  | P.otherwise = countOutputsAtAddress ownAddr rest
+
+{- | Validate every continuation output at our address.
+
+Each matching output must:
+1. Preserve the exact input value
+2. Have a datum that parses strictly as PingPongState
+
+This closes the secondary-output gaps for both Large Value and Large Data.
+-}
+{-# INLINEABLE validateContinuationOutputs #-}
+validateContinuationOutputs :: Address -> Map DatumHash Datum -> Value -> [TxOut] -> ()
+validateContinuationOutputs _ _ _ [] = ()
+validateContinuationOutputs ownAddr datumMap expectedValue (out@TxOut{txOutAddress} : rest)
+  | txOutAddress P./= ownAddr = validateContinuationOutputs ownAddr datumMap expectedValue rest
+  | txOutValue out P./= expectedValue = P.traceError "Value mismatch: all continuation outputs must equal input value"
+  | P.otherwise =
+      case getStateFromTxOut datumMap "output" out of
+        Pinged -> validateContinuationOutputs ownAddr datumMap expectedValue rest
+        Ponged -> validateContinuationOutputs ownAddr datumMap expectedValue rest
+        Stopped -> validateContinuationOutputs ownAddr datumMap expectedValue rest
 
 -- | Get PingPong state from a TxOut's datum
 {-# INLINEABLE getStateFromTxOut #-}
