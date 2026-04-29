@@ -63,7 +63,7 @@ import Control.Monad.IO.Class (MonadIO, liftIO)
 import Test.HUnit (Assertion)
 import Test.QuickCheck (Arbitrary (..), Gen, Property, counterexample, discard, elements, frequency, oneof, property)
 import Test.QuickCheck.Monadic (PropertyM, monadicIO, monitor, pick, run)
-import Test.Tasty (DependencyType (..), TestTree, sequentialTestGroup, testGroup, withResource)
+import Test.Tasty (DependencyType (..), TestTree, askOption, sequentialTestGroup, testGroup, withResource)
 import Test.Tasty.ExpectedFailure (ignoreTestBecause)
 import Test.Tasty.HUnit (assertFailure, testCaseSteps)
 import Test.Tasty.QuickCheck (testProperty)
@@ -80,6 +80,7 @@ import Convex.MockChain (MockChainState (..), MockchainT, initialStateFor, runMo
 import Convex.MockChain.Defaults qualified as Defaults
 import Convex.MonadLog (MonadLog)
 import Convex.NodeParams (NodeParams (..))
+import Convex.Tasty.Streaming.TMSummary (TMRecorder, ThreatModelSummary (..), tmRecord)
 import Convex.ThreatModel (SigningWallet (AutoSign), ThreatModel (..), ThreatModelOutcome (..), getThreatModelName, runThreatModelCheck, threatModelEnvs)
 import Convex.ThreatModel.All (allThreatModels)
 import Convex.Wallet.MockWallet qualified as Wallet
@@ -94,6 +95,7 @@ import Data.List (deleteFirstsBy)
 import Data.Map qualified as Map
 import Data.Maybe (fromMaybe)
 import Data.Set qualified as Set
+import Data.Text qualified as T
 import Data.Word (Word32)
 import GHC.Generics (Generic)
 import PlutusTx.Coverage (
@@ -322,11 +324,11 @@ propRunActionsWithOptions groupName opts =
 
   threatModelGroup _ [] = []
   threatModelGroup getTmResultsRef tms' =
-    [testGroup "Threat models" $ zipWith (threatModelTestCase getTmResultsRef) [1 ..] tms']
+    [testGroup "Threat models" $ zipWith (threatModelTestCase getTmResultsRef "Threat models") [1 ..] tms']
 
   expectedVulnGroup _ [] = []
   expectedVulnGroup getTmResultsRef evs' =
-    [testGroup "Expected vulnerabilities" $ zipWith (expectedVulnTestCase getTmResultsRef) [1 ..] evs']
+    [testGroup "Expected vulnerabilities" $ zipWith (expectedVulnTestCase getTmResultsRef "Expected vulnerabilities") [1 ..] evs']
 
 -- | Negative test: check that invalid actions fail
 negativeTest
@@ -455,65 +457,85 @@ positiveTest opts mGetTmResultsRef tms evs = monadicIO $ do
 -- | Create a test case for displaying threat model results
 threatModelTestCase
   :: IO (IORef ThreatModelResults)
+  -> String
+  -- ^ Tasty group name (for keying summaries)
   -> Int
   -- ^ Index for fallback naming
   -> ThreatModel ()
   -- ^ The threat model
   -> TestTree
-threatModelTestCase getTmResultsRef idx tm =
+threatModelTestCase getTmResultsRef groupName idx tm =
   let name = fromMaybe ("Threat model " <> show idx) (getThreatModelName tm)
-   in testCaseSteps name $ \step -> do
-        tmRef <- getTmResultsRef
-        allResults <- readIORef tmRef
-        let outcomes = fromMaybe [] (Map.lookup name allResults)
-            total = length outcomes
-            numPassed = length [() | TMPassed <- outcomes]
-            numSkipped = length [() | TMSkipped <- outcomes]
-            numErrors = length [() | TMError _ <- outcomes]
-            errors = [msg | TMError msg <- outcomes]
+      key = groupName <> "/" <> name
+   in askOption $ \(recorder :: TMRecorder) ->
+        testCaseSteps name $ \step -> do
+          tmRef <- getTmResultsRef
+          allResults <- readIORef tmRef
+          let outcomes = fromMaybe [] (Map.lookup name allResults)
+              total = length outcomes
+              numPassed = length [() | TMPassed <- outcomes]
+              numFailed = length [() | TMFailed _ <- outcomes]
+              numSkipped = length [() | TMSkipped <- outcomes]
+              numErrors = length [() | TMError _ <- outcomes]
+              errors = [msg | TMError msg <- outcomes]
+              tested = numPassed + numFailed
+              summary =
+                ThreatModelSummary
+                  { tmsName = T.pack name
+                  , tmsTested = tested
+                  , tmsTotal = total
+                  , tmsPassed = numPassed
+                  , tmsFailed = numFailed
+                  , tmsSkipped = numSkipped
+                  , tmsErrors = numErrors
+                  }
 
-        -- Report errors as warnings (don't fail the test)
-        case errors of
-          [] -> pure ()
-          _ -> do
-            step $ "WARNING: " <> show numErrors <> " error(s) during threat model execution"
-            mapM_ (step . ("  " <>)) (take 3 errors)
-            case drop 3 errors of
-              [] -> pure ()
-              remaining -> step $ "  ... and " <> show (length remaining) <> " more"
+          -- Report errors as warnings (don't fail the test)
+          case errors of
+            [] -> pure ()
+            _ -> do
+              step $ "WARNING: " <> show numErrors <> " error(s) during threat model execution"
+              mapM_ (step . ("  " <>)) (take 3 errors)
+              case drop 3 errors of
+                [] -> pure ()
+                remaining -> step $ "  ... and " <> show (length remaining) <> " more"
 
-        if total == 0
-          then step "No transactions were generated by positive tests"
-          else
-            if numSkipped + numErrors == total
-              then
-                step $
-                  "SKIPPED: Precondition never met (0/"
-                    <> show total
-                    <> " transactions applicable)"
-              else do
-                step $
-                  "Tested "
-                    <> show numPassed
-                    <> "/"
-                    <> show total
-                    <> " transactions ("
-                    <> show numSkipped
-                    <> " skipped, "
-                    <> show numErrors
-                    <> " errors)"
-                case [msg | TMFailed msg <- outcomes] of
-                  [] -> pure ()
-                  (firstFailure : rest) ->
-                    assertFailure $
-                      unlines
-                        [ "FAILED (after " <> show (numPassed + 1) <> " tests): Vulnerability detected"
-                        , ""
-                        , firstFailure
-                        , if null rest
-                            then ""
-                            else "... and " <> show (length rest) <> " more similar failure(s) suppressed"
-                        ]
+          if total == 0
+            then do
+              step "No transactions were generated by positive tests"
+              tmRecord recorder key summary
+            else
+              if numSkipped + numErrors == total
+                then do
+                  step $
+                    "SKIPPED: Precondition never met (0/"
+                      <> show total
+                      <> " transactions applicable)"
+                  tmRecord recorder key summary
+                else do
+                  step $
+                    "Tested "
+                      <> show numPassed
+                      <> "/"
+                      <> show total
+                      <> " transactions ("
+                      <> show numSkipped
+                      <> " skipped, "
+                      <> show numErrors
+                      <> " errors)"
+                  tmRecord recorder key summary
+                  case [msg | TMFailed msg <- outcomes] of
+                    [] -> pure ()
+                    (firstFailure : rest) ->
+                      assertFailure $
+                        unlines
+                          [ "FAILED (after " <> show (numPassed + 1) <> " tests): Vulnerability detected"
+                          , ""
+                          , firstFailure
+                          , if null rest
+                              then ""
+                              else "... and " <> show (length rest) <> " more similar failure(s) suppressed"
+                          ]
 
 {- | Create a test case for expected vulnerabilities with inverted pass/fail semantics.
 TMFailed = GOOD (vulnerability was correctly detected)
@@ -523,76 +545,96 @@ Output is quiet — no verbose transaction dump details, just stats.
 -}
 expectedVulnTestCase
   :: IO (IORef ThreatModelResults)
+  -> String
+  -- ^ Tasty group name (for keying summaries)
   -> Int
   -- ^ Index for fallback naming
   -> ThreatModel ()
   -- ^ The threat model expected to find vulnerabilities
   -> TestTree
-expectedVulnTestCase getTmResultsRef idx tm =
+expectedVulnTestCase getTmResultsRef groupName idx tm =
   let name = fromMaybe ("Expected vulnerability " <> show idx) (getThreatModelName tm)
-   in testCaseSteps name $ \step -> do
-        tmRef <- getTmResultsRef
-        allResults <- readIORef tmRef
-        let outcomes = fromMaybe [] (Map.lookup name allResults)
-            total = length outcomes
-            -- In expected vulnerability context:
-            -- TMFailed = vulnerability detected = GOOD
-            -- TMPassed = no vulnerability found = BAD
-            -- TMError = crashed, doesn't count either way
-            numFound = length [() | TMFailed _ <- outcomes] -- Good: vulnerability detected
-            numNotFound = length [() | TMPassed <- outcomes] -- Bad: expected vuln not found
-            numSkipped = length [() | TMSkipped <- outcomes]
-            numErrors = length [() | TMError _ <- outcomes]
-            errors = [msg | TMError msg <- outcomes]
-            tested = numFound + numNotFound
+      key = groupName <> "/" <> name
+   in askOption $ \(recorder :: TMRecorder) ->
+        testCaseSteps name $ \step -> do
+          tmRef <- getTmResultsRef
+          allResults <- readIORef tmRef
+          let outcomes = fromMaybe [] (Map.lookup name allResults)
+              total = length outcomes
+              -- In expected vulnerability context:
+              -- TMFailed = vulnerability detected = GOOD
+              -- TMPassed = no vulnerability found = BAD
+              -- TMError = crashed, doesn't count either way
+              numFound = length [() | TMFailed _ <- outcomes] -- Good: vulnerability detected
+              numNotFound = length [() | TMPassed <- outcomes] -- Bad: expected vuln not found
+              numSkipped = length [() | TMSkipped <- outcomes]
+              numErrors = length [() | TMError _ <- outcomes]
+              errors = [msg | TMError msg <- outcomes]
+              tested = numFound + numNotFound
+              summary =
+                ThreatModelSummary
+                  { tmsName = T.pack name
+                  , tmsTested = tested
+                  , tmsTotal = total
+                  , tmsPassed = numNotFound -- TMPassed count
+                  , tmsFailed = numFound -- TMFailed count
+                  , tmsSkipped = numSkipped
+                  , tmsErrors = numErrors
+                  }
 
-        -- Report errors as warnings (don't fail the test for errors alone)
-        case errors of
-          [] -> pure ()
-          _ -> do
-            step $ "WARNING: " <> show numErrors <> " error(s) during threat model execution"
-            mapM_ (step . ("  " <>)) (take 3 errors)
-            case drop 3 errors of
-              [] -> pure ()
-              remaining -> step $ "  ... and " <> show (length remaining) <> " more"
+          -- Report errors as warnings (don't fail the test for errors alone)
+          case errors of
+            [] -> pure ()
+            _ -> do
+              step $ "WARNING: " <> show numErrors <> " error(s) during threat model execution"
+              mapM_ (step . ("  " <>)) (take 3 errors)
+              case drop 3 errors of
+                [] -> pure ()
+                remaining -> step $ "  ... and " <> show (length remaining) <> " more"
 
-        if total == 0
-          then step "No transactions were generated by positive tests"
-          else
-            if numSkipped + numErrors == total
-              then
-                step $
-                  "SKIPPED: Precondition never met (0/"
-                    <> show total
-                    <> " transactions applicable)"
-              else
-                if numFound > 0
-                  then
-                    -- Good: at least one vulnerability was found
-                    step $
-                      "Vulnerability detected ("
-                        <> show numFound
-                        <> "/"
-                        <> show tested
-                        <> " transactions, "
-                        <> show numSkipped
-                        <> " skipped, "
-                        <> show numErrors
-                        <> " errors)"
-                  else
-                    if tested > 0
-                      then
-                        -- Bad: transactions were tested but no vulnerability found
-                        assertFailure $
-                          "Expected vulnerability NOT found in "
-                            <> show tested
-                            <> " tested transactions"
-                      else
-                        -- Edge case: all were skipped/errored (same as numSkipped + numErrors == total, but defensive)
-                        step $
-                          "SKIPPED: Precondition never met (0/"
-                            <> show total
-                            <> " transactions applicable)"
+          if total == 0
+            then do
+              step "No transactions were generated by positive tests"
+              tmRecord recorder key summary
+            else
+              if numSkipped + numErrors == total
+                then do
+                  step $
+                    "SKIPPED: Precondition never met (0/"
+                      <> show total
+                      <> " transactions applicable)"
+                  tmRecord recorder key summary
+                else
+                  if numFound > 0
+                    then do
+                      -- Good: at least one vulnerability was found
+                      step $
+                        "Vulnerability detected ("
+                          <> show numFound
+                          <> "/"
+                          <> show tested
+                          <> " transactions, "
+                          <> show numSkipped
+                          <> " skipped, "
+                          <> show numErrors
+                          <> " errors)"
+                      tmRecord recorder key summary
+                    else
+                      if tested > 0
+                        then do
+                          -- Bad: transactions were tested but no vulnerability found
+                          tmRecord recorder key summary
+                          assertFailure $
+                            "Expected vulnerability NOT found in "
+                              <> show tested
+                              <> " tested transactions"
+                        else do
+                          -- Edge case: all were skipped/errored (same as numSkipped + numErrors == total, but defensive)
+                          step $
+                            "SKIPPED: Precondition never met (0/"
+                              <> show total
+                              <> " transactions applicable)"
+                          tmRecord recorder key summary
 
 -- | Generate a number of actions (with a given maximum) and run them.
 runActions

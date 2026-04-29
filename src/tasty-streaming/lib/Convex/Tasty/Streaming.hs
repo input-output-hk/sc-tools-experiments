@@ -8,6 +8,13 @@ module Convex.Tasty.Streaming (
 import Control.Concurrent.Async (forConcurrently_)
 import Control.Concurrent.MVar (newMVar, withMVar)
 import Control.Concurrent.STM
+import Convex.Tasty.Streaming.TMSummary (
+  TMRecorder,
+  TMStoreOption (..),
+  lookupThreatModelSummary,
+  newTMStore,
+  storeRecorder,
+ )
 import Convex.Tasty.Streaming.TreeMap (buildTestMap)
 import Convex.Tasty.Streaming.Types
 import Data.Aeson (encode)
@@ -18,13 +25,14 @@ import Data.Tagged (Tagged (..))
 import Data.Text qualified as Text
 import Data.Typeable (Typeable)
 import System.IO (BufferMode (..), hFlush, hSetBuffering, stdout)
-import Test.Tasty (TestTree, defaultMainWithIngredients)
+import Test.Tasty (TestTree, defaultMainWithIngredients, localOption)
 import Test.Tasty.Ingredients (Ingredient (..))
 import Test.Tasty.Ingredients.ConsoleReporter (consoleTestReporter)
 import Test.Tasty.Options (IsOption (..), OptionDescription (..), lookupOption, mkFlagCLParser, safeRead)
 import Test.Tasty.Runners (
   FailureReason (..),
   Outcome (..),
+  Progress (..),
   Result (..),
   Status (..),
   listingTests,
@@ -59,12 +67,16 @@ newline-delimited JSON events streamed to stdout.
 -}
 streamingJsonReporter :: Ingredient
 streamingJsonReporter = TestReporter
-  [Option (Proxy :: Proxy StreamingJson)]
+  [ Option (Proxy :: Proxy StreamingJson)
+  , Option (Proxy :: Proxy TMStoreOption)
+  , Option (Proxy :: Proxy TMRecorder)
+  ]
   $ \opts tree -> do
     let StreamingJson enabled = lookupOption opts
     if not enabled
       then Nothing
       else Just $ \statusMap -> do
+        let TMStoreOption mStore = lookupOption opts
         -- Set line buffering for streaming
         hSetBuffering stdout LineBuffering
 
@@ -94,27 +106,62 @@ streamingJsonReporter = TestReporter
           -- Emit test_started
           emit $ TestStarted idx
 
-          -- Wait for completion
-          result <- atomically $ do
-            status <- readTVar statusTVar
-            case status of
-              Done r -> pure r
-              _ -> retry
+          -- Wait for completion, emitting progress events along the way
+          let waitLoop lastSeen = do
+                next <- atomically $ do
+                  status <- readTVar statusTVar
+                  case status of
+                    NotStarted -> retry
+                    Executing p ->
+                      let cur = (progressText p, progressPercent p)
+                       in if Just cur == lastSeen
+                            then retry
+                            else pure (Left p)
+                    Done r -> pure (Right r)
+                case next of
+                  Left p -> do
+                    emit $
+                      TestProgress
+                        { epId = idx
+                        , epMessage = Text.pack (progressText p)
+                        , epPercent = progressPercent p
+                        }
+                    waitLoop (Just (progressText p, progressPercent p))
+                  Right r -> pure r
+          result <- waitLoop Nothing
 
           -- Record result
           atomically $ modifyTVar' resultsVar ((idx, result) :)
 
+          -- Look up structured threat-model summary by "<group>/<name>" key
+          let testInfo = IntMap.lookup idx testMap
+              key = case testInfo of
+                Just ti
+                  | (parent : _) <- reverse (tiPath ti) ->
+                      Text.unpack parent <> "/" <> Text.unpack (tiName ti)
+                Just ti -> Text.unpack (tiName ti)
+                Nothing -> ""
+          mSummary <- case mStore of
+            Just store -> lookupThreatModelSummary store key
+            Nothing -> pure Nothing
+
           -- Emit test_done
-          let testName = maybe "" tiName (IntMap.lookup idx testMap)
           let outcome = case resultOutcome result of
                 Success -> TestSuccess
                 Failure reason ->
                   TestFailure $
                     FailureInfo
                       { fiReason = Text.pack $ showFailureReason reason
-                      , fiMessage = Text.pack $ resultDescription result
+                      , fiMessage = Text.pack (resultDescription result)
                       }
-          emit $ TestDone idx outcome (resultTime result) testName
+          emit $
+            TestDone
+              { edId = idx
+              , edOutcome = outcome
+              , edDuration = resultTime result
+              , edDescription = Text.pack (resultDescription result)
+              , edThreatModel = mSummary
+              }
 
         -- Emit suite_done summary
         allResults <- readTVarIO resultsVar
@@ -167,6 +214,18 @@ listTestsJsonIngredient = TestManager
 streamingIngredients :: [Ingredient]
 streamingIngredients = [listingTests, listTestsJsonIngredient, streamingJsonReporter, consoleTestReporter]
 
--- | Drop-in replacement for 'defaultMain' that supports @--streaming-json@.
+{- | Drop-in replacement for 'defaultMain' that supports @--streaming-json@.
+
+If you bypass this entry point and wire 'streamingIngredients' manually,
+threat-model summaries will not appear in the JSON output unless you
+also call
+@'localOption' ('TMStoreOption' (Just store)) . 'localOption' ('storeRecorder' store)@
+on your tree (with a freshly-allocated store from 'newTMStore').
+-}
 defaultMainStreaming :: TestTree -> IO ()
-defaultMainStreaming = defaultMainWithIngredients streamingIngredients
+defaultMainStreaming tree = do
+  store <- newTMStore
+  let tree' =
+        localOption (TMStoreOption (Just store)) $
+          localOption (storeRecorder store) tree
+  defaultMainWithIngredients streamingIngredients tree'

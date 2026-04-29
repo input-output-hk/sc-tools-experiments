@@ -5,7 +5,9 @@ module Convex.Tasty.Streaming.Types (
   FailureInfo (..),
 ) where
 
+import Convex.Tasty.Streaming.TMSummary (ThreatModelSummary)
 import Data.Aeson (ToJSON (..), object, (.=))
+import Data.Aeson.Types (Pair)
 import Data.Text (Text)
 import GHC.Generics (Generic)
 
@@ -63,6 +65,7 @@ data Event
       , edOutcome :: !TestOutcome
       , edDuration :: !Double
       , edDescription :: !Text
+      , edThreatModel :: !(Maybe ThreatModelSummary)
       }
   | SuiteDone
       { esPassed :: !Int
@@ -89,7 +92,7 @@ instance ToJSON Event where
       , "message" .= msg
       , "percent" .= pct
       ]
-  toJSON (TestDone i outcome dur desc) =
+  toJSON (TestDone i outcome dur desc mTm) =
     object $
       [ "event" .= ("test_done" :: Text)
       , "id" .= i
@@ -97,12 +100,15 @@ instance ToJSON Event where
       , "description" .= desc
       ]
         <> outcomeFields outcome
+        <> threatModelFields mTm
    where
     outcomeFields TestSuccess = ["success" .= True]
     outcomeFields (TestFailure fi) =
       [ "success" .= False
       , "failure" .= fi
       ]
+    threatModelFields :: Maybe ThreatModelSummary -> [Pair]
+    threatModelFields = maybe [] (\s -> ["threat_model" .= s])
   toJSON (SuiteDone p f dur) =
     object
       [ "event" .= ("suite_done" :: Text)
