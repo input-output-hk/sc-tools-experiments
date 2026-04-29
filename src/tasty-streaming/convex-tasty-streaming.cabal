@@ -39,6 +39,7 @@ library
   import:          lang
   exposed-modules:
     Convex.Tasty.Streaming
+    Convex.Tasty.Streaming.TMSummary
     Convex.Tasty.Streaming.TreeMap
     Convex.Tasty.Streaming.Types
 
