@@ -75,6 +75,7 @@ library
     , convex-coin-selection
     , convex-mockchain
     , convex-optics
+    , convex-tasty-streaming
     , convex-wallet
     , HUnit
     , lens
