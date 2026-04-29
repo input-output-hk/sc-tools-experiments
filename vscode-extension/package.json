@@ -9,7 +9,9 @@
   "categories": [
     "Other"
   ],
-  "activationEvents": [],
+  "activationEvents": [
+    "workspaceContains:**/*.hs"
+  ],
   "main": "./out/extension.js",
   "contributes": {
     "commands": [
