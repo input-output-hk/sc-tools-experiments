@@ -1,3 +1,4 @@
+{-# LANGUAGE DerivingStrategies #-}
 {-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE NamedFieldPuns #-}
 {-# LANGUAGE NumericUnderscores #-}
@@ -55,7 +56,7 @@ import Convex.MockChain.Defaults qualified as Defaults
 import Convex.NodeParams (ledgerProtocolParameters)
 import Convex.TestingInterface (
   Options (Options, params),
-  RunOptions (mcOptions),
+  RunOptions (..),
   TestingInterface (..),
   ThreatModelsFor (..),
   genAction,
@@ -89,6 +90,7 @@ import Scripts.PingPong.Vulnerable qualified as VulnerablePingPong
 
 import Test.QuickCheck.Monadic (monadicIO, monitor, run)
 import Test.Tasty (TestTree, testGroup)
+import Test.Tasty.ExpectedFailure (expectFailBecause)
 import Test.Tasty.HUnit (testCase)
 import Test.Tasty.QuickCheck (
   Property,
@@ -204,10 +206,47 @@ instance TestingInterface PingPongModel where
             liftIO $ putStrLn "Expected inline datum but got something else"
             pure False
 
-  monitoring _state _action prop = prop
+  -- monitoring _state _action prop = prop
+  monitoring _ (PlayRound action) = QC.label ("action=" <> show action)
 
 instance ThreatModelsFor PingPongModel where
   threatModels = [basicThreatModel, unprotectedScriptOutput, largeValueAttackWith 10, largeDataAttackWith 10]
+  expectedVulnerabilities = []
+
+newtype PingPongMonitoringModel = PingPongMonitoringModel
+  { unPingPongMonitoringModel :: PingPongModel
+  }
+  deriving stock (Show, Eq)
+
+instance TestingInterface PingPongMonitoringModel where
+  data Action PingPongMonitoringModel
+    = MonitorPingPongAction (Action PingPongModel)
+    deriving stock (Show, Eq)
+
+  initialize = PingPongMonitoringModel <$> initialize @PingPongModel
+
+  arbitraryAction (PingPongMonitoringModel model) =
+    MonitorPingPongAction <$> arbitraryAction model
+
+  precondition (PingPongMonitoringModel model) (MonitorPingPongAction action) =
+    precondition model action
+
+  perform (PingPongMonitoringModel model) (MonitorPingPongAction action) =
+    PingPongMonitoringModel <$> perform model action
+
+  validate (PingPongMonitoringModel model) = validate model
+
+  monitoring (PingPongMonitoringModel state) (MonitorPingPongAction action) _ =
+    QC.counterexample
+      ( "PingPong monitoring forced failure after action "
+          <> show action
+          <> " with state "
+          <> show state
+      )
+      (QC.property False)
+
+instance ThreatModelsFor PingPongMonitoringModel where
+  threatModels = []
   expectedVulnerabilities = []
 
 plutusScript :: (C.IsPlutusScriptLanguage lang) => C.PlutusScript lang -> C.Script lang
@@ -644,6 +683,12 @@ pingPongTests opts runOpts =
     , propRunActionsWithOptions @PingPongModel
         "Property-based test with TestingInterface"
         runOpts
+    , expectFailBecause "monitoring regression intentionally fails after the first successful action" $
+        propRunActionsWithOptions @PingPongMonitoringModel
+          "Property-based test with failing monitoring"
+          runOpts
+            { maxActions = 1
+            }
     , testProperty
         "PingPong VULNERABLE to unprotected output redirect"
         (propPingPongVulnerableToOutputRedirect runOpts)

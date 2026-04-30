@@ -41,7 +41,7 @@ import Convex.MockChain.CoinSelection (balanceAndSubmit, tryBalanceAndSubmit)
 import Convex.MockChain.Defaults qualified as Defaults
 import Convex.MockChain.Utils (mockchainSucceeds)
 import Convex.TestingInterface (
-  RunOptions,
+  RunOptions (..),
   TestingInterface (..),
   ThreatModelsFor (..),
   propRunActionsWithOptions,
@@ -57,6 +57,7 @@ import PlutusTx.Builtins qualified as PlutusTx
 
 import System.IO.Unsafe (unsafePerformIO)
 import Test.Tasty (TestTree, testGroup)
+import Test.Tasty.ExpectedFailure (expectFailBecause)
 import Test.Tasty.HUnit (assertFailure, testCase)
 import Test.Tasty.QuickCheck ()
 import Test.Tasty.QuickCheck qualified as QC
@@ -393,6 +394,41 @@ instance ThreatModelsFor HelloWorldModel where
   -- No threat models for this simple contract
   threatModels = []
 
+newtype HelloWorldMonitoringModel = HelloWorldMonitoringModel
+  { unHelloWorldMonitoringModel :: HelloWorldModel
+  }
+  deriving stock (Show, Eq)
+
+instance TestingInterface HelloWorldMonitoringModel where
+  data Action HelloWorldMonitoringModel
+    = MonitorHelloWorldAction (Action HelloWorldModel)
+    deriving stock (Show, Eq)
+
+  initialize = HelloWorldMonitoringModel <$> initialize @HelloWorldModel
+
+  arbitraryAction (HelloWorldMonitoringModel model) =
+    MonitorHelloWorldAction <$> arbitraryAction model
+
+  precondition (HelloWorldMonitoringModel model) (MonitorHelloWorldAction action) =
+    precondition model action
+
+  perform (HelloWorldMonitoringModel model) (MonitorHelloWorldAction action) =
+    HelloWorldMonitoringModel <$> perform model action
+
+  validate (HelloWorldMonitoringModel model) = validate model
+
+  monitoring (HelloWorldMonitoringModel state) (MonitorHelloWorldAction action) _ =
+    QC.counterexample
+      ( "HelloWorld monitoring forced failure after action "
+          <> show action
+          <> " with state "
+          <> show state
+      )
+      (QC.property False)
+
+instance ThreatModelsFor HelloWorldMonitoringModel where
+  threatModels = []
+
 -- ----------------------------------------------------------------------------
 -- Test tree
 -- ----------------------------------------------------------------------------
@@ -406,4 +442,10 @@ aikenHelloWorldTests runOpts =
     , propRunActionsWithOptions @HelloWorldModel
         "property-based testing"
         runOpts
+    , expectFailBecause "monitoring regression intentionally fails after the first successful action" $
+        propRunActionsWithOptions @HelloWorldMonitoringModel
+          "property-based testing with failing monitoring"
+          runOpts
+            { maxActions = 1
+            }
     ]

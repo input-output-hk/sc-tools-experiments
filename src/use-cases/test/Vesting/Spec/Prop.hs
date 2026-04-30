@@ -221,7 +221,7 @@ instance TestingInterface VestingModel where
       pure $ vm{_curSlot = _curSlot vm + slots}
 
   validate _vm = pure True
-  monitoring _ _ = error "monitoring not implemented"
+  monitoring _ _ = id
 
 instance ThreatModelsFor VestingModel where
   threatModels =

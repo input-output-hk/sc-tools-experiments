@@ -154,7 +154,10 @@ class (Show state, Eq state, Show (Action state)) => TestingInterface state wher
   validate :: (MonadIO m) => state -> TestingMonadT m Bool
   validate _ = pure True
 
-  {- | Called after each action to check custom properties.
+  {- | Called after each successful action to wrap the enclosing QuickCheck property.
+  This hook runs only after 'perform' and 'validate' succeed. Use it for
+  property-level checks, labels, and counterexamples that should be attached to
+  valid state transitions.
   Default: no additional checks.
   -}
   monitoring :: state -> Action state -> Property -> Property
@@ -614,7 +617,7 @@ runAction
   => RunOptions
   -> state
   -> Action state
-  -> TestingMonadT m state
+  -> TestingMonadT (PropertyM m) state
 runAction opts modelState action = do
   when (verbose opts) $
     liftIO $
@@ -633,6 +636,8 @@ runAction opts modelState action = do
   valid <- validate modelState'
   unless valid $
     fail "Blockchain state does not match model state"
+
+  lift $ monitor (monitoring modelState' action)
 
   pure modelState'
 

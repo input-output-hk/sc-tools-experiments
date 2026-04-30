@@ -236,7 +236,7 @@ instance TestingInterface MultiPlayerPingPongModel where
 
   validate _ = pure True
 
-  monitoring _ _ = error "monitoring not implemented"
+  monitoring _ _ = id
 
 nextStateForHitTurn :: MultiPlayerPingPongModel -> MultiPlayerPingPongModel
 nextStateForHitTurn m =
