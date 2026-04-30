@@ -200,13 +200,13 @@ validator
         () ->
           case (currentState, action, nextState) of
             (Pinged, Pong, Ponged) ->
-              P.True -- BI.unitval
+              P.True
             (Ponged, Ping, Pinged) ->
-              P.True -- BI.unitval
+              P.True
             (Pinged, Stop, Stopped) ->
-              P.True -- BI.unitval
+              P.True
             (Ponged, Stop, Stopped) ->
-              P.True -- BI.unitval
+              P.True
             _ -> P.False
      in
       -- SECURITY: Force strict datum parsing and exact value validation on ALL
@@ -270,10 +270,8 @@ validateContinuationOutputs ownAddr datumMap expectedValue (out@TxOut{txOutAddre
   | txOutAddress P./= ownAddr = validateContinuationOutputs ownAddr datumMap expectedValue rest
   | txOutValue out P./= expectedValue = P.traceError "Value mismatch: all continuation outputs must equal input value"
   | P.otherwise =
-      case getStateFromTxOut datumMap "output" out of
-        Pinged -> validateContinuationOutputs ownAddr datumMap expectedValue rest
-        Ponged -> validateContinuationOutputs ownAddr datumMap expectedValue rest
-        Stopped -> validateContinuationOutputs ownAddr datumMap expectedValue rest
+      getStateFromTxOut datumMap "output" out `Haskell.seq`
+        validateContinuationOutputs ownAddr datumMap expectedValue rest
 
 -- | Get PingPong state from a TxOut's datum
 {-# INLINEABLE getStateFromTxOut #-}

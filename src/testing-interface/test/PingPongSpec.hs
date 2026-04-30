@@ -74,7 +74,7 @@ import Convex.ThreatModel (
   runThreatModelMQuiet,
  )
 import Convex.ThreatModel.InvalidDatumIndex (invalidDatumIndexAttackWith)
-import Convex.ThreatModel.InvalidScriptPurpose (invalidScriptPurposeAttackV3)
+import Convex.ThreatModel.InvalidScriptPurpose (invalidScriptPurposeAttack)
 import Convex.ThreatModel.LargeData (largeDataAttackWith)
 import Convex.ThreatModel.LargeValue (largeValueAttackWith)
 import Convex.ThreatModel.MissingOutputDatum (missingOutputDatumAttack)
@@ -349,7 +349,7 @@ instance ThreatModelsFor PingPongModel where
     [ largeDataAttackWith 10
     , largeValueAttackWith 10
     , invalidDatumIndexAttackWith 5
-    , invalidScriptPurposeAttackV3 Scripts.pingPongValidatorScript
+    , invalidScriptPurposeAttack Scripts.pingPongValidatorScript
     , missingOutputDatumAttack
     , outputDatumHashMissingAttack
     , unprotectedScriptOutput
@@ -837,5 +837,4 @@ pingPongTests opts runOpts =
     , testProperty
         "PingPong VULNERABLE to large value attack"
         (propPingPongVulnerableToLargeValue runOpts)
-        -- , pingPongCoverageTests opts
     ]

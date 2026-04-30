@@ -25,13 +25,14 @@ executes the provided Plutus V3 script as a minting policy. If the modified
 transaction still validates, the script may be vulnerable to purpose confusion.
 -}
 module Convex.ThreatModel.InvalidScriptPurpose (
-  invalidScriptPurposeAttackV3,
-  invalidScriptPurposeAttackWithV3,
+  invalidScriptPurposeAttack,
+  invalidScriptPurposeAttackWith,
 ) where
 
 import Cardano.Api qualified as C
 import Convex.ThreatModel
-import Convex.ThreatModel.TxModifier (addPlutusScriptMintV3)
+import Convex.ThreatModel.Cardano.Api (IsPlutusScriptInEra)
+import Convex.ThreatModel.TxModifier (addPlutusScriptMint)
 import GHC.Exts (fromList)
 
 {- | Default Invalid Script Purpose attack for Plutus V3 scripts.
@@ -39,11 +40,12 @@ import GHC.Exts (fromList)
 Uses a unit-style redeemer (@Constr 0 []@), mints quantity 1, and uses a test
 asset name @"deadbeef"@.
 -}
-invalidScriptPurposeAttackV3
-  :: C.PlutusScript C.PlutusScriptV3
+invalidScriptPurposeAttack
+  :: (IsPlutusScriptInEra lang)
+  => C.PlutusScript lang
   -> ThreatModel ()
-invalidScriptPurposeAttackV3 =
-  invalidScriptPurposeAttackWithV3
+invalidScriptPurposeAttack =
+  invalidScriptPurposeAttackWith
     (C.ScriptDataConstructor 0 [])
     (C.UnsafeAssetName "deadbeef")
     (C.Quantity 1)
@@ -60,20 +62,21 @@ Given a script intended for spending validation, this threat model:
 
 If it validates, the contract may accept an unintended script purpose.
 -}
-invalidScriptPurposeAttackWithV3
-  :: C.ScriptData
+invalidScriptPurposeAttackWith
+  :: (IsPlutusScriptInEra lang)
+  => C.ScriptData
   -> C.AssetName
   -> C.Quantity
-  -> C.PlutusScript C.PlutusScriptV3
+  -> C.PlutusScript lang
   -> ThreatModel ()
-invalidScriptPurposeAttackWithV3 redeemer assetName quantity spendingValidator = Named "Invalid Script Purpose Attack (V3)" $ do
+invalidScriptPurposeAttackWith redeemer assetName quantity spendingValidator = Named "Invalid Script Purpose Attack (V3)" $ do
   -- Precondition: at least one script input must be spent so a script validator runs.
   _ <- anyInputSuchThat (not . isKeyAddressAny . addressOf)
 
   -- Prefer a key-address output to receive minted test tokens.
   output <- anyOutputSuchThat (isKeyAddressAny . addressOf)
 
-  let policyId = C.PolicyId $ hashScript (C.PlutusScript C.PlutusScriptV3 spendingValidator)
+  let policyId = C.PolicyId $ hashScript (C.PlutusScript plutusScriptVersion spendingValidator)
       mintedValue = fromList [(C.AssetId policyId assetName, quantity)]
       newValue = valueOf output <> mintedValue
 
@@ -93,4 +96,4 @@ invalidScriptPurposeAttackWithV3 redeemer assetName quantity spendingValidator =
   -- This SHOULD fail. If it validates, the script is vulnerable.
   shouldNotValidate $
     changeValueOf output newValue
-      <> addPlutusScriptMintV3 spendingValidator assetName quantity redeemer
+      <> addPlutusScriptMint spendingValidator assetName quantity redeemer
