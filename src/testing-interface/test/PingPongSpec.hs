@@ -206,7 +206,7 @@ instance TestingInterface PingPongModel where
             liftIO $ putStrLn "Expected inline datum but got something else"
             pure False
 
-  -- monitoring _state _action prop = prop
+  -- Here is an example of using the monitoring function to label actions in QuickCheck output.
   monitoring _ (PlayRound action) = QC.label ("action=" <> show action)
 
 instance ThreatModelsFor PingPongModel where

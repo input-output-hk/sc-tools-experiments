@@ -417,6 +417,7 @@ instance TestingInterface HelloWorldMonitoringModel where
 
   validate (HelloWorldMonitoringModel model) = validate model
 
+  -- Here is an example of a monitoring function that intentionally fails after the first successful action.
   monitoring (HelloWorldMonitoringModel state) (MonitorHelloWorldAction action) _ =
     QC.counterexample
       ( "HelloWorld monitoring forced failure after action "
