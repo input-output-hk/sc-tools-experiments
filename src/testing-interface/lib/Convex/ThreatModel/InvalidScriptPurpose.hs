@@ -69,7 +69,7 @@ invalidScriptPurposeAttackWith
   -> C.Quantity
   -> C.PlutusScript lang
   -> ThreatModel ()
-invalidScriptPurposeAttackWith redeemer assetName quantity spendingValidator = Named "Invalid Script Purpose Attack (V3)" $ do
+invalidScriptPurposeAttackWith redeemer assetName quantity spendingValidator = Named "Invalid Script Purpose Attack" $ do
   -- Precondition: at least one script input must be spent so a script validator runs.
   _ <- anyInputSuchThat (not . isKeyAddressAny . addressOf)
 

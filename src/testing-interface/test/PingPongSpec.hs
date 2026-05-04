@@ -83,7 +83,6 @@ import Convex.ThreatModel.UnprotectedScriptOutput (unprotectedScriptOutput)
 import Convex.Wallet.MockWallet qualified as Wallet
 import Data.Map qualified as Map
 
--- import PingPongCoverageSpec (pingPongCoverageTests)
 import Scripts qualified
 import Scripts.PingPong qualified as PingPong
 import Scripts.PingPong.Vulnerable qualified as VulnerablePingPong
