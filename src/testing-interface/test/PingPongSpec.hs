@@ -1,3 +1,4 @@
+{-# LANGUAGE InstanceSigs #-}
 {-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE NamedFieldPuns #-}
 {-# LANGUAGE NumericUnderscores #-}
@@ -30,11 +31,9 @@ module PingPongSpec (
 
 import Cardano.Api qualified as C
 import Control.Lens ((^.))
-import Control.Monad (unless, void)
+import Control.Monad (void)
 import Control.Monad.Except (MonadError, runExceptT)
-import Control.Monad.IO.Class (MonadIO (..))
 import Control.Monad.Trans (lift)
-
 import Convex.BuildTx (execBuildTx)
 import Convex.BuildTx qualified as BuildTx
 import Convex.Class (
@@ -48,7 +47,6 @@ import Convex.MockChain (
   runMockchain0IOWith,
  )
 import Convex.MockChain.CoinSelection (
-  balanceAndSubmit,
   tryBalanceAndSubmit,
  )
 import Convex.MockChain.Defaults qualified as Defaults
@@ -75,14 +73,16 @@ import Convex.ThreatModel (
   runThreatModel,
   runThreatModelMQuiet,
  )
+import Convex.ThreatModel.InvalidDatumIndex (invalidDatumIndexAttackWith)
+import Convex.ThreatModel.InvalidScriptPurpose (invalidScriptPurposeAttack)
 import Convex.ThreatModel.LargeData (largeDataAttackWith)
 import Convex.ThreatModel.LargeValue (largeValueAttackWith)
+import Convex.ThreatModel.MissingOutputDatum (missingOutputDatumAttack)
+import Convex.ThreatModel.OutputDatumHashMissing (outputDatumHashMissingAttack)
 import Convex.ThreatModel.UnprotectedScriptOutput (unprotectedScriptOutput)
 import Convex.Wallet.MockWallet qualified as Wallet
 import Data.Map qualified as Map
-import PingPongCoverageSpec (pingPongCoverageTests)
-import PlutusTx.Builtins (dataToBuiltinData)
-import PlutusTx.IsData.Class (UnsafeFromData (unsafeFromBuiltinData))
+
 import Scripts qualified
 import Scripts.PingPong qualified as PingPong
 import Scripts.PingPong.Vulnerable qualified as VulnerablePingPong
@@ -97,121 +97,304 @@ import Test.Tasty.QuickCheck (
  )
 import Test.Tasty.QuickCheck qualified as QC
 
-type PingPongModel = PingPong.PingPongState
+data ScriptDatumStyle = InlineDatumStyle | DatumHashStyle
+  deriving (Show, Eq)
+
+data PingPongModel = PingPongModel
+  { modelState :: PingPong.PingPongState
+  , modelScriptUtxoCount :: Int
+  , modelDatumStyle :: ScriptDatumStyle
+  , modelInitialized :: Bool
+  }
+  deriving (Show, Eq)
 
 instance TestingInterface PingPongModel where
   data Action PingPongModel
-    = PlayRound PingPong.PingPongRedeemer
-    -- \^ Play a round (Ping, Pong, or Stop)
+    = StartWithInlineDatum
+    | StartWithDatumHash
+    | PlayRound PingPong.PingPongRedeemer
+    | DeployExtraScriptUtxo
+    | SpendTwoScriptInputs PingPong.PingPongRedeemer
     deriving (Show, Eq)
 
-  initialize = do
-    let
-      state = PingPong.Pinged
-      value = 10_000_000
-      txBody =
-        execBuildTx
-          ( BuildTx.payToScriptInlineDatum
-              Defaults.networkId
-              (C.hashScript (plutusScript Scripts.pingPongValidatorScript))
-              state
-              C.NoStakeAddress
-              (C.lovelaceToValue value)
-          )
-    -- liftIO $ putStrLn $ "Initializing contract with state: " ++ show state
-    -- Deploy the contract with the initial state
-    void $ tryBalanceAndSubmit mempty Wallet.w1 txBody TrailingChange []
-    pure state
+  initialize =
+    pure
+      PingPongModel
+        { modelState = PingPong.Pinged
+        , modelScriptUtxoCount = 0
+        , modelDatumStyle = InlineDatumStyle
+        , modelInitialized = False
+        }
 
-  arbitraryAction _model =
-    -- Contract deployed, generate any action - precondition will filter
-    QC.elements [PlayRound PingPong.Ping, PlayRound PingPong.Pong, PlayRound PingPong.Stop]
+  arbitraryAction PingPongModel{modelInitialized, modelScriptUtxoCount, modelState, modelDatumStyle} =
+    if not modelInitialized
+      then QC.elements [StartWithInlineDatum, StartWithDatumHash]
+      else
+        let
+          allRedeemers = [PingPong.Ping, PingPong.Pong, PingPong.Stop]
+          genSingle = PlayRound <$> QC.elements allRedeemers
+          genDual = SpendTwoScriptInputs <$> QC.elements allRedeemers
+         in
+          case modelScriptUtxoCount of
+            1
+              | modelState /= PingPong.Stopped ->
+                  case modelDatumStyle of
+                    InlineDatumStyle ->
+                      QC.frequency
+                        [ (7, genSingle)
+                        , (3, pure DeployExtraScriptUtxo)
+                        ]
+                    DatumHashStyle ->
+                      genSingle
+              | otherwise -> genSingle
+            _
+              | modelScriptUtxoCount >= 2 && modelDatumStyle == InlineDatumStyle ->
+                  genDual
+            _ ->
+              genSingle
 
-  precondition model (PlayRound redeemer) =
-    -- Can only play if contract is deployed
-    case (model, redeemer) of
-      -- From Stopped, no valid actions (contract is finished)
-      (PingPong.Stopped, _) -> False
-      -- From Pinged, we can Pong or Stop
-      (PingPong.Pinged, PingPong.Pong) -> True
-      (PingPong.Pinged, PingPong.Stop) -> True
-      (PingPong.Pinged, PingPong.Ping) -> False
-      -- From Ponged, we can Ping or Stop
-      (PingPong.Ponged, PingPong.Ping) -> True
-      (PingPong.Ponged, PingPong.Stop) -> True
-      (PingPong.Ponged, PingPong.Pong) -> False
+  precondition :: PingPongModel -> Action PingPongModel -> Bool
+  precondition PingPongModel{modelState, modelScriptUtxoCount, modelInitialized, modelDatumStyle} action =
+    case action of
+      StartWithInlineDatum -> not modelInitialized
+      StartWithDatumHash -> not modelInitialized
+      PlayRound redeemer ->
+        modelInitialized
+          && modelScriptUtxoCount == 1
+          && isValidTransition modelState redeemer
+      DeployExtraScriptUtxo ->
+        modelInitialized
+          && modelScriptUtxoCount == 1
+          && modelDatumStyle == InlineDatumStyle
+          && modelState /= PingPong.Stopped
+      SpendTwoScriptInputs redeemer ->
+        modelInitialized
+          && modelScriptUtxoCount >= 2
+          && modelDatumStyle == InlineDatumStyle
+          && isValidTransition modelState redeemer
 
-  perform _model action = case action of
-    PlayRound redeemer -> do
-      -- liftIO $ putStrLn $ "Playing round: " ++ show redeemer
-      -- Find the UTxO at the script address
-      let scriptHash = C.hashScript (plutusScript Scripts.pingPongValidatorScript)
-          scriptAddr = C.makeShelleyAddressInEra C.shelleyBasedEra Defaults.networkId (C.PaymentCredentialByScript scriptHash) C.NoStakeAddress
-      -- Query all UTxOs from the blockchain
-      utxoSet <- fromLedgerUTxO C.shelleyBasedEra <$> getUtxo
-      let C.UTxO utxos = utxoSet
-      -- Find UTxOs at the script address
-      let scriptUtxos = Map.filter (\(C.TxOut addr _ _ _) -> addr == scriptAddr) utxos
-      case Map.toList scriptUtxos of
-        [] -> fail "No UTxO found at script address"
-        ((txIn, C.TxOut _ (C.TxOutValueShelleyBased _ val) _ _) : _) -> do
-          -- Get the value from the UTxO
-          let lovelace = C.selectLovelace (C.fromMaryValue val)
-          -- Execute the round
-          void
-            ( balanceAndSubmit
+  perform model@PingPongModel{modelState, modelScriptUtxoCount, modelDatumStyle} action = do
+    utxos <- getScriptUtxosSorted
+    let spendByStyle txIn redeemer =
+          case modelDatumStyle of
+            InlineDatumStyle ->
+              BuildTx.spendPlutusInlineDatum
+                txIn
+                Scripts.pingPongValidatorScript
+                redeemer
+            DatumHashStyle ->
+              BuildTx.spendPlutus
+                txIn
+                Scripts.pingPongValidatorScript
+                modelState
+                redeemer
+
+        mkContinuation lovelace redeemer =
+          BuildTx.payToScriptInlineDatum
+            Defaults.networkId
+            scriptHash
+            (nextStateFor redeemer)
+            C.NoStakeAddress
+            (C.lovelaceToValue lovelace)
+
+        nextStyleFor _ _ = InlineDatumStyle
+
+    case action of
+      StartWithInlineDatum -> do
+        let initialState = PingPong.Pinged
+            value = 10_000_000
+        void $
+          tryBalanceAndSubmit
+            mempty
+            Wallet.w1
+            ( execBuildTx $
+                BuildTx.payToScriptInlineDatum
+                  Defaults.networkId
+                  scriptHash
+                  initialState
+                  C.NoStakeAddress
+                  (C.lovelaceToValue value)
+            )
+            TrailingChange
+            []
+        pure
+          model
+            { modelState = initialState
+            , modelScriptUtxoCount = 1
+            , modelDatumStyle = InlineDatumStyle
+            , modelInitialized = True
+            }
+      StartWithDatumHash -> do
+        let initialState = PingPong.Pinged
+            value = 10_000_000
+        void $
+          tryBalanceAndSubmit
+            mempty
+            Wallet.w1
+            ( execBuildTx $
+                BuildTx.payToScriptDatumHash
+                  Defaults.networkId
+                  (plutusScript Scripts.pingPongValidatorScript)
+                  initialState
+                  C.NoStakeAddress
+                  (C.lovelaceToValue value)
+            )
+            TrailingChange
+            []
+        pure
+          model
+            { modelState = initialState
+            , modelScriptUtxoCount = 1
+            , modelDatumStyle = DatumHashStyle
+            , modelInitialized = True
+            }
+      PlayRound redeemer -> do
+        case utxos of
+          [] -> fail "No UTxO found at script address"
+          ((txIn, C.TxOut _ (C.TxOutValueShelleyBased _ val) _ _) : _) -> do
+            let lovelace = C.selectLovelace (C.fromMaryValue val)
+                outputStyle = nextStyleFor redeemer modelDatumStyle
+            void $
+              tryBalanceAndSubmit
                 mempty
                 Wallet.w1
-                (execBuildTx $ Scripts.playPingPongRound Defaults.networkId lovelace redeemer txIn)
+                ( execBuildTx $ do
+                    spendByStyle txIn redeemer
+                    mkContinuation lovelace redeemer
+                )
                 TrailingChange
                 []
+            pure
+              PingPongModel
+                { modelState = nextStateFor redeemer
+                , modelScriptUtxoCount = modelScriptUtxoCount
+                , modelDatumStyle = outputStyle
+                , modelInitialized = True
+                }
+      DeployExtraScriptUtxo -> do
+        let value = 10_000_000
+        void $
+          tryBalanceAndSubmit
+            mempty
+            Wallet.w1
+            ( execBuildTx $ case modelDatumStyle of
+                InlineDatumStyle ->
+                  BuildTx.payToScriptInlineDatum
+                    Defaults.networkId
+                    scriptHash
+                    modelState
+                    C.NoStakeAddress
+                    (C.lovelaceToValue value)
+                DatumHashStyle ->
+                  BuildTx.payToScriptDatumHash
+                    Defaults.networkId
+                    (plutusScript Scripts.pingPongValidatorScript)
+                    modelState
+                    C.NoStakeAddress
+                    (C.lovelaceToValue value)
             )
-      pure $ case redeemer of
-        PingPong.Ping -> PingPong.Pinged
-        PingPong.Pong -> PingPong.Ponged
-        PingPong.Stop -> PingPong.Stopped
+            TrailingChange
+            []
+        pure model{modelScriptUtxoCount = modelScriptUtxoCount + 1}
+      SpendTwoScriptInputs redeemer -> do
+        case utxos of
+          ((txIn1, C.TxOut _ (C.TxOutValueShelleyBased _ val1) _ _) : (txIn2, C.TxOut _ (C.TxOutValueShelleyBased _ val2) _ _) : _) -> do
+            let lovelace1 = C.selectLovelace (C.fromMaryValue val1)
+                lovelace2 = C.selectLovelace (C.fromMaryValue val2)
+                outputStyle = nextStyleFor redeemer modelDatumStyle
+            void $
+              tryBalanceAndSubmit
+                mempty
+                Wallet.w1
+                ( execBuildTx $ do
+                    spendByStyle txIn1 redeemer
+                    spendByStyle txIn2 redeemer
+                    mkContinuation lovelace1 redeemer
+                    mkContinuation lovelace2 redeemer
+                )
+                TrailingChange
+                []
+            pure
+              model
+                { modelState = nextStateFor redeemer
+                , modelScriptUtxoCount = modelScriptUtxoCount
+                , modelDatumStyle = outputStyle
+                }
+          _ -> fail "Need at least two script UTxOs to spend in one transaction"
 
-  validate model = do
-    -- Query the actual state from the blockchain
-    let scriptHash = C.hashScript (plutusScript Scripts.pingPongValidatorScript)
-        scriptAddr =
-          C.makeShelleyAddressInEra
-            C.shelleyBasedEra
-            Defaults.networkId
-            (C.PaymentCredentialByScript scriptHash)
-            C.NoStakeAddress
-    utxoSet <- fromLedgerUTxO C.shelleyBasedEra <$> getUtxo
-    let C.UTxO utxos = utxoSet
-        scriptUtxos = Map.filter (\(C.TxOut addr _ _ _) -> addr == scriptAddr) utxos
-
-    case Map.toList scriptUtxos of
-      [] ->
-        -- No UTxO found - contract must have been consumed
-        -- This is valid if model state is Stopped
-        pure (model == PingPong.Stopped)
-      ((_, C.TxOut _ _ datum _) : _) -> do
-        -- Extract the actual state from the datum
-        case datum of
-          C.TxOutDatumInline _ scriptData -> do
-            let actualState = unsafeFromBuiltinData @PingPong.PingPongState (dataToBuiltinData $ C.toPlutusData $ C.getScriptData scriptData)
-                matches = actualState == model
-            unless matches $
-              liftIO $
-                putStrLn $
-                  "STATE MISMATCH! Model: " ++ show model ++ ", Blockchain: " ++ show actualState
-            pure matches
-          _ -> do
-            liftIO $ putStrLn "Expected inline datum but got something else"
-            pure False
+  validate PingPongModel{modelState, modelScriptUtxoCount, modelDatumStyle, modelInitialized} =
+    if not modelInitialized
+      then pure True
+      else do
+        utxos <- getScriptUtxosSorted
+        let actualCount = length utxos
+        if actualCount /= modelScriptUtxoCount
+          then pure False
+          else
+            if actualCount == 0
+              then pure (modelState == PingPong.Stopped)
+              else do
+                let styleConsistent = all checkStyle utxos
+                pure styleConsistent
+   where
+    checkStyle (_, C.TxOut _ _ (C.TxOutDatumInline _ _) _) = modelDatumStyle == InlineDatumStyle
+    checkStyle (_, C.TxOut _ _ (C.TxOutDatumHash _ _) _) = modelDatumStyle == DatumHashStyle
+    checkStyle _ = False
 
   monitoring _state _action prop = prop
 
 instance ThreatModelsFor PingPongModel where
-  threatModels = [basicThreatModel, unprotectedScriptOutput, largeValueAttackWith 10, largeDataAttackWith 10]
+  threatModels =
+    [ largeDataAttackWith 10
+    , largeValueAttackWith 10
+    , invalidDatumIndexAttackWith 5
+    , invalidScriptPurposeAttack Scripts.pingPongValidatorScript
+    , missingOutputDatumAttack
+    , outputDatumHashMissingAttack
+    , unprotectedScriptOutput
+    ]
+
   expectedVulnerabilities = []
 
 plutusScript :: (C.IsPlutusScriptLanguage lang) => C.PlutusScript lang -> C.Script lang
 plutusScript = C.PlutusScript C.plutusScriptVersion
+
+isValidTransition :: PingPong.PingPongState -> PingPong.PingPongRedeemer -> Bool
+isValidTransition st red = case (st, red) of
+  (PingPong.Pinged, PingPong.Pong) -> True
+  (PingPong.Pinged, PingPong.Stop) -> True
+  (PingPong.Ponged, PingPong.Ping) -> True
+  (PingPong.Ponged, PingPong.Stop) -> True
+  _ -> False
+
+nextStateFor :: PingPong.PingPongRedeemer -> PingPong.PingPongState
+nextStateFor red = case red of
+  PingPong.Ping -> PingPong.Pinged
+  PingPong.Pong -> PingPong.Ponged
+  PingPong.Stop -> PingPong.Stopped
+
+scriptAddress :: C.AddressInEra C.ConwayEra
+scriptAddress =
+  C.makeShelleyAddressInEra
+    C.shelleyBasedEra
+    Defaults.networkId
+    (C.PaymentCredentialByScript (C.hashScript (plutusScript Scripts.pingPongValidatorScript)))
+    C.NoStakeAddress
+
+scriptHash :: C.ScriptHash
+scriptHash = C.hashScript (plutusScript Scripts.pingPongValidatorScript)
+
+getScriptUtxosSorted
+  :: (MonadMockchain C.ConwayEra m)
+  => m [(C.TxIn, C.TxOut C.CtxUTxO C.ConwayEra)]
+getScriptUtxosSorted = do
+  utxoSet <- fromLedgerUTxO C.shelleyBasedEra <$> getUtxo
+  let C.UTxO utxos = utxoSet
+  pure
+    [ (txIn, txOut)
+    | (txIn, txOut@(C.TxOut addr _ _ _)) <- Map.toAscList utxos
+    , addr == scriptAddress
+    ]
 
 {- | A simple threat model that demonstrates the integration pattern.
 
@@ -348,7 +531,7 @@ propPingPongVulnerableToOutputRedirect opts = QC.expectFailure $ monadicIO $ do
   vulnerablePingPongScenario = do
     let value = 10_000_000
         -- Use VULNERABLE script
-        scriptHash = C.hashScript (plutusScript Scripts.vulnerablePingPongScript)
+        sh = C.hashScript (plutusScript Scripts.vulnerablePingPongScript)
 
     -- Deploy pingPong with vulnerable script
     deployTx <-
@@ -358,7 +541,7 @@ propPingPongVulnerableToOutputRedirect opts = QC.expectFailure $ monadicIO $ do
         ( execBuildTx
             ( BuildTx.payToScriptInlineDatum
                 Defaults.networkId
-                scriptHash
+                sh
                 Scripts.Pinged
                 C.NoStakeAddress
                 (C.lovelaceToValue value)
@@ -424,7 +607,7 @@ propPingPongVulnerableToLargeData opts = QC.expectFailure $ monadicIO $ do
   vulnerablePingPongLargeDataScenario = do
     let value = 10_000_000
         -- Use VULNERABLE script (uses unstableMakeIsData - permissive parsing)
-        scriptHash = C.hashScript (plutusScript Scripts.vulnerablePingPongScript)
+        sh = C.hashScript (plutusScript Scripts.vulnerablePingPongScript)
 
     -- Deploy pingPong with vulnerable script
     deployTx <-
@@ -434,7 +617,7 @@ propPingPongVulnerableToLargeData opts = QC.expectFailure $ monadicIO $ do
         ( execBuildTx
             ( BuildTx.payToScriptInlineDatum
                 Defaults.networkId
-                scriptHash
+                sh
                 Scripts.Pinged
                 C.NoStakeAddress
                 (C.lovelaceToValue value)
@@ -504,7 +687,7 @@ propPingPongVulnerableToLargeValue opts = QC.expectFailure $ monadicIO $ do
   vulnerablePingPongLargeValueScenario = do
     let value = 10_000_000
         -- Use VULNERABLE script (doesn't validate Value structure)
-        scriptHash = C.hashScript (plutusScript Scripts.vulnerablePingPongScript)
+        sh = C.hashScript (plutusScript Scripts.vulnerablePingPongScript)
 
     -- Deploy pingPong with vulnerable script
     deployTx <-
@@ -514,7 +697,7 @@ propPingPongVulnerableToLargeValue opts = QC.expectFailure $ monadicIO $ do
         ( execBuildTx
             ( BuildTx.payToScriptInlineDatum
                 Defaults.networkId
-                scriptHash
+                sh
                 Scripts.Pinged
                 C.NoStakeAddress
                 (C.lovelaceToValue value)
@@ -642,7 +825,7 @@ pingPongTests opts runOpts =
             (\_ -> pure ())
         )
     , propRunActionsWithOptions @PingPongModel
-        "Property-based test with TestingInterface"
+        "Property-based test ping-pong validator with TestingInterface"
         runOpts
     , testProperty
         "PingPong VULNERABLE to unprotected output redirect"
@@ -653,5 +836,4 @@ pingPongTests opts runOpts =
     , testProperty
         "PingPong VULNERABLE to large value attack"
         (propPingPongVulnerableToLargeValue runOpts)
-    , pingPongCoverageTests opts
     ]
