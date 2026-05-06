@@ -93,6 +93,7 @@ import PlutusLedgerApi.V1 qualified as PV1
 import PlutusTx qualified
 import PlutusTx.Builtins qualified as PlutusTx
 
+import Data.Aeson (ToJSON (..))
 import System.IO.Unsafe (unsafePerformIO)
 import Test.QuickCheck.Monadic (monadicIO, monitor, run)
 import Test.Tasty (TestTree, testGroup)
@@ -778,6 +779,9 @@ updateFirst _ _ [] = []
 updateFirst p f (x : xs)
   | p x = f x : xs
   | otherwise = x : updateFirst p f xs
+
+instance ToJSON LendingModel where
+  toJSON = toJSON . show
 
 instance TestingInterface LendingModel where
   -- Actions for Lending: request (from any wallet), lend, repay

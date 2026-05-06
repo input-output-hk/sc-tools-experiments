@@ -8,9 +8,11 @@ module Convex.Tasty.Streaming (
 import Control.Concurrent.Async (forConcurrently_)
 import Control.Concurrent.MVar (newMVar, withMVar)
 import Control.Concurrent.STM
+import Control.Monad (when)
 import Convex.Tasty.Streaming.TMSummary (
   TMRecorder,
   TMStoreOption (..),
+  TraceRecorder (..),
   lookupThreatModelSummary,
   newTMStore,
   storeRecorder,
@@ -19,6 +21,8 @@ import Convex.Tasty.Streaming.TreeMap (buildTestMap)
 import Convex.Tasty.Streaming.Types
 import Data.Aeson (encode)
 import Data.ByteString.Lazy.Char8 qualified as BL8
+import Data.IORef (IORef, newIORef, readIORef, writeIORef)
+import Data.IntMap.Strict (IntMap)
 import Data.IntMap.Strict qualified as IntMap
 import Data.Proxy (Proxy (..))
 import Data.Tagged (Tagged (..))
@@ -60,6 +64,29 @@ instance IsOption ListTestsJson where
   optionHelp = Tagged "List all tests as a JSON object and exit without running"
   optionCLParser = mkFlagCLParser mempty (ListTestsJson True)
 
+{- | Internal option carrying a shared 'IORef Bool' that is set to 'True' by
+the streaming reporter when @--streaming-json@ is active.  The
+'TraceRecorder' callback checks this before emitting any events.
+-}
+newtype StreamingEnabledRef = StreamingEnabledRef (Maybe (IORef Bool))
+
+instance IsOption StreamingEnabledRef where
+  defaultValue = StreamingEnabledRef Nothing
+  parseValue = const Nothing
+  optionName = Tagged "streaming-enabled-ref"
+  optionHelp = Tagged "internal: streaming enabled flag"
+
+{- | Internal option carrying a shared 'IORef' so the reporter can publish the
+test map and the 'TraceRecorder' can read it back to resolve test IDs.
+-}
+newtype TestMapRef = TestMapRef (Maybe (IORef (IntMap TestInfo)))
+
+instance IsOption TestMapRef where
+  defaultValue = TestMapRef Nothing
+  parseValue = const Nothing
+  optionName = Tagged "test-map-ref"
+  optionHelp = Tagged "internal: shared test map reference"
+
 {- | The streaming JSON reporter ingredient.
 
 When activated via @--streaming-json@, replaces console output with
@@ -70,6 +97,9 @@ streamingJsonReporter = TestReporter
   [ Option (Proxy :: Proxy StreamingJson)
   , Option (Proxy :: Proxy TMStoreOption)
   , Option (Proxy :: Proxy TMRecorder)
+  , Option (Proxy :: Proxy TraceRecorder)
+  , Option (Proxy :: Proxy TestMapRef)
+  , Option (Proxy :: Proxy StreamingEnabledRef)
   ]
   $ \opts tree -> do
     let StreamingJson enabled = lookupOption opts
@@ -77,6 +107,15 @@ streamingJsonReporter = TestReporter
       then Nothing
       else Just $ \statusMap -> do
         let TMStoreOption mStore = lookupOption opts
+            TestMapRef mTestMapRef = lookupOption opts
+            StreamingEnabledRef mEnabledRef = lookupOption opts
+
+        -- Signal that streaming is active so the TraceRecorder callback
+        -- (which checks the same IORef) actually emits events.
+        case mEnabledRef of
+          Just ref -> writeIORef ref True
+          Nothing -> pure ()
+
         -- Set line buffering for streaming
         hSetBuffering stdout LineBuffering
 
@@ -86,6 +125,11 @@ streamingJsonReporter = TestReporter
 
         -- Build the test index -> metadata map
         testMap <- buildTestMap opts tree
+
+        -- Populate the shared test map ref so TraceRecorder can resolve IDs
+        case mTestMapRef of
+          Just ref -> writeIORef ref testMap
+          Nothing -> pure ()
 
         -- Emit suite_started with full test list
         let testInfos = map snd $ IntMap.toAscList testMap
@@ -192,6 +236,29 @@ showFailureReason (TestThrewException e) = "TestThrewException: " ++ show e
 showFailureReason (TestTimedOut n) = "TestTimedOut: " ++ show n ++ "μs"
 showFailureReason TestDepFailed = "TestDepFailed"
 
+{- | Find the Tasty test ID for a test identified by group name and category.
+Searches the test map for a 'TestInfo' whose path contains the group name
+and whose name matches the category (e.g. \"Positive tests\", \"Negative tests\").
+Returns @-1@ as a fallback when the test is not found.
+-}
+findTestId :: IntMap TestInfo -> String -> String -> Int
+findTestId testMap group category =
+  let categoryName = case category of
+        "positive" -> "Positive tests"
+        "negative" -> "Negative tests"
+        other -> other
+      matches =
+        IntMap.toList $
+          IntMap.filter
+            ( \ti ->
+                Text.pack group `elem` tiPath ti
+                  && tiName ti == Text.pack categoryName
+            )
+            testMap
+   in case matches of
+        ((testId, _) : _) -> testId
+        [] -> -1 -- fallback: test not found
+
 {- | Ingredient that lists the test tree as JSON and exits without running tests.
 
 Activated via @--list-tests-json@.
@@ -225,7 +292,41 @@ on your tree (with a freshly-allocated store from 'newTMStore').
 defaultMainStreaming :: TestTree -> IO ()
 defaultMainStreaming tree = do
   store <- newTMStore
+  testMapRef <- newIORef IntMap.empty
+  enabledRef <- newIORef False -- set to True by the reporter when --streaming-json is active
+  -- Create a trace recorder that emits TestTrace events as NDJSON to stdout.
+  -- Uses its own lock for thread-safety; in practice single-line putStrLn calls
+  -- won't interleave with the reporter's own lock-protected output.
+  -- The recorder reads the shared testMapRef (populated by the reporter at
+  -- startup) to resolve the numeric Tasty test ID for each trace event.
+  --
+  -- The callback checks 'enabledRef' before emitting anything, so when
+  -- --streaming-json is NOT passed, no NDJSON lines go to stdout.
+  -- 'trEnabled' is set True so that test bodies use the traced code path
+  -- (building IterationTrace values etc.) — a small overhead that is
+  -- acceptable when defaultMainStreaming is used. The actual emission is
+  -- still gated on the IORef.
+  traceLock <- newMVar ()
+  let traceRec =
+        TraceRecorder
+          { trEnabled = True
+          , recordIteration = \group category iterationJson -> do
+              enabled <- readIORef enabledRef
+              when enabled $ do
+                testMap <- readIORef testMapRef
+                let testId = findTestId testMap group category
+                withMVar traceLock $ \_ ->
+                  emitEvent $
+                    TestTrace
+                      { ettTestId = testId
+                      , ettCategory = Text.pack category
+                      , ettTrace = iterationJson
+                      }
+          }
   let tree' =
         localOption (TMStoreOption (Just store)) $
-          localOption (storeRecorder store) tree
+          localOption (storeRecorder store) $
+            localOption (TestMapRef (Just testMapRef)) $
+              localOption (StreamingEnabledRef (Just enabledRef)) $
+                localOption traceRec tree
   defaultMainWithIngredients streamingIngredients tree'

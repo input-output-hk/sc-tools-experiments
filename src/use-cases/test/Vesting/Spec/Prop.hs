@@ -29,6 +29,7 @@ import Convex.UseCases.Utils (utxosAt)
 import Convex.Utils (slotToUtcTime, utcTimeToPosixTime)
 import Convex.Wallet (Wallet, verificationKeyHash)
 import Convex.Wallet.MockWallet qualified as MockWallet
+import Data.Aeson (ToJSON (..))
 import GHC.Generics (Generic)
 import PlutusLedgerApi.V1 (Lovelace (getLovelace), lovelaceValue, lovelaceValueOf)
 import Test.QuickCheck.Gen qualified as Gen
@@ -100,6 +101,9 @@ fixedScriptHash :: C.ScriptHash
 fixedScriptHash =
   let validator = C.PlutusScript C.plutusScriptVersion (vestingValidatorScript fixedParams)
    in C.hashScript validator
+
+instance ToJSON VestingModel where
+  toJSON = toJSON . show
 
 instance TestingInterface VestingModel where
   data Action VestingModel
