@@ -33,6 +33,7 @@ import Convex.ThreatModel.UnprotectedScriptOutput (unprotectedScriptOutput)
 import Convex.Utxos (toApiUtxo)
 import Convex.Wallet (Wallet, verificationKeyHash)
 import Convex.Wallet.MockWallet qualified as MockWallet
+import Data.Aeson (ToJSON (..))
 import GHC.Generics (Generic)
 import MultiPlayerPingPong.Scripts (multiPlayerPingPongValidatorScript)
 import MultiPlayerPingPong.Validator (BallState (Pinged, Ponged), MultiPingPongDatum (..), MultiRedeemer (Hit, Stop))
@@ -84,6 +85,9 @@ data MultiPlayerPingPongModel = MultiPlayerPingPongModel
   -- ^ Value locked in script UTxO.
   }
   deriving (Show, Eq, Generic)
+
+instance ToJSON MultiPlayerPingPongModel where
+  toJSON = toJSON . show
 
 instance TestingInterface MultiPlayerPingPongModel where
   data Action MultiPlayerPingPongModel

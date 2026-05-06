@@ -33,6 +33,7 @@ import Convex.Utxos (toApiUtxo)
 import Convex.Wallet (Wallet, verificationKeyHash)
 import Convex.Wallet qualified as MockWallet
 import Convex.Wallet.MockWallet qualified as MockWallet
+import Data.Aeson (ToJSON (..))
 import Escrow.Scripts (escrowValidatorScript)
 import Escrow.Validator (Action (..), EscrowParams (..), EscrowTarget (..))
 import GHC.Generics (Generic)
@@ -81,6 +82,9 @@ data EscrowModel = EscrowModel
   -- ^ The current locked UTxO reference
   }
   deriving (Show, Eq, Generic)
+
+instance ToJSON EscrowModel where
+  toJSON = toJSON . show
 
 instance TestingInterface EscrowModel where
   data Action EscrowModel

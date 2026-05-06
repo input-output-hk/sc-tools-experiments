@@ -42,6 +42,8 @@ library
   import:          lang
   exposed-modules:
     Convex.TestingInterface
+    Convex.TestingInterface.Trace
+    Convex.TestingInterface.Trace.TxSummary
     Convex.ThreatModel
     Convex.ThreatModel.All
     Convex.ThreatModel.Cardano.Api
@@ -145,6 +147,7 @@ test-suite convex-testing-interface-test
 
   autogen-modules: Paths_convex_testing_interface
   build-depends:
+    , aeson
     , base                      >=4.14.0
     , bytestring
     , cardano-api

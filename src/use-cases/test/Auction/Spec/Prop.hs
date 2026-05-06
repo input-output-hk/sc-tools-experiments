@@ -28,6 +28,7 @@ import Convex.Utils (slotToUtcTime, utcTimeToPosixTime)
 import Convex.Wallet (Wallet, verificationKeyHash)
 import Convex.Wallet qualified as MockWallet
 import Convex.Wallet.MockWallet qualified as MockWallet
+import Data.Aeson (ToJSON (..))
 import Data.Foldable (for_)
 import GHC.Generics (Generic)
 import PlutusLedgerApi.Common qualified as PlutusTx
@@ -85,6 +86,9 @@ data AuctionModel = AuctionModel
   -- ^ The current auction UTxO reference
   }
   deriving (Show, Eq, Generic)
+
+instance ToJSON AuctionModel where
+  toJSON = toJSON . show
 
 instance TestingInterface AuctionModel where
   data Action AuctionModel

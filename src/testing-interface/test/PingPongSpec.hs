@@ -87,6 +87,7 @@ import Scripts qualified
 import Scripts.PingPong qualified as PingPong
 import Scripts.PingPong.Vulnerable qualified as VulnerablePingPong
 
+import Data.Aeson (ToJSON (..))
 import Test.QuickCheck.Monadic (monadicIO, monitor, run)
 import Test.Tasty (TestTree, testGroup)
 import Test.Tasty.HUnit (testCase)
@@ -98,6 +99,9 @@ import Test.Tasty.QuickCheck (
 import Test.Tasty.QuickCheck qualified as QC
 
 type PingPongModel = PingPong.PingPongState
+
+instance ToJSON PingPong.PingPongState where
+  toJSON = toJSON . show
 
 instance TestingInterface PingPongModel where
   data Action PingPongModel
