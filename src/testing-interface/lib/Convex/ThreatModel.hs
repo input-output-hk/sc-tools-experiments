@@ -67,6 +67,8 @@ module Convex.ThreatModel (
   runThreatModelM,
   runThreatModelMQuiet,
   runThreatModelCheck,
+  runThreatModelCheckTraced,
+  ThreatModelCheckEntry (..),
   assertThreatModel,
   getThreatModelName,
 
@@ -506,6 +508,92 @@ runThreatModelCheck signingWallet = go False
       MonitorLocal _m k -> checkInterp wallet k -- No Property to wrap; drop monitoring
       Done{} -> go True model envs
       Named _n k -> checkInterp wallet k
+
+-- | A single trace entry from a threat model check against one ThreatModelEnv.
+data ThreatModelCheckEntry = ThreatModelCheckEntry
+  { tmceEnvIndex :: !Int
+  -- ^ Which env (tx) was tested
+  , tmceModifications :: !TxModifier
+  -- ^ The modifications applied
+  , tmceOriginalTx :: !(Tx Era)
+  -- ^ The original transaction
+  , tmceOriginalUtxo :: !(UTxO Era)
+  -- ^ The original UTxO
+  , tmceModifiedTx :: !(Maybe (Tx Era))
+  -- ^ The rebalanced modified tx (Nothing if rebalancing failed)
+  , tmceModifiedUtxo :: !(UTxO Era)
+  -- ^ The modified UTxO
+  , tmceValidation :: !(Maybe ValidityReport)
+  -- ^ Nothing if rebalancing failed (skipped)
+  }
+
+{- | Like 'runThreatModelCheck' but additionally accumulates trace data.
+  Each 'Validate' call in the threat model produces a 'ThreatModelCheckEntry'.
+  Coverage is still accumulated in MockChainState as a side effect.
+-}
+runThreatModelCheckTraced
+  :: (MonadMockchain Era m, MonadFail m, MonadIO m)
+  => SigningWallet
+  -> ThreatModel a
+  -> [ThreatModelEnv]
+  -> m (ThreatModelOutcome, [ThreatModelCheckEntry])
+runThreatModelCheckTraced signingWallet = go False [] 0
+ where
+  go b acc _envIdx _model [] = pure (if b then TMPassed else TMSkipped, reverse acc)
+  go b acc envIdx model (env : envs) = do
+    -- Resolve wallet: use provided or detect from transaction
+    let resolvedWallet = case signingWallet of
+          SignWith w -> Right w
+          AutoSign -> TM.detectSigningWallet (currentTx env)
+    case resolvedWallet of
+      Left err -> pure (TMError err, reverse acc)
+      Right wallet -> checkInterp wallet acc model
+   where
+    checkInterp wallet acc' = \case
+      Validate mods k -> do
+        let (modifiedTx, modifiedUtxo) = applyTxModifier (currentTx env) (currentUTxOs env) mods
+        params <- askNodeParams
+        -- Try rebalancing - failure means this modification can't be tested on this tx
+        rebalanceResult <- TM.rebalanceAndSign wallet modifiedTx modifiedUtxo
+        case rebalanceResult of
+          Left _err -> do
+            let entry =
+                  ThreatModelCheckEntry
+                    { tmceEnvIndex = envIdx
+                    , tmceModifications = mods
+                    , tmceOriginalTx = currentTx env
+                    , tmceOriginalUtxo = currentUTxOs env
+                    , tmceModifiedTx = Nothing
+                    , tmceModifiedUtxo = modifiedUtxo
+                    , tmceValidation = Nothing
+                    }
+            go b (entry : acc') (envIdx + 1) model envs -- Rebalancing failed, skip to next tx
+          Right rebalancedTx -> do
+            (report, covData) <- validateTxM params rebalancedTx modifiedUtxo
+            modifyMockChainState $ \s -> ((), s & coverageData %~ (<> covData))
+            let entry =
+                  ThreatModelCheckEntry
+                    { tmceEnvIndex = envIdx
+                    , tmceModifications = mods
+                    , tmceOriginalTx = currentTx env
+                    , tmceOriginalUtxo = currentUTxOs env
+                    , tmceModifiedTx = Just rebalancedTx
+                    , tmceModifiedUtxo = modifiedUtxo
+                    , tmceValidation = Just report
+                    }
+            checkInterp wallet (entry : acc') (k report)
+      Generate gen _shr k -> do
+        a <- liftIO $ QC.generate gen
+        checkInterp wallet acc' (k a)
+      GetCtx k ->
+        checkInterp wallet acc' (k env)
+      Skip -> go b acc' (envIdx + 1) model envs
+      InPrecondition k -> checkInterp wallet acc' (k False)
+      Fail err -> pure (TMFailed err, reverse acc')
+      Monitor _m k -> checkInterp wallet acc' k
+      MonitorLocal _m k -> checkInterp wallet acc' k
+      Done{} -> go True acc' (envIdx + 1) model envs
+      Named _n k -> checkInterp wallet acc' k
 
 {- | Check a precondition. If the argument threat model fails, the evaluation of the current
   transaction is skipped. If all transactions in an evaluation of `runThreatModel` are skipped

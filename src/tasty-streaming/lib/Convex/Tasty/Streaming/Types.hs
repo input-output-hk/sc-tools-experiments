@@ -6,7 +6,7 @@ module Convex.Tasty.Streaming.Types (
 ) where
 
 import Convex.Tasty.Streaming.TMSummary (ThreatModelSummary)
-import Data.Aeson (ToJSON (..), object, (.=))
+import Data.Aeson (ToJSON (..), Value, object, (.=))
 import Data.Aeson.Types (Pair)
 import Data.Text (Text)
 import GHC.Generics (Generic)
@@ -67,6 +67,11 @@ data Event
       , edDescription :: !Text
       , edThreatModel :: !(Maybe ThreatModelSummary)
       }
+  | TestTrace
+      { ettTestId :: !Int
+      , ettCategory :: !Text
+      , ettTrace :: !Value -- pre-serialized IterationTrace JSON
+      }
   | SuiteDone
       { esPassed :: !Int
       , esFailed :: !Int
@@ -109,6 +114,13 @@ instance ToJSON Event where
       ]
     threatModelFields :: Maybe ThreatModelSummary -> [Pair]
     threatModelFields = maybe [] (\s -> ["threat_model" .= s])
+  toJSON (TestTrace i cat trace) =
+    object
+      [ "event" .= ("test_trace" :: Text)
+      , "id" .= i
+      , "category" .= cat
+      , "trace" .= trace
+      ]
   toJSON (SuiteDone p f dur) =
     object
       [ "event" .= ("suite_done" :: Text)

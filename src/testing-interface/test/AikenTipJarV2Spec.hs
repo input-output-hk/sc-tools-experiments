@@ -75,6 +75,7 @@ import PlutusTx qualified
 import PlutusTx.Builtins qualified as PlutusTx
 import PlutusTx.IsData.Class (UnsafeFromData (unsafeFromBuiltinData))
 
+import Data.Aeson (ToJSON (..))
 import System.IO.Unsafe (unsafePerformIO)
 import Test.Tasty (TestTree, testGroup)
 import Test.Tasty.HUnit (Assertion, assertFailure, testCase)
@@ -412,6 +413,9 @@ data TipJarV2Model = TipJarV2Model
   -- ^ Once claimed, sequence is done
   }
   deriving stock (Show, Eq)
+
+instance ToJSON TipJarV2Model where
+  toJSON = toJSON . show
 
 instance TestingInterface TipJarV2Model where
   -- Actions for TipJar V2: initialize, add tips, and owner claims

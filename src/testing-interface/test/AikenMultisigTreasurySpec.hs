@@ -78,6 +78,7 @@ import PlutusLedgerApi.V1 qualified as PV1
 import PlutusTx qualified
 import PlutusTx.Builtins qualified as PlutusTx
 
+import Data.Aeson (ToJSON (..))
 import System.IO.Unsafe (unsafePerformIO)
 import Test.QuickCheck.Monadic (monadicIO, monitor, run)
 import Test.Tasty (TestTree, testGroup)
@@ -628,6 +629,9 @@ data SignerChoice = Signer1 | Signer2
 signerToWallet :: SignerChoice -> Wallet
 signerToWallet Signer1 = Wallet.w1
 signerToWallet Signer2 = Wallet.w2
+
+instance ToJSON MultisigModel where
+  toJSON = toJSON . show
 
 instance TestingInterface MultisigModel where
   -- Actions for Multisig: initialize, sign, and use

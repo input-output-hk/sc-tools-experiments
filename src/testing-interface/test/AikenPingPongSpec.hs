@@ -56,6 +56,7 @@ import Convex.ThreatModel.LargeData (largeDataAttackWith)
 import Convex.ThreatModel.LargeValue (largeValueAttackWith)
 import Convex.ThreatModel.UnprotectedScriptOutput (unprotectedScriptOutput)
 import Convex.Wallet.MockWallet qualified as Wallet
+import Data.Aeson (ToJSON (..))
 import Data.Map qualified as Map
 import Paths_convex_testing_interface qualified as Pkg
 import PlutusTx.Builtins (dataToBuiltinData)
@@ -134,6 +135,9 @@ data AikenPingPongModel = AikenPingPongModel
   -- ^ Amount of lovelace locked in the contract
   }
   deriving (Show, Eq)
+
+instance ToJSON AikenPingPongModel where
+  toJSON = toJSON . show
 
 instance TestingInterface AikenPingPongModel where
   data Action AikenPingPongModel
