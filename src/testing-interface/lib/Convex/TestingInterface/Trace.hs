@@ -185,8 +185,8 @@ data ThreatModelTrace = ThreatModelTrace
   -- ^ Name of the threat model (e.g. "unprotectedScriptOutput")
   , tmtTargetTxIndex :: !Int
   -- ^ Index into 'itTransitions' identifying which transaction was targeted
-  , tmtModifications :: ![Text]
-  -- ^ Human-readable descriptions of each modification applied
+  , tmtModifications :: ![Value]
+  -- ^ Structured JSON descriptions of each modification applied
   , tmtOriginalTx :: !TxSummary
   -- ^ The original transaction before modification
   , tmtModifiedTx :: !(Maybe TxSummary)
