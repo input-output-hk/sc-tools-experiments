@@ -5,14 +5,16 @@ module Convex.TestingInterface.Trace.TxSummary (
   summarizeTx,
   summarizeTxBody,
   renderAddress,
-  renderValue,
+  toValueSummary,
 ) where
 
 import Cardano.Api qualified as C
 import Convex.TestingInterface.Trace (
+  AssetSummary (..),
   TxInputSummary (..),
   TxOutputSummary (..),
   TxSummary (..),
+  ValueSummary (..),
  )
 import Data.ByteString qualified as BS
 import Data.Map.Strict qualified as Map
@@ -54,7 +56,7 @@ summarizeTxBody body (C.UTxO utxoMap) =
         C.TxMintNone -> Nothing
         mv@C.TxMintValue{} ->
           let v = C.txMintValueToValue mv
-           in if v == mempty then Nothing else Just (renderValue v)
+           in if v == mempty then Nothing else Just (toValueSummary v)
 
       -- Required signers
       signers = case C.txExtraKeyWits content of
@@ -82,7 +84,7 @@ mkInputSummary txIn (C.TxOut addr val _datum _refScript) =
   TxInputSummary
     { tisUtxo = renderTxIn txIn
     , tisAddress = renderAddressInEra addr
-    , tisValue = renderValue (C.txOutValueToValue val)
+    , tisValue = toValueSummary (C.txOutValueToValue val)
     }
 
 -- | Build an output summary from a TxId, an index, and a TxOut.
@@ -91,7 +93,7 @@ mkOutputSummary txId idx (C.TxOut addr val datum _refScript) =
   TxOutputSummary
     { tosUtxo = renderTxIn (C.TxIn txId (C.TxIx (fromIntegral idx)))
     , tosAddress = renderAddressInEra addr
-    , tosValue = renderValue (C.txOutValueToValue val)
+    , tosValue = toValueSummary (C.txOutValueToValue val)
     , tosDatum = renderDatum datum
     }
 
@@ -113,27 +115,24 @@ renderAddressInEra (C.AddressInEra C.ByronAddressInAnyEra{} addr) = Text.pack (s
 renderAddress :: C.Address C.ShelleyAddr -> Text
 renderAddress = C.serialiseAddress
 
-{- | Render a Value as human-readable text.
+-- | Build a structured ValueSummary from a cardano-api Value.
+toValueSummary :: C.Value -> ValueSummary
+toValueSummary val =
+  let items = toList val -- [(AssetId, Quantity)]
+      lovelace = sum [n | (C.AdaAssetId, C.Quantity n) <- items]
+      assets = [toAssetSummary pid name qty | (C.AssetId pid name, C.Quantity qty) <- items]
+   in ValueSummary
+        { vsLovelace = lovelace
+        , vsAssets = assets
+        }
 
-Format: @"1500000 lovelace + 100 \<policyId\>.\<assetName\>"@
--}
-renderValue :: C.Value -> Text
-renderValue val =
-  let items = toList val
-   in Text.intercalate " + " (map renderAsset items)
-
--- | Render a single asset entry.
-renderAsset :: (C.AssetId, C.Quantity) -> Text
-renderAsset (C.AdaAssetId, C.Quantity n) =
-  Text.pack (show n) <> " lovelace"
-renderAsset (C.AssetId policyId assetName, C.Quantity n) =
-  Text.pack (show n) <> " " <> renderPolicyId policyId <> "." <> renderAssetName assetName
-
--- | Render a PolicyId as shortened hex.
-renderPolicyId :: C.PolicyId -> Text
-renderPolicyId pid =
-  let hex = C.serialiseToRawBytesHexText pid
-   in shortenHash hex
+toAssetSummary :: C.PolicyId -> C.AssetName -> Integer -> AssetSummary
+toAssetSummary pid name qty =
+  AssetSummary
+    { asPolicyId = C.serialiseToRawBytesHexText pid -- FULL hex, no truncation
+    , asName = renderAssetName name -- UTF-8 or hex fallback
+    , asQuantity = qty
+    }
 
 -- | Render an AssetName as text, trying UTF-8 decoding first.
 renderAssetName :: C.AssetName -> Text
@@ -170,9 +169,3 @@ renderValidityRange lower upper =
   renderLower (C.TxValidityLowerBound _ (C.SlotNo n)) = "[" <> Text.pack (show n)
   renderUpper (C.TxValidityUpperBound _ Nothing) = "+inf)"
   renderUpper (C.TxValidityUpperBound _ (Just (C.SlotNo n))) = Text.pack (show n) <> ")"
-
--- | Shorten a hex hash to the first 8 characters.
-shortenHash :: Text -> Text
-shortenHash h
-  | Text.length h > 8 = Text.take 8 h <> "…"
-  | otherwise = h

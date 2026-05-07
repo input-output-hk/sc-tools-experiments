@@ -20,6 +20,10 @@ module Convex.TestingInterface.Trace (
   TxInputSummary (..),
   TxOutputSummary (..),
 
+  -- * Value representation
+  ValueSummary (..),
+  AssetSummary (..),
+
   -- * Threat model trace
   ThreatModelTrace (..),
   ThreatModelTraceOutcome (..),
@@ -58,8 +62,6 @@ instance ToJSON TestCategory where
 data IterationTrace = IterationTrace
   { itIndex :: !Int
   -- ^ 0-based iteration number
-  , itSeed :: !Int
-  -- ^ QuickCheck seed for reproducibility
   , itStatus :: !IterationStatus
   , itTransitions :: ![Transition]
   -- ^ Ordered sequence of actions performed
@@ -106,15 +108,15 @@ data TransitionResult
   deriving (Eq, Show, Generic)
 
 {- | Compact representation of a transaction for visualization.
-Values are rendered as text to avoid coupling to cardano-api serialization.
+Values are structured JSON for full fidelity.
 -}
 data TxSummary = TxSummary
   { txsId :: !(Maybe Text)
   -- ^ TxId if submitted successfully, @Nothing@ otherwise
   , txsInputs :: ![TxInputSummary]
   , txsOutputs :: ![TxOutputSummary]
-  , txsMint :: !(Maybe Text)
-  -- ^ Rendered mint value, @Nothing@ if no minting
+  , txsMint :: !(Maybe ValueSummary)
+  -- ^ Structured mint value, @Nothing@ if no minting
   , txsFee :: !Integer
   -- ^ Fee in lovelace
   , txsSigners :: ![Text]
@@ -130,8 +132,8 @@ data TxInputSummary = TxInputSummary
   -- ^ @"txid#index"@
   , tisAddress :: !Text
   -- ^ Bech32 or hex address
-  , tisValue :: !Text
-  -- ^ Rendered value (ada + tokens)
+  , tisValue :: !ValueSummary
+  -- ^ Structured value (ada + tokens)
   }
   deriving (Eq, Show, Generic)
 
@@ -140,11 +142,40 @@ data TxOutputSummary = TxOutputSummary
   { tosUtxo :: !Text
   -- ^ @"txid#index"@ – the UTxO reference for this output
   , tosAddress :: !Text
-  , tosValue :: !Text
+  , tosValue :: !ValueSummary
   , tosDatum :: !(Maybe Text)
   -- ^ @"inline:\<hash\>"@, @"hash:\<hash\>"@, or @Nothing@
   }
   deriving (Eq, Show, Generic)
+
+-- | Structured representation of a Cardano value for JSON serialization.
+data ValueSummary = ValueSummary
+  { vsLovelace :: !Integer
+  , vsAssets :: ![AssetSummary]
+  }
+  deriving (Eq, Show, Generic)
+
+data AssetSummary = AssetSummary
+  { asPolicyId :: !Text
+  , asName :: !Text
+  , asQuantity :: !Integer
+  }
+  deriving (Eq, Show, Generic)
+
+instance ToJSON ValueSummary where
+  toJSON v =
+    object
+      [ "lovelace" .= vsLovelace v
+      , "assets" .= vsAssets v
+      ]
+
+instance ToJSON AssetSummary where
+  toJSON a =
+    object
+      [ "policyId" .= asPolicyId a
+      , "name" .= asName a
+      , "quantity" .= asQuantity a
+      ]
 
 {- | What happened when a threat model was applied to a specific transaction
 in this iteration.
@@ -194,7 +225,6 @@ instance ToJSON IterationTrace where
   toJSON t =
     object
       [ "index" .= itIndex t
-      , "seed" .= itSeed t
       , "status" .= itStatus t
       , "transitions" .= itTransitions t
       , "threatModels" .= itThreatModels t

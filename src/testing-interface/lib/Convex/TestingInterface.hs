@@ -371,7 +371,8 @@ negativeTest opts groupName recorder getIterRef = monadicIO $ do
     idx <- readIORef iterRef
     modifyIORef iterRef (+ 1)
     pure idx
-  if trEnabled recorder
+  enabled <- run $ trEnabled recorder
+  if enabled
     then negativeTestTraced @state opts groupName recorder iterIdx
     else negativeTestFast @state opts
 
@@ -408,7 +409,6 @@ negativeTestTraced opts groupName recorder iterIdx = do
       let trace =
             IterationTrace
               { itIndex = iterIdx
-              , itSeed = 0
               , itStatus = IterationFailure (formatBalanceTxError err)
               , itTransitions = []
               , itThreatModels = []
@@ -437,7 +437,6 @@ negativeTestTraced opts groupName recorder iterIdx = do
           let trace =
                 IterationTrace
                   { itIndex = iterIdx
-                  , itSeed = 0
                   , itStatus = IterationDiscarded (T.pack (show ex))
                   , itTransitions = transitions <> [badTransition (TransitionFailure (T.pack (show ex)))]
                   , itThreatModels = []
@@ -448,7 +447,6 @@ negativeTestTraced opts groupName recorder iterIdx = do
           let trace =
                 IterationTrace
                   { itIndex = iterIdx
-                  , itSeed = 0
                   , itStatus = IterationSuccess
                   , itTransitions = transitions <> [badTransition (TransitionFailure (T.pack (show ex)))]
                   , itThreatModels = []
@@ -463,7 +461,6 @@ negativeTestTraced opts groupName recorder iterIdx = do
               let trace =
                     IterationTrace
                       { itIndex = iterIdx
-                      , itSeed = 0
                       , itStatus = IterationSuccess
                       , itTransitions = transitions <> [badTransition (TransitionFailure (formatBalanceTxError err))]
                       , itThreatModels = []
@@ -477,7 +474,6 @@ negativeTestTraced opts groupName recorder iterIdx = do
               let trace =
                     IterationTrace
                       { itIndex = iterIdx
-                      , itSeed = 0
                       , itStatus = IterationFailure "Invalid action succeeded unexpectedly"
                       , itTransitions = transitions <> [badTransition (TransitionSuccess T.empty)]
                       , itThreatModels = []
@@ -556,7 +552,8 @@ positiveTest opts groupName mGetTmResultsRef tms evs recorder getIterRef = monad
     idx <- readIORef iterRef
     modifyIORef iterRef (+ 1)
     pure idx
-  if trEnabled recorder
+  enabled <- run $ trEnabled recorder
+  if enabled
     then positiveTestTraced @state opts groupName mGetTmResultsRef tms evs recorder iterIdx
     else positiveTestFast @state opts mGetTmResultsRef tms evs
 
@@ -610,7 +607,6 @@ positiveTestTraced opts groupName mGetTmResultsRef tms evs recorder iterIdx = do
       let trace =
             IterationTrace
               { itIndex = iterIdx
-              , itSeed = 0
               , itStatus = IterationFailure (formatBalanceTxError err)
               , itTransitions = []
               , itThreatModels = []
@@ -633,7 +629,6 @@ positiveTestTraced opts groupName mGetTmResultsRef tms evs recorder iterIdx = do
           trace =
             IterationTrace
               { itIndex = iterIdx
-              , itSeed = 0
               , itStatus = IterationSuccess
               , itTransitions = transitions
               , itThreatModels = tmTraces

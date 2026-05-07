@@ -102,20 +102,24 @@ lookupThreatModelSummary (TMStore ref) key =
 Arguments: group name, category ("positive"\/"negative"), pre-serialized trace JSON.
 Default is a no-op (zero overhead when streaming is not active).
 
-When 'trEnabled' is 'True', test bodies use the expensive traced code path
-(building 'IterationTrace' values with UTxO snapshots, transaction
-summaries, and JSON serialisation).  When 'False' (the 'IsOption' default),
-the cheap 'runActions' path is used instead, avoiding all that work.
+When 'trEnabled' returns 'True', test bodies use the expensive traced code
+path (building 'IterationTrace' values with UTxO snapshots, transaction
+summaries, and JSON serialisation).  When it returns 'False' (the 'IsOption'
+default), the cheap 'runActions' path is used instead, avoiding all that
+work.
+
+'trEnabled' is an 'IO' action so that the decision can be deferred until the
+streaming reporter has parsed @--no-trace@ and written the shared 'IORef'.
 -}
 data TraceRecorder = TraceRecorder
-  { trEnabled :: !Bool
+  { trEnabled :: IO Bool
   -- ^ Whether test bodies should collect detailed traces.
   , recordIteration :: String -> String -> Value -> IO ()
   -- ^ Emit a single iteration trace event.
   }
 
 instance IsOption TraceRecorder where
-  defaultValue = TraceRecorder False (\_ _ _ -> pure ())
+  defaultValue = TraceRecorder (pure False) (\_ _ _ -> pure ())
   parseValue = const Nothing
   optionName = Tagged "trace-recorder"
   optionHelp = Tagged "internal: iteration trace recorder"

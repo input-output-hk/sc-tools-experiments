@@ -6,7 +6,7 @@ module Convex.Tasty.Streaming (
 ) where
 
 import Control.Concurrent.Async (forConcurrently_)
-import Control.Concurrent.MVar (newMVar, withMVar)
+import Control.Concurrent.MVar (MVar, newMVar, withMVar)
 import Control.Concurrent.STM
 import Control.Monad (when)
 import Convex.Tasty.Streaming.TMSummary (
@@ -53,6 +53,17 @@ instance IsOption StreamingJson where
   optionHelp = Tagged "Enable streaming NDJSON test output to stdout"
   optionCLParser = mkFlagCLParser mempty (StreamingJson True)
 
+-- | Command-line option to disable iteration trace collection
+newtype NoTrace = NoTrace Bool
+  deriving (Eq, Ord, Typeable)
+
+instance IsOption NoTrace where
+  defaultValue = NoTrace False
+  parseValue = fmap NoTrace . safeRead
+  optionName = Tagged "no-trace"
+  optionHelp = Tagged "Disable iteration trace collection (only effective with --streaming-json)"
+  optionCLParser = mkFlagCLParser mempty (NoTrace True)
+
 -- | Command-line option to list tests as JSON without running them
 newtype ListTestsJson = ListTestsJson Bool
   deriving (Eq, Ord, Typeable)
@@ -76,6 +87,17 @@ instance IsOption StreamingEnabledRef where
   optionName = Tagged "streaming-enabled-ref"
   optionHelp = Tagged "internal: streaming enabled flag"
 
+{- | Internal option carrying a shared 'MVar ()' so the reporter and the
+'TraceRecorder' use the same output lock, preventing interleaved NDJSON lines.
+-}
+newtype OutputLockRef = OutputLockRef (Maybe (MVar ()))
+
+instance IsOption OutputLockRef where
+  defaultValue = OutputLockRef Nothing
+  parseValue = const Nothing
+  optionName = Tagged "output-lock-ref"
+  optionHelp = Tagged "internal: shared output lock"
+
 {- | Internal option carrying a shared 'IORef' so the reporter can publish the
 test map and the 'TraceRecorder' can read it back to resolve test IDs.
 -}
@@ -95,11 +117,13 @@ newline-delimited JSON events streamed to stdout.
 streamingJsonReporter :: Ingredient
 streamingJsonReporter = TestReporter
   [ Option (Proxy :: Proxy StreamingJson)
+  , Option (Proxy :: Proxy NoTrace)
   , Option (Proxy :: Proxy TMStoreOption)
   , Option (Proxy :: Proxy TMRecorder)
   , Option (Proxy :: Proxy TraceRecorder)
   , Option (Proxy :: Proxy TestMapRef)
   , Option (Proxy :: Proxy StreamingEnabledRef)
+  , Option (Proxy :: Proxy OutputLockRef)
   ]
   $ \opts tree -> do
     let StreamingJson enabled = lookupOption opts
@@ -112,15 +136,21 @@ streamingJsonReporter = TestReporter
 
         -- Signal that streaming is active so the TraceRecorder callback
         -- (which checks the same IORef) actually emits events.
+        -- When --no-trace is passed, leave the ref as False so that both
+        -- trEnabled and recordIteration remain no-ops.
+        let NoTrace noTrace = lookupOption opts
         case mEnabledRef of
-          Just ref -> writeIORef ref True
+          Just ref -> writeIORef ref (not noTrace)
           Nothing -> pure ()
 
         -- Set line buffering for streaming
         hSetBuffering stdout LineBuffering
 
-        -- Create lock for thread-safe output
-        outputLock <- newMVar ()
+        -- Use the shared output lock if provided, otherwise create a new one
+        -- (backward compatibility when the reporter is used without
+        -- defaultMainStreaming).
+        let OutputLockRef mSharedLock = lookupOption opts
+        outputLock <- maybe (newMVar ()) pure mSharedLock
         let emit evt = withMVar outputLock $ \_ -> emitEvent evt
 
         -- Build the test index -> metadata map
@@ -294,28 +324,26 @@ defaultMainStreaming tree = do
   store <- newTMStore
   testMapRef <- newIORef IntMap.empty
   enabledRef <- newIORef False -- set to True by the reporter when --streaming-json is active
+  -- Create a single shared output lock used by both the streaming reporter
+  -- and the TraceRecorder so their NDJSON lines never interleave.
+  outputLock <- newMVar ()
   -- Create a trace recorder that emits TestTrace events as NDJSON to stdout.
-  -- Uses its own lock for thread-safety; in practice single-line putStrLn calls
-  -- won't interleave with the reporter's own lock-protected output.
   -- The recorder reads the shared testMapRef (populated by the reporter at
   -- startup) to resolve the numeric Tasty test ID for each trace event.
   --
-  -- The callback checks 'enabledRef' before emitting anything, so when
-  -- --streaming-json is NOT passed, no NDJSON lines go to stdout.
-  -- 'trEnabled' is set True so that test bodies use the traced code path
-  -- (building IterationTrace values etc.) — a small overhead that is
-  -- acceptable when defaultMainStreaming is used. The actual emission is
-  -- still gated on the IORef.
-  traceLock <- newMVar ()
+  -- Both 'trEnabled' and 'recordIteration' read the shared 'enabledRef',
+  -- so when --streaming-json is NOT passed (or --no-trace is passed) the
+  -- ref stays False: test bodies take the fast path and no NDJSON lines
+  -- go to stdout.
   let traceRec =
         TraceRecorder
-          { trEnabled = True
+          { trEnabled = readIORef enabledRef
           , recordIteration = \group category iterationJson -> do
               enabled <- readIORef enabledRef
               when enabled $ do
                 testMap <- readIORef testMapRef
                 let testId = findTestId testMap group category
-                withMVar traceLock $ \_ ->
+                withMVar outputLock $ \_ ->
                   emitEvent $
                     TestTrace
                       { ettTestId = testId
@@ -328,5 +356,6 @@ defaultMainStreaming tree = do
           localOption (storeRecorder store) $
             localOption (TestMapRef (Just testMapRef)) $
               localOption (StreamingEnabledRef (Just enabledRef)) $
-                localOption traceRec tree
+                localOption (OutputLockRef (Just outputLock)) $
+                  localOption traceRec tree
   defaultMainWithIngredients streamingIngredients tree'
