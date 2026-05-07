@@ -62,6 +62,7 @@ import Paths_convex_testing_interface qualified as Pkg
 import PlutusLedgerApi.V1 qualified as PV1
 import PlutusTx qualified
 
+import Data.Aeson (ToJSON (..))
 import System.IO.Unsafe (unsafePerformIO)
 import Test.Tasty (TestTree, testGroup)
 import Test.Tasty.HUnit (assertFailure, testCase)
@@ -360,6 +361,9 @@ data SellNftModel = SellNftModel
   -- ^ Active NFT listings (txin + price)
   }
   deriving stock (Show, Eq)
+
+instance ToJSON SellNftModel where
+  toJSON = toJSON . show
 
 instance TestingInterface SellNftModel where
   -- Actions for Sell NFT: list NFTs and buy them

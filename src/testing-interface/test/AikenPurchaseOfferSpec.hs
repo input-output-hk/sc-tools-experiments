@@ -82,6 +82,7 @@ import PlutusTx.Builtins qualified as PlutusTx
 
 import Convex.ThreatModel.LargeData (largeDataAttack)
 import Convex.ThreatModel.TimeBoundManipulation (timeBoundManipulation)
+import Data.Aeson (ToJSON (..))
 import System.IO.Unsafe (unsafePerformIO)
 import Test.QuickCheck.Monadic (monadicIO, monitor, run)
 import Test.Tasty (TestTree, testGroup)
@@ -649,6 +650,9 @@ data PurchaseOfferModel = PurchaseOfferModel
   -- ^ Once fulfilled, sequence is done - no re-initialization allowed
   }
   deriving stock (Show, Eq)
+
+instance ToJSON PurchaseOfferModel where
+  toJSON = toJSON . show
 
 instance TestingInterface PurchaseOfferModel where
   -- Actions for Purchase Offer: create offer and fulfill it

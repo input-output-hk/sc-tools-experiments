@@ -1,0 +1,125 @@
+{-# LANGUAGE DeriveGeneric #-}
+{-# LANGUAGE OverloadedStrings #-}
+
+module Convex.Tasty.Streaming.TMSummary (
+  ThreatModelSummary (..),
+  TMStore,
+  TMRecorder (..),
+  TMStoreOption (..),
+  TraceRecorder (..),
+  newTMStore,
+  storeRecorder,
+  lookupThreatModelSummary,
+) where
+
+import Data.Aeson (FromJSON (..), ToJSON (..), Value, object, withObject, (.:), (.=))
+import Data.IORef (IORef, atomicModifyIORef', newIORef, readIORef)
+import Data.Map.Strict (Map)
+import Data.Map.Strict qualified as Map
+import Data.Tagged (Tagged (..))
+import Data.Text (Text)
+import GHC.Generics (Generic)
+import Test.Tasty.Options (IsOption (..))
+
+-- | Structured summary of a threat-model test case.
+data ThreatModelSummary = ThreatModelSummary
+  { tmsName :: !Text
+  , tmsTested :: !Int
+  , tmsTotal :: !Int
+  , tmsPassed :: !Int
+  , tmsFailed :: !Int
+  , tmsSkipped :: !Int
+  , tmsErrors :: !Int
+  }
+  deriving (Show, Eq, Generic)
+
+instance ToJSON ThreatModelSummary where
+  toJSON s =
+    object
+      [ "name" .= tmsName s
+      , "tested" .= tmsTested s
+      , "total" .= tmsTotal s
+      , "passed" .= tmsPassed s
+      , "failed" .= tmsFailed s
+      , "skipped" .= tmsSkipped s
+      , "errors" .= tmsErrors s
+      ]
+
+instance FromJSON ThreatModelSummary where
+  parseJSON = withObject "ThreatModelSummary" $ \o ->
+    ThreatModelSummary
+      <$> o .: "name"
+      <*> o .: "tested"
+      <*> o .: "total"
+      <*> o .: "passed"
+      <*> o .: "failed"
+      <*> o .: "skipped"
+      <*> o .: "errors"
+
+-- | Mutable storage for threat-model summaries, owned by the reporter.
+newtype TMStore = TMStore (IORef (Map String ThreatModelSummary))
+
+{- | A recorder closure passed to test bodies via Tasty's option system.
+The default no-op makes summaries silently dropped when the streaming
+reporter is not active.
+-}
+newtype TMRecorder = TMRecorder
+  { tmRecord :: String -> ThreatModelSummary -> IO ()
+  }
+
+{- | Internal option carrying the live store. Set by `defaultMainStreaming`
+alongside the recorder so the reporter can read summaries back out.
+-}
+newtype TMStoreOption = TMStoreOption (Maybe TMStore)
+
+instance IsOption TMRecorder where
+  defaultValue = TMRecorder (\_ _ -> pure ())
+  parseValue = const Nothing
+  optionName = Tagged "tm-recorder"
+  optionHelp = Tagged "internal: threat-model summary recorder"
+
+instance IsOption TMStoreOption where
+  defaultValue = TMStoreOption Nothing
+  parseValue = const Nothing
+  optionName = Tagged "tm-store"
+  optionHelp = Tagged "internal: threat-model summary store handle"
+
+-- | Allocate fresh storage. Call once per reporter run.
+newTMStore :: IO TMStore
+newTMStore = TMStore <$> newIORef Map.empty
+
+-- | Build a recorder that writes into the given store.
+storeRecorder :: TMStore -> TMRecorder
+storeRecorder (TMStore ref) = TMRecorder $ \key s ->
+  atomicModifyIORef' ref $ \m -> (Map.insert key s m, ())
+
+-- | Look up a summary by key (does not delete).
+lookupThreatModelSummary :: TMStore -> String -> IO (Maybe ThreatModelSummary)
+lookupThreatModelSummary (TMStore ref) key =
+  Map.lookup key <$> readIORef ref
+
+{- | Callback for recording iteration traces as pre-serialized JSON.
+Arguments: group name, category ("positive"\/"negative"), pre-serialized trace JSON.
+Default is a no-op (zero overhead when streaming is not active).
+
+When 'trEnabled' returns 'True', test bodies use the expensive traced code
+path (building 'IterationTrace' values with UTxO snapshots, transaction
+summaries, and JSON serialisation).  When it returns 'False' (the 'IsOption'
+default), the cheap 'runActions' path is used instead, avoiding all that
+work.
+
+'trEnabled' is an 'IO' action so that the decision can be deferred until the
+streaming reporter has parsed @--no-trace@ and written the shared 'IORef'.
+-}
+data TraceRecorder = TraceRecorder
+  { trEnabled :: IO Bool
+  -- ^ Whether test bodies should collect detailed traces.
+  , recordIteration :: String -> String -> Value -> IO ()
+  -- ^ Emit a single iteration trace event.
+  }
+
+instance IsOption TraceRecorder where
+  defaultValue = TraceRecorder (pure False) (\_ _ _ -> pure ())
+  parseValue = const Nothing
+  optionName = Tagged "trace-recorder"
+  optionHelp = Tagged "internal: iteration trace recorder"

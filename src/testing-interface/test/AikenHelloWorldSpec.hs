@@ -55,6 +55,7 @@ import Paths_convex_testing_interface qualified as Pkg
 import PlutusTx qualified
 import PlutusTx.Builtins qualified as PlutusTx
 
+import Data.Aeson (ToJSON (..))
 import System.IO.Unsafe (unsafePerformIO)
 import Test.Tasty (TestTree, testGroup)
 import Test.Tasty.HUnit (assertFailure, testCase)
@@ -310,6 +311,9 @@ data HelloWorldModel = HelloWorldModel
   -- ^ The UTxO at the script (for tracking)
   }
   deriving stock (Show, Eq)
+
+instance ToJSON HelloWorldModel where
+  toJSON = toJSON . show
 
 instance TestingInterface HelloWorldModel where
   -- Actions for CTF Hello World: lock funds and unlock (correct password only)

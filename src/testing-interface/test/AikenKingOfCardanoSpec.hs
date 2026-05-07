@@ -84,6 +84,7 @@ import PlutusLedgerApi.V1 qualified as PV1
 import PlutusTx qualified
 import PlutusTx.Builtins qualified as PlutusTx
 
+import Data.Aeson (ToJSON (..))
 import System.IO.Unsafe (unsafePerformIO)
 import Test.QuickCheck.Monadic (monadicIO, monitor, run)
 import Test.Tasty (TestTree, testGroup)
@@ -721,6 +722,9 @@ data KingModel = KingModel
   -- ^ Whether the competition is closed
   }
   deriving stock (Show, Eq)
+
+instance ToJSON KingModel where
+  toJSON = toJSON . show
 
 instance TestingInterface KingModel where
   -- Actions for King of Cardano: initialize, overthrow, close

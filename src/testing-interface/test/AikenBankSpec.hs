@@ -88,6 +88,7 @@ import PlutusLedgerApi.Common qualified as PlutusLedgerApi
 import PlutusTx qualified
 import PlutusTx.Builtins qualified as PlutusTx
 
+import Data.Aeson (ToJSON (..))
 import System.IO.Unsafe (unsafePerformIO)
 import Test.Tasty (TestTree, testGroup)
 import Test.Tasty.HUnit (assertFailure, testCase)
@@ -894,6 +895,9 @@ data BankModel = BankModel
   -- ^ Account owner
   }
   deriving stock (Show, Eq)
+
+instance ToJSON BankModel where
+  toJSON = toJSON . show
 
 instance TestingInterface BankModel where
   data Action BankModel

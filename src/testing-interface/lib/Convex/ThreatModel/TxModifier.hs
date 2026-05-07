@@ -1,5 +1,6 @@
 {-# LANGUAGE DerivingStrategies #-}
 {-# LANGUAGE GADTs #-}
+{-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE RecordWildCards #-}
 {-# LANGUAGE TypeApplications #-}
 {-# LANGUAGE ViewPatterns #-}
@@ -26,6 +27,10 @@ import Data.Sequence.Strict qualified as Seq
 import Data.Set qualified as Set
 import PlutusLedgerApi.Test.Examples (alwaysSucceedingNAryFunction)
 
+import Data.Aeson (object, (.=))
+import Data.Text qualified as Text
+
+import Convex.TestingInterface.Trace.TxSummary (renderAssetName, renderDatum, toValueSummary)
 import Convex.ThreatModel.Cardano.Api
 
 -- | A transaction output paired with its index in the transaction.
@@ -711,3 +716,124 @@ removeRequiredSigner = txMod . RemoveRequiredSigner
 -}
 replaceTx :: Tx Era -> UTxO Era -> TxModifier
 replaceTx tx utxos = txMod $ ReplaceTx tx utxos
+
+-- ---------------------------------------------------------------------
+-- ToJSON instance for TxMod
+-- ---------------------------------------------------------------------
+
+-- | Render an AddressAny as text (bech32 for Shelley, show for Byron).
+renderAddressAny :: AddressAny -> Text
+renderAddressAny (AddressShelley addr) = serialiseAddress addr
+renderAddressAny (AddressByron addr) = Text.pack (show addr)
+
+-- | Render a Datum (TxOutDatum CtxTx Era) as a JSON-friendly text value.
+renderDatumAny :: Datum -> Maybe Text
+renderDatumAny = renderDatum
+
+instance ToJSON TxMod where
+  toJSON (RemoveInput txIn) =
+    object
+      [ "type" .= ("removeInput" :: Text)
+      , "utxo" .= renderTxIn txIn
+      ]
+  toJSON (RemoveOutput (TxIx ix)) =
+    object
+      [ "type" .= ("removeOutput" :: Text)
+      , "index" .= ix
+      ]
+  toJSON (ChangeOutput (TxIx ix) mAddr mVal mDatum mRefScript) =
+    object
+      [ "type" .= ("changeOutput" :: Text)
+      , "index" .= ix
+      , "address" .= fmap renderAddressAny mAddr
+      , "value" .= fmap toValueSummary mVal
+      , "datum" .= (mDatum >>= renderDatumAny)
+      , "referenceScript" .= fmap (Text.pack . show) mRefScript
+      ]
+  toJSON (ChangeInput txIn mAddr mVal mDatum mRefScript) =
+    object
+      [ "type" .= ("changeInput" :: Text)
+      , "utxo" .= renderTxIn txIn
+      , "address" .= fmap renderAddressAny mAddr
+      , "value" .= fmap toValueSummary mVal
+      , "datum" .= (mDatum >>= renderDatumAny)
+      , "referenceScript" .= fmap (Text.pack . show) mRefScript
+      ]
+  toJSON (ChangeScriptInput txIn mVal mDatum mRedeemer mRefScript) =
+    object
+      [ "type" .= ("changeScriptInput" :: Text)
+      , "utxo" .= renderTxIn txIn
+      , "value" .= fmap toValueSummary mVal
+      , "datum" .= (mDatum >>= renderDatumAny)
+      , "redeemer" .= fmap (Text.pack . show) mRedeemer
+      , "referenceScript" .= fmap (Text.pack . show) mRefScript
+      ]
+  toJSON (ChangeValidityRange mLower mUpper) =
+    object
+      [ "type" .= ("changeValidityRange" :: Text)
+      , "lowerBound" .= fmap (Text.pack . show) mLower
+      , "upperBound" .= fmap (Text.pack . show) mUpper
+      ]
+  toJSON (AddOutput addr val datum refScript) =
+    object
+      [ "type" .= ("addOutput" :: Text)
+      , "address" .= renderAddressAny addr
+      , "value" .= toValueSummary val
+      , "datum" .= renderDatumAny datum
+      , "referenceScript" .= Text.pack (show refScript)
+      ]
+  toJSON (AddInput addr val datum refScript isRef) =
+    object
+      [ "type" .= ("addInput" :: Text)
+      , "address" .= renderAddressAny addr
+      , "value" .= toValueSummary val
+      , "datum" .= renderDatumAny datum
+      , "referenceScript" .= Text.pack (show refScript)
+      , "isReferenceInput" .= isRef
+      ]
+  toJSON (AddReferenceScriptInput scriptHash val datum redeemer) =
+    object
+      [ "type" .= ("addReferenceScriptInput" :: Text)
+      , "scriptHash" .= serialiseToRawBytesHexText scriptHash
+      , "value" .= toValueSummary val
+      , "datum" .= renderDatumAny datum
+      , "redeemer" .= Text.pack (show redeemer)
+      ]
+  toJSON (AddPlutusScriptInput _script val datum redeemer refScript) =
+    object
+      [ "type" .= ("addPlutusScriptInput" :: Text)
+      , "value" .= toValueSummary val
+      , "datum" .= renderDatumAny datum
+      , "redeemer" .= Text.pack (show redeemer)
+      , "referenceScript" .= Text.pack (show refScript)
+      ]
+  toJSON (AddPlutusScriptReferenceInput _script val datum refScript) =
+    object
+      [ "type" .= ("addPlutusScriptReferenceInput" :: Text)
+      , "value" .= toValueSummary val
+      , "datum" .= renderDatumAny datum
+      , "referenceScript" .= Text.pack (show refScript)
+      ]
+  toJSON (AddSimpleScriptInput _script val refScript isRef) =
+    object
+      [ "type" .= ("addSimpleScriptInput" :: Text)
+      , "value" .= toValueSummary val
+      , "referenceScript" .= Text.pack (show refScript)
+      , "isReferenceInput" .= isRef
+      ]
+  toJSON (AddPlutusScriptMint _script assetName qty redeemer) =
+    object
+      [ "type" .= ("addPlutusScriptMint" :: Text)
+      , "assetName" .= renderAssetName assetName
+      , "quantity" .= qty
+      , "redeemer" .= Text.pack (show redeemer)
+      ]
+  toJSON (RemoveRequiredSigner keyHash) =
+    object
+      [ "type" .= ("removeRequiredSigner" :: Text)
+      , "keyHash" .= serialiseToRawBytesHexText keyHash
+      ]
+  toJSON (ReplaceTx _tx _utxo) =
+    object
+      [ "type" .= ("replaceTx" :: Text)
+      ]

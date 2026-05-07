@@ -5,6 +5,7 @@
 {-# LANGUAGE FunctionalDependencies #-}
 {-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE NamedFieldPuns #-}
+{-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE PatternSynonyms #-}
 {-# LANGUAGE RankNTypes #-}
 {-# LANGUAGE TypeApplications #-}
@@ -24,6 +25,10 @@ module Convex.TestingInterface (
   RunOptions (..),
   defaultRunOptions,
   genAction,
+  runActions,
+
+  -- * Trace recording
+  TraceRecorder (..),
 
   -- * The Testing Monad
   TestingMonadT (..),
@@ -63,7 +68,7 @@ import Control.Monad.IO.Class (MonadIO, liftIO)
 import Test.HUnit (Assertion)
 import Test.QuickCheck (Arbitrary (..), Gen, Property, counterexample, discard, elements, frequency, oneof, property)
 import Test.QuickCheck.Monadic (PropertyM, monadicIO, monitor, pick, run)
-import Test.Tasty (DependencyType (..), TestTree, sequentialTestGroup, testGroup, withResource)
+import Test.Tasty (DependencyType (..), TestTree, askOption, sequentialTestGroup, testGroup, withResource)
 import Test.Tasty.ExpectedFailure (ignoreTestBecause)
 import Test.Tasty.HUnit (assertFailure, testCaseSteps)
 import Test.Tasty.QuickCheck (testProperty)
@@ -74,14 +79,26 @@ import Control.Exception (SomeException, catch, throwIO, try)
 import Control.Lens ((&), (.~), (^.))
 import Control.Monad.Except (ExceptT, runExceptT)
 import Control.Monad.Trans (MonadTrans (..))
-import Convex.Class (MonadBlockchain, MonadMockchain, coverageData, getTxs)
-import Convex.CoinSelection (BalanceTxError, coverageFromBalanceTxError)
-import Convex.MockChain (MockChainState (..), MockchainT, initialStateFor, runMockchainIO, runMockchainT)
+import Convex.Class (MonadBlockchain, MonadMockchain, coverageData, getMockChainState, getTxs, getUtxo)
+import Convex.CoinSelection (BalanceTxError (..), BalancingError (..), coverageFromBalanceTxError)
+import Convex.MockChain (MockChainState (..), MockchainT, fromLedgerUTxO, initialStateFor, runMockchainIO, runMockchainT)
 import Convex.MockChain.Defaults qualified as Defaults
 import Convex.MonadLog (MonadLog)
 import Convex.NodeParams (NodeParams (..))
-import Convex.ThreatModel (SigningWallet (AutoSign), ThreatModel (..), ThreatModelOutcome (..), getThreatModelName, runThreatModelCheck, threatModelEnvs)
+import Convex.Tasty.Streaming.TMSummary (TMRecorder, ThreatModelSummary (..), TraceRecorder (..), tmRecord)
+import Convex.TestingInterface.Trace (
+  IterationStatus (..),
+  IterationTrace (..),
+  ThreatModelTrace (..),
+  ThreatModelTraceOutcome (..),
+  Transition (..),
+  TransitionResult (..),
+  TxSummary (..),
+ )
+import Convex.TestingInterface.Trace.TxSummary (summarizeTx)
+import Convex.ThreatModel (SigningWallet (AutoSign), ThreatModel (..), ThreatModelCheckEntry (..), ThreatModelOutcome (..), getThreatModelName, runThreatModelCheckTraced, threatModelEnvs)
 import Convex.ThreatModel.All (allThreatModels)
+import Convex.ThreatModel.TxModifier (TxModifier (..))
 import Convex.Wallet.MockWallet qualified as Wallet
 import Data.Aeson (ToJSON (..), (.=))
 import Data.Aeson qualified as Aeson
@@ -93,7 +110,9 @@ import Data.IORef (IORef, modifyIORef, newIORef, readIORef)
 import Data.List (deleteFirstsBy)
 import Data.Map qualified as Map
 import Data.Maybe (fromMaybe)
+
 import Data.Set qualified as Set
+import Data.Text qualified as T
 import Data.Word (Word32)
 import GHC.Generics (Generic)
 import PlutusTx.Coverage (
@@ -120,7 +139,7 @@ correctly.
 
 Minimal complete definition: 'Action', 'initialize', 'arbitraryAction', 'perform'
 -}
-class (Show state, Eq state, Show (Action state)) => TestingInterface state where
+class (Show state, Eq state, Show (Action state), ToJSON state) => TestingInterface state where
   {- | Actions that can be performed on the contract.
   This is typically a data type with one constructor per contract operation.
   -}
@@ -296,45 +315,179 @@ propRunActionsWithOptions
   -> RunOptions
   -> TestTree
 propRunActionsWithOptions groupName opts =
-  let tms = threatModels @state
-      evs = expectedVulnerabilities @state
-   in if null tms && null evs
-        then
-          -- No threat models: simple structure (backward compatible)
-          testGroup
-            groupName
-            [ testProperty "Positive tests" (positiveTest @state opts Nothing [] [])
-            , negativeTestTree
-            ]
-        else
-          -- Has threat models: two-phase approach with IORef
-          withResource (newIORef Map.empty) (\_ -> pure ()) $ \getTmResultsRef ->
-            sequentialTestGroup groupName AllFinish $
-              [ testProperty "Positive tests" (positiveTest @state opts (Just getTmResultsRef) tms evs)
-              , negativeTestTree
-              ]
-                <> threatModelGroup getTmResultsRef tms
-                <> expectedVulnGroup getTmResultsRef evs
+  askOption $ \(recorder :: TraceRecorder) ->
+    let tms = threatModels @state
+        evs = expectedVulnerabilities @state
+     in if null tms && null evs
+          then
+            -- No threat models: simple structure (backward compatible)
+            withResource (newIORef (0 :: Int)) (\_ -> pure ()) $ \getPosRef ->
+              withResource (newIORef (0 :: Int)) (\_ -> pure ()) $ \getNegRef ->
+                testGroup
+                  groupName
+                  [ testProperty "Positive tests" (positiveTest @state opts groupName Nothing [] [] recorder getPosRef)
+                  , negativeTestTree recorder getNegRef
+                  ]
+          else
+            -- Has threat models: two-phase approach with IORef
+            withResource (newIORef Map.empty) (\_ -> pure ()) $ \getTmResultsRef ->
+              withResource (newIORef (0 :: Int)) (\_ -> pure ()) $ \getPosRef ->
+                withResource (newIORef (0 :: Int)) (\_ -> pure ()) $ \getNegRef ->
+                  sequentialTestGroup groupName AllFinish $
+                    [ testProperty "Positive tests" (positiveTest @state opts groupName (Just getTmResultsRef) tms evs recorder getPosRef)
+                    , negativeTestTree recorder getNegRef
+                    ]
+                      <> threatModelGroup getTmResultsRef tms
+                      <> expectedVulnGroup getTmResultsRef evs
  where
-  negativeTestTree = case disableNegativeTesting opts of
-    Nothing -> testProperty "Negative tests" (negativeTest @state opts)
-    Just reason -> ignoreTestBecause reason $ testProperty "Negative tests" (negativeTest @state opts)
+  negativeTestTree recorder getNegRef = case disableNegativeTesting opts of
+    Nothing -> testProperty "Negative tests" (negativeTest @state opts groupName recorder getNegRef)
+    Just reason -> ignoreTestBecause reason $ testProperty "Negative tests" (negativeTest @state opts groupName recorder getNegRef)
 
   threatModelGroup _ [] = []
   threatModelGroup getTmResultsRef tms' =
-    [testGroup "Threat models" $ zipWith (threatModelTestCase getTmResultsRef) [1 ..] tms']
+    [testGroup "Threat models" $ zipWith (threatModelTestCase getTmResultsRef "Threat models") [1 ..] tms']
 
   expectedVulnGroup _ [] = []
   expectedVulnGroup getTmResultsRef evs' =
-    [testGroup "Expected vulnerabilities" $ zipWith (expectedVulnTestCase getTmResultsRef) [1 ..] evs']
+    [testGroup "Expected vulnerabilities" $ zipWith (expectedVulnTestCase getTmResultsRef "Expected vulnerabilities") [1 ..] evs']
 
 -- | Negative test: check that invalid actions fail
 negativeTest
   :: forall state
    . (TestingInterface state)
   => RunOptions
+  -> String
+  -- ^ Group name for test ID resolution
+  -> TraceRecorder
+  -- ^ Callback for recording iteration traces
+  -> IO (IORef Int)
+  -- ^ Iteration counter accessor
   -> Property
-negativeTest opts = monadicIO $ do
+negativeTest opts groupName recorder getIterRef = monadicIO $ do
+  -- Bump and read iteration index
+  iterIdx <- run $ do
+    iterRef <- getIterRef
+    idx <- readIORef iterRef
+    modifyIORef iterRef (+ 1)
+    pure idx
+  enabled <- run $ trEnabled recorder
+  if enabled
+    then negativeTestTraced @state opts groupName recorder iterIdx
+    else negativeTestFast @state opts
+
+-- | Traced path for negative tests: runs 'runActionsTraced', builds traces.
+negativeTestTraced
+  :: forall state
+   . (TestingInterface state)
+  => RunOptions
+  -> String
+  -> TraceRecorder
+  -> Int
+  -> PropertyM IO Property
+negativeTestTraced opts groupName recorder iterIdx = do
+  let RunOptions{mcOptions = Options{coverageRef, params}} = opts
+  -- Phase 1: Run the valid prefix, capturing the final mockchain state
+  (prefixResult, prefixState) <- runTestingMonadT params $ do
+    initialState <- runInitialization @state opts
+
+    (finalState, transitions) <- runActionsTraced opts 10 initialState
+
+    -- Generate an action that VIOLATES the precondition in that state
+    result <- lift $ pick $ do
+      maybeInvalid <- arbitraryAction finalState `suchThatMaybe` (not . precondition finalState)
+      case maybeInvalid of
+        Nothing -> discard -- tell QuickCheck to skip this case
+        Just bad -> pure (bad, finalState)
+    pure (result, transitions)
+
+  -- Phase 2: Run the bad action starting from the state left by the valid prefix
+  case prefixResult of
+    Left err -> do
+      monitor (counterexample $ "Valid prefix failed: " ++ show err)
+      -- Record failed iteration trace
+      let trace =
+            IterationTrace
+              { itIndex = iterIdx
+              , itStatus = IterationFailure (formatBalanceTxError err)
+              , itTransitions = []
+              , itThreatModels = []
+              }
+      run $ recordIteration recorder groupName "negative" (toJSON trace)
+      pure (property False)
+    Right ((badAction, finalState), transitions) -> do
+      let monadAction = runExceptT $ unTestingMonadT $ perform finalState badAction
+      result' <- run $ try @SomeException $ runMockchainIO monadAction params prefixState
+      -- We distinguish between validation errors and user errors:
+      -- if the action failed at the off-chain level (e.g. balancing), we discard the test,
+      -- but if it failed after submission (i.e. validator rejection), we count it as a success.
+      let badActionText = T.pack (show badAction)
+          badTransition status =
+            Transition
+              { trStepIndex = length transitions
+              , trAction = badActionText
+              , trStateBefore = toJSON finalState
+              , trStateAfter = toJSON finalState
+              , trTransaction = Nothing
+              , trResult = status
+              }
+      case result' of
+        -- we try another round of bad actions
+        Left ex | discardNegativeTestForUserExceptions @state -> do
+          let trace =
+                IterationTrace
+                  { itIndex = iterIdx
+                  , itStatus = IterationDiscarded (T.pack (show ex))
+                  , itTransitions = transitions <> [badTransition (TransitionFailure (T.pack (show ex)))]
+                  , itThreatModels = []
+                  }
+          run $ recordIteration recorder groupName "negative" (toJSON trace)
+          discard
+        Left ex -> do
+          let trace =
+                IterationTrace
+                  { itIndex = iterIdx
+                  , itStatus = IterationSuccess
+                  , itTransitions = transitions <> [badTransition (TransitionFailure (T.pack (show ex)))]
+                  , itThreatModels = []
+                  }
+          run $ recordIteration recorder groupName "negative" (toJSON trace)
+          pure (property True)
+        Right result ->
+          case result of
+            (Left err, MockChainState{mcsCoverageData = covData}) -> do
+              -- Good: the invalid action failed via BalanceTxError (validator rejection)
+              for_ coverageRef $ \ref -> liftIO $ modifyIORef ref (<> (covData <> coverageFromBalanceTxError err))
+              let trace =
+                    IterationTrace
+                      { itIndex = iterIdx
+                      , itStatus = IterationSuccess
+                      , itTransitions = transitions <> [badTransition (TransitionFailure (formatBalanceTxError err))]
+                      , itThreatModels = []
+                      }
+              run $ recordIteration recorder groupName "negative" (toJSON trace)
+              pure (property True)
+            (Right _, MockChainState{mcsCoverageData = covData}) -> do
+              -- Bad: the invalid action succeeded — contract is too permissive
+              for_ coverageRef $ \ref -> liftIO $ modifyIORef ref (<> covData)
+              monitor (counterexample $ "Expected failure for invalid action but it succeeded")
+              let trace =
+                    IterationTrace
+                      { itIndex = iterIdx
+                      , itStatus = IterationFailure "Invalid action succeeded unexpectedly"
+                      , itTransitions = transitions <> [badTransition (TransitionSuccess T.empty)]
+                      , itThreatModels = []
+                      }
+              run $ recordIteration recorder groupName "negative" (toJSON trace)
+              pure (property False)
+
+-- | Fast path for negative tests: runs 'runActions' (no tracing overhead).
+negativeTestFast
+  :: forall state
+   . (TestingInterface state)
+  => RunOptions
+  -> PropertyM IO Property
+negativeTestFast opts = do
   let RunOptions{mcOptions = Options{coverageRef, params}} = opts
   -- Phase 1: Run the valid prefix, capturing the final mockchain state
   (prefixResult, prefixState) <- runTestingMonadT params $ do
@@ -343,11 +496,12 @@ negativeTest opts = monadicIO $ do
     finalState <- runActions opts 10 initialState
 
     -- Generate an action that VIOLATES the precondition in that state
-    lift $ pick $ do
+    result <- lift $ pick $ do
       maybeInvalid <- arbitraryAction finalState `suchThatMaybe` (not . precondition finalState)
       case maybeInvalid of
-        Nothing -> discard -- tell QuickCheck to skip this case
+        Nothing -> discard
         Just bad -> pure (bad, finalState)
+    pure result
 
   -- Phase 2: Run the bad action starting from the state left by the valid prefix
   case prefixResult of
@@ -357,21 +511,15 @@ negativeTest opts = monadicIO $ do
     Right (badAction, finalState) -> do
       let monadAction = runExceptT $ unTestingMonadT $ perform finalState badAction
       result' <- run $ try @SomeException $ runMockchainIO monadAction params prefixState
-      -- We distinguish between validation errors and user errors:
-      -- if the action failed at the off-chain level (e.g. balancing), we discard the test,
-      -- but if it failed after submission (i.e. validator rejection), we count it as a success.
       case result' of
-        -- we try another round of bad actions
         Left _ | discardNegativeTestForUserExceptions @state -> discard
         Left _ -> pure (property True)
         Right result ->
           case result of
             (Left err, MockChainState{mcsCoverageData = covData}) -> do
-              -- Good: the invalid action failed via BalanceTxError (validator rejection)
               for_ coverageRef $ \ref -> liftIO $ modifyIORef ref (<> (covData <> coverageFromBalanceTxError err))
               pure (property True)
             (Right _, MockChainState{mcsCoverageData = covData}) -> do
-              -- Bad: the invalid action succeeded — contract is too permissive
               for_ coverageRef $ \ref -> liftIO $ modifyIORef ref (<> covData)
               monitor (counterexample $ "Expected failure for invalid action but it succeeded")
               pure (property False)
@@ -384,28 +532,53 @@ positiveTest
   :: forall state
    . (TestingInterface state)
   => RunOptions
+  -> String
+  -- ^ Group name for test ID resolution
   -> Maybe (IO (IORef ThreatModelResults))
   -- ^ IORef for collecting results (Nothing = no threat models, don't collect)
   -> [ThreatModel ()]
   -- ^ Threat models (early-stop on TMFailed)
   -> [ThreatModel ()]
   -- ^ Expected vulnerabilities (never early-stop)
+  -> TraceRecorder
+  -- ^ Callback for recording iteration traces
+  -> IO (IORef Int)
+  -- ^ Iteration counter accessor (bumped each QuickCheck iteration)
   -> Property
-positiveTest opts mGetTmResultsRef tms evs = monadicIO $ do
+positiveTest opts groupName mGetTmResultsRef tms evs recorder getIterRef = monadicIO $ do
+  -- Bump and read iteration index
+  iterIdx <- run $ do
+    iterRef <- getIterRef
+    idx <- readIORef iterRef
+    modifyIORef iterRef (+ 1)
+    pure idx
+  enabled <- run $ trEnabled recorder
+  if enabled
+    then positiveTestTraced @state opts groupName mGetTmResultsRef tms evs recorder iterIdx
+    else positiveTestFast @state opts mGetTmResultsRef tms evs
+
+-- | Traced path: runs 'runActionsTraced', builds 'IterationTrace', records it.
+positiveTestTraced
+  :: forall state
+   . (TestingInterface state)
+  => RunOptions
+  -> String
+  -> Maybe (IO (IORef ThreatModelResults))
+  -> [ThreatModel ()]
+  -> [ThreatModel ()]
+  -> TraceRecorder
+  -> Int
+  -> PropertyM IO Property
+positiveTestTraced opts groupName mGetTmResultsRef tms evs recorder iterIdx = do
   let RunOptions{mcOptions = Options{coverageRef, params}} = opts
   result <- runTestingMonadT params $ do
     initialState <- runInitialization @state opts
 
-    finalState <- runActions opts 10 initialState
+    (finalState, transitions) <- runActionsTraced opts 10 initialState
 
-    -- Run threat models in isolation
-    -- Note: runThreatModelCheck handles rebalancing failures internally (returns TMSkipped)
-    -- so we don't need to catch exceptions here. Any remaining exception is a genuine bug.
-    -- Once a threat model has failed (TMFailed), we skip running it on subsequent transactions.
     allTxs <- getTxs
     let state0 = initialStateFor params Wallet.initialUTxOs
         envs = threatModelEnvs params (reverse allTxs) state0
-    -- Check which threat models have already failed (from previous QuickCheck iterations)
     existingResults <- case mGetTmResultsRef of
       Just getTmRef -> liftIO $ do
         tmRef <- getTmRef
@@ -414,33 +587,35 @@ positiveTest opts mGetTmResultsRef tms evs = monadicIO $ do
     let isTMFailed (TMFailed _) = True
         isTMFailed _ = False
         alreadyFailed name = any isTMFailed (fromMaybe [] (Map.lookup name existingResults))
-        -- Only filter threat models (tms) for early-stop; expected vulnerabilities (evs) always run
         tmsToRun = filter (not . alreadyFailed . fromMaybe "Unnamed" . getThreatModelName) tms
-        allToRun = tmsToRun <> evs -- evs always run, no filtering
-        -- Run each threat model in an isolated MockchainT context
+        allToRun = tmsToRun <> evs
     tmResultsWithCov <- liftIO $ forM allToRun $ \tm -> do
       let name = fromMaybe "Unnamed" (getThreatModelName tm)
-      (outcome, tmFinalState) <-
-        runMockchainIO (runThreatModelCheck AutoSign tm envs) params state0
-      pure (name, outcome, mcsCoverageData tmFinalState)
+      ((outcome, traceEntries), tmFinalState) <-
+        runMockchainIO (runThreatModelCheckTraced AutoSign tm envs) params state0
+      pure (name, outcome, traceEntries, mcsCoverageData tmFinalState)
 
-    -- Extract just the (name, outcome) pairs for downstream processing
-    let tmResults = [(n, o) | (n, o, _) <- tmResultsWithCov]
-        -- Aggregate coverage from all threat model runs
-        tmCoverage = mconcat [cov | (_, _, cov) <- tmResultsWithCov]
+    let tmResults = [(n, o) | (n, o, _, _) <- tmResultsWithCov]
+        tmTracedResults = [(n, o, entries) | (n, o, entries, _) <- tmResultsWithCov]
+        tmCoverage = mconcat [cov | (_, _, _, cov) <- tmResultsWithCov]
 
-    pure (finalState, tmResults, tmCoverage)
+    pure (finalState, transitions, tmResults, tmTracedResults, tmCoverage)
 
   case result of
     (Left err, MockChainState{mcsCoverageData = covData}) -> do
-      -- Extract and accumulate coverage from the failure
       for_ coverageRef $ \ref -> liftIO $ modifyIORef ref (<> (covData <> coverageFromBalanceTxError err))
+      let trace =
+            IterationTrace
+              { itIndex = iterIdx
+              , itStatus = IterationFailure (formatBalanceTxError err)
+              , itTransitions = []
+              , itThreatModels = []
+              }
+      run $ recordIteration recorder groupName "positive" (toJSON trace)
       pure (property False)
-    (Right (finalState, tmResults, tmCoverage), MockChainState{mcsCoverageData = covData}) -> do
+    (Right (finalState, transitions, tmResults, tmTracedResults, tmCoverage), MockChainState{mcsCoverageData = covData}) -> do
       monitor (counterexample $ "Final state: " ++ show finalState)
-      -- accumulate coverage from positive test AND threat model runs
       traverse_ (\ref -> liftIO $ modifyIORef ref (<> covData <> tmCoverage)) coverageRef
-      -- Store threat model results in the shared IORef (if present)
       case mGetTmResultsRef of
         Just getTmResultsRef -> run $ do
           tmRef <- getTmResultsRef
@@ -450,70 +625,157 @@ positiveTest opts mGetTmResultsRef tms evs = monadicIO $ do
               existing
               tmResults
         Nothing -> pure ()
-      pure (property True) -- Positive test passes independently of threat models
+      let tmTraces = toThreatModelTraces tmTracedResults
+          trace =
+            IterationTrace
+              { itIndex = iterIdx
+              , itStatus = IterationSuccess
+              , itTransitions = transitions
+              , itThreatModels = tmTraces
+              }
+      run $ recordIteration recorder groupName "positive" (toJSON trace)
+      pure (property True)
+
+-- | Fast path: runs 'runActions' (no UTxO snapshots, no tx summaries, no JSON).
+positiveTestFast
+  :: forall state
+   . (TestingInterface state)
+  => RunOptions
+  -> Maybe (IO (IORef ThreatModelResults))
+  -> [ThreatModel ()]
+  -> [ThreatModel ()]
+  -> PropertyM IO Property
+positiveTestFast opts mGetTmResultsRef tms evs = do
+  let RunOptions{mcOptions = Options{coverageRef, params}} = opts
+  result <- runTestingMonadT params $ do
+    initialState <- runInitialization @state opts
+
+    finalState <- runActions opts 10 initialState
+
+    allTxs <- getTxs
+    let state0 = initialStateFor params Wallet.initialUTxOs
+        envs = threatModelEnvs params (reverse allTxs) state0
+    existingResults <- case mGetTmResultsRef of
+      Just getTmRef -> liftIO $ do
+        tmRef <- getTmRef
+        readIORef tmRef
+      Nothing -> pure Map.empty
+    let isTMFailed (TMFailed _) = True
+        isTMFailed _ = False
+        alreadyFailed name = any isTMFailed (fromMaybe [] (Map.lookup name existingResults))
+        tmsToRun = filter (not . alreadyFailed . fromMaybe "Unnamed" . getThreatModelName) tms
+        allToRun = tmsToRun <> evs
+    tmResultsWithCov <- liftIO $ forM allToRun $ \tm -> do
+      let name = fromMaybe "Unnamed" (getThreatModelName tm)
+      ((outcome, traceEntries), tmFinalState) <-
+        runMockchainIO (runThreatModelCheckTraced AutoSign tm envs) params state0
+      pure (name, outcome, traceEntries, mcsCoverageData tmFinalState)
+
+    let tmResults = [(n, o) | (n, o, _, _) <- tmResultsWithCov]
+        tmCoverage = mconcat [cov | (_, _, _, cov) <- tmResultsWithCov]
+
+    pure (finalState, tmResults, tmCoverage)
+
+  case result of
+    (Left err, MockChainState{mcsCoverageData = covData}) -> do
+      for_ coverageRef $ \ref -> liftIO $ modifyIORef ref (<> (covData <> coverageFromBalanceTxError err))
+      pure (property False)
+    (Right (finalState, tmResults, tmCoverage), MockChainState{mcsCoverageData = covData}) -> do
+      monitor (counterexample $ "Final state: " ++ show finalState)
+      traverse_ (\ref -> liftIO $ modifyIORef ref (<> covData <> tmCoverage)) coverageRef
+      case mGetTmResultsRef of
+        Just getTmResultsRef -> run $ do
+          tmRef <- getTmResultsRef
+          modifyIORef tmRef $ \existing ->
+            foldl'
+              (\m (name, outcome) -> Map.insertWith (<>) name [outcome] m)
+              existing
+              tmResults
+        Nothing -> pure ()
+      pure (property True)
 
 -- | Create a test case for displaying threat model results
 threatModelTestCase
   :: IO (IORef ThreatModelResults)
+  -> String
+  -- ^ Tasty group name (for keying summaries)
   -> Int
   -- ^ Index for fallback naming
   -> ThreatModel ()
   -- ^ The threat model
   -> TestTree
-threatModelTestCase getTmResultsRef idx tm =
+threatModelTestCase getTmResultsRef groupName idx tm =
   let name = fromMaybe ("Threat model " <> show idx) (getThreatModelName tm)
-   in testCaseSteps name $ \step -> do
-        tmRef <- getTmResultsRef
-        allResults <- readIORef tmRef
-        let outcomes = fromMaybe [] (Map.lookup name allResults)
-            total = length outcomes
-            numPassed = length [() | TMPassed <- outcomes]
-            numSkipped = length [() | TMSkipped <- outcomes]
-            numErrors = length [() | TMError _ <- outcomes]
-            errors = [msg | TMError msg <- outcomes]
+      key = groupName <> "/" <> name
+   in askOption $ \(recorder :: TMRecorder) ->
+        testCaseSteps name $ \step -> do
+          tmRef <- getTmResultsRef
+          allResults <- readIORef tmRef
+          let outcomes = fromMaybe [] (Map.lookup name allResults)
+              total = length outcomes
+              numPassed = length [() | TMPassed <- outcomes]
+              numFailed = length [() | TMFailed _ <- outcomes]
+              numSkipped = length [() | TMSkipped <- outcomes]
+              numErrors = length [() | TMError _ <- outcomes]
+              errors = [msg | TMError msg <- outcomes]
+              tested = numPassed + numFailed
+              summary =
+                ThreatModelSummary
+                  { tmsName = T.pack name
+                  , tmsTested = tested
+                  , tmsTotal = total
+                  , tmsPassed = numPassed
+                  , tmsFailed = numFailed
+                  , tmsSkipped = numSkipped
+                  , tmsErrors = numErrors
+                  }
 
-        -- Report errors as warnings (don't fail the test)
-        case errors of
-          [] -> pure ()
-          _ -> do
-            step $ "WARNING: " <> show numErrors <> " error(s) during threat model execution"
-            mapM_ (step . ("  " <>)) (take 3 errors)
-            case drop 3 errors of
-              [] -> pure ()
-              remaining -> step $ "  ... and " <> show (length remaining) <> " more"
+          -- Report errors as warnings (don't fail the test)
+          case errors of
+            [] -> pure ()
+            _ -> do
+              step $ "WARNING: " <> show numErrors <> " error(s) during threat model execution"
+              mapM_ (step . ("  " <>)) (take 3 errors)
+              case drop 3 errors of
+                [] -> pure ()
+                remaining -> step $ "  ... and " <> show (length remaining) <> " more"
 
-        if total == 0
-          then step "No transactions were generated by positive tests"
-          else
-            if numSkipped + numErrors == total
-              then
-                step $
-                  "SKIPPED: Precondition never met (0/"
-                    <> show total
-                    <> " transactions applicable)"
-              else do
-                step $
-                  "Tested "
-                    <> show numPassed
-                    <> "/"
-                    <> show total
-                    <> " transactions ("
-                    <> show numSkipped
-                    <> " skipped, "
-                    <> show numErrors
-                    <> " errors)"
-                case [msg | TMFailed msg <- outcomes] of
-                  [] -> pure ()
-                  (firstFailure : rest) ->
-                    assertFailure $
-                      unlines
-                        [ "FAILED (after " <> show (numPassed + 1) <> " tests): Vulnerability detected"
-                        , ""
-                        , firstFailure
-                        , if null rest
-                            then ""
-                            else "... and " <> show (length rest) <> " more similar failure(s) suppressed"
-                        ]
+          if total == 0
+            then do
+              step "No transactions were generated by positive tests"
+              tmRecord recorder key summary
+            else
+              if numSkipped + numErrors == total
+                then do
+                  step $
+                    "SKIPPED: Precondition never met (0/"
+                      <> show total
+                      <> " transactions applicable)"
+                  tmRecord recorder key summary
+                else do
+                  step $
+                    "Tested "
+                      <> show numPassed
+                      <> "/"
+                      <> show total
+                      <> " transactions ("
+                      <> show numSkipped
+                      <> " skipped, "
+                      <> show numErrors
+                      <> " errors)"
+                  tmRecord recorder key summary
+                  case [msg | TMFailed msg <- outcomes] of
+                    [] -> pure ()
+                    (firstFailure : rest) ->
+                      assertFailure $
+                        unlines
+                          [ "FAILED (after " <> show (numPassed + 1) <> " tests): Vulnerability detected"
+                          , ""
+                          , firstFailure
+                          , if null rest
+                              then ""
+                              else "... and " <> show (length rest) <> " more similar failure(s) suppressed"
+                          ]
 
 {- | Create a test case for expected vulnerabilities with inverted pass/fail semantics.
 TMFailed = GOOD (vulnerability was correctly detected)
@@ -523,76 +785,96 @@ Output is quiet — no verbose transaction dump details, just stats.
 -}
 expectedVulnTestCase
   :: IO (IORef ThreatModelResults)
+  -> String
+  -- ^ Tasty group name (for keying summaries)
   -> Int
   -- ^ Index for fallback naming
   -> ThreatModel ()
   -- ^ The threat model expected to find vulnerabilities
   -> TestTree
-expectedVulnTestCase getTmResultsRef idx tm =
+expectedVulnTestCase getTmResultsRef groupName idx tm =
   let name = fromMaybe ("Expected vulnerability " <> show idx) (getThreatModelName tm)
-   in testCaseSteps name $ \step -> do
-        tmRef <- getTmResultsRef
-        allResults <- readIORef tmRef
-        let outcomes = fromMaybe [] (Map.lookup name allResults)
-            total = length outcomes
-            -- In expected vulnerability context:
-            -- TMFailed = vulnerability detected = GOOD
-            -- TMPassed = no vulnerability found = BAD
-            -- TMError = crashed, doesn't count either way
-            numFound = length [() | TMFailed _ <- outcomes] -- Good: vulnerability detected
-            numNotFound = length [() | TMPassed <- outcomes] -- Bad: expected vuln not found
-            numSkipped = length [() | TMSkipped <- outcomes]
-            numErrors = length [() | TMError _ <- outcomes]
-            errors = [msg | TMError msg <- outcomes]
-            tested = numFound + numNotFound
+      key = groupName <> "/" <> name
+   in askOption $ \(recorder :: TMRecorder) ->
+        testCaseSteps name $ \step -> do
+          tmRef <- getTmResultsRef
+          allResults <- readIORef tmRef
+          let outcomes = fromMaybe [] (Map.lookup name allResults)
+              total = length outcomes
+              -- In expected vulnerability context:
+              -- TMFailed = vulnerability detected = GOOD
+              -- TMPassed = no vulnerability found = BAD
+              -- TMError = crashed, doesn't count either way
+              numFound = length [() | TMFailed _ <- outcomes] -- Good: vulnerability detected
+              numNotFound = length [() | TMPassed <- outcomes] -- Bad: expected vuln not found
+              numSkipped = length [() | TMSkipped <- outcomes]
+              numErrors = length [() | TMError _ <- outcomes]
+              errors = [msg | TMError msg <- outcomes]
+              tested = numFound + numNotFound
+              summary =
+                ThreatModelSummary
+                  { tmsName = T.pack name
+                  , tmsTested = tested
+                  , tmsTotal = total
+                  , tmsPassed = numNotFound -- TMPassed count
+                  , tmsFailed = numFound -- TMFailed count
+                  , tmsSkipped = numSkipped
+                  , tmsErrors = numErrors
+                  }
 
-        -- Report errors as warnings (don't fail the test for errors alone)
-        case errors of
-          [] -> pure ()
-          _ -> do
-            step $ "WARNING: " <> show numErrors <> " error(s) during threat model execution"
-            mapM_ (step . ("  " <>)) (take 3 errors)
-            case drop 3 errors of
-              [] -> pure ()
-              remaining -> step $ "  ... and " <> show (length remaining) <> " more"
+          -- Report errors as warnings (don't fail the test for errors alone)
+          case errors of
+            [] -> pure ()
+            _ -> do
+              step $ "WARNING: " <> show numErrors <> " error(s) during threat model execution"
+              mapM_ (step . ("  " <>)) (take 3 errors)
+              case drop 3 errors of
+                [] -> pure ()
+                remaining -> step $ "  ... and " <> show (length remaining) <> " more"
 
-        if total == 0
-          then step "No transactions were generated by positive tests"
-          else
-            if numSkipped + numErrors == total
-              then
-                step $
-                  "SKIPPED: Precondition never met (0/"
-                    <> show total
-                    <> " transactions applicable)"
-              else
-                if numFound > 0
-                  then
-                    -- Good: at least one vulnerability was found
-                    step $
-                      "Vulnerability detected ("
-                        <> show numFound
-                        <> "/"
-                        <> show tested
-                        <> " transactions, "
-                        <> show numSkipped
-                        <> " skipped, "
-                        <> show numErrors
-                        <> " errors)"
-                  else
-                    if tested > 0
-                      then
-                        -- Bad: transactions were tested but no vulnerability found
-                        assertFailure $
-                          "Expected vulnerability NOT found in "
-                            <> show tested
-                            <> " tested transactions"
-                      else
-                        -- Edge case: all were skipped/errored (same as numSkipped + numErrors == total, but defensive)
-                        step $
-                          "SKIPPED: Precondition never met (0/"
-                            <> show total
-                            <> " transactions applicable)"
+          if total == 0
+            then do
+              step "No transactions were generated by positive tests"
+              tmRecord recorder key summary
+            else
+              if numSkipped + numErrors == total
+                then do
+                  step $
+                    "SKIPPED: Precondition never met (0/"
+                      <> show total
+                      <> " transactions applicable)"
+                  tmRecord recorder key summary
+                else
+                  if numFound > 0
+                    then do
+                      -- Good: at least one vulnerability was found
+                      step $
+                        "Vulnerability detected ("
+                          <> show numFound
+                          <> "/"
+                          <> show tested
+                          <> " transactions, "
+                          <> show numSkipped
+                          <> " skipped, "
+                          <> show numErrors
+                          <> " errors)"
+                      tmRecord recorder key summary
+                    else
+                      if tested > 0
+                        then do
+                          -- Bad: transactions were tested but no vulnerability found
+                          tmRecord recorder key summary
+                          assertFailure $
+                            "Expected vulnerability NOT found in "
+                              <> show tested
+                              <> " tested transactions"
+                        else do
+                          -- Edge case: all were skipped/errored (same as numSkipped + numErrors == total, but defensive)
+                          step $
+                            "SKIPPED: Precondition never met (0/"
+                              <> show total
+                              <> " transactions applicable)"
+                          tmRecord recorder key summary
 
 -- | Generate a number of actions (with a given maximum) and run them.
 runActions
@@ -635,6 +917,147 @@ runAction opts modelState action = do
     fail "Blockchain state does not match model state"
 
   pure modelState'
+
+{- | Like 'runActions' but accumulates a trace of each transition.
+The trace captures the model state before\/after each action and
+a summary of the transaction produced. If an action fails (via
+@ExceptT@ or @MonadFail@), the monad short-circuits and the
+partial trace is lost — use the 'IORef' variant in 'positiveTest'
+for partial-failure capture if needed.
+-}
+runActionsTraced
+  :: (TestingInterface state, MonadIO m)
+  => RunOptions
+  -> Int
+  -> state
+  -> TestingMonadT (PropertyM m) (state, [Transition])
+runActionsTraced opts maxSteps initialState = go 0 initialState []
+ where
+  go stepIdx state acc
+    | stepIdx >= maxSteps = pure (state, reverse acc)
+    | otherwise = do
+        mAction <- lift $ genAction state
+        case mAction of
+          Nothing -> pure (state, reverse acc)
+          Just action -> do
+            let stateBefore = toJSON state
+                actionText = T.pack (show action)
+            -- Snapshot the UTxO and txById map before running the action
+            utxoBefore <- fromLedgerUTxO C.shelleyBasedEra <$> getUtxo
+            txByIdBefore <- mcsTxById <$> getMockChainState
+            -- Run the action (may throw, short-circuiting the monad)
+            newState <- runAction opts state action
+            -- If we get here, the action succeeded
+            mTxSummary <- getLastTxSummary txByIdBefore utxoBefore
+            let transition =
+                  Transition
+                    { trStepIndex = stepIdx
+                    , trAction = actionText
+                    , trStateBefore = stateBefore
+                    , trStateAfter = toJSON newState
+                    , trTransaction = mTxSummary
+                    , trResult = TransitionSuccess (fromMaybe T.empty (mTxSummary >>= txsId))
+                    }
+            go (stepIdx + 1) newState (transition : acc)
+
+{- | Check whether a new transaction appeared in the mockchain since
+the given snapshot, and if so, return a compact summary.
+-}
+getLastTxSummary
+  :: (MonadMockchain C.ConwayEra m)
+  => Map.Map C.TxId (C.Tx C.ConwayEra)
+  -- ^ @mcsTxById@ snapshot taken before the action
+  -> C.UTxO C.ConwayEra
+  -- ^ UTxO snapshot taken before the action
+  -> m (Maybe TxSummary)
+getLastTxSummary txByIdBefore utxoBefore = do
+  st <- getMockChainState
+  let txByIdAfter = mcsTxById st
+      newTxIds = Map.keys (Map.difference txByIdAfter txByIdBefore)
+  case newTxIds of
+    [] -> pure Nothing
+    (txId : _) ->
+      case Map.lookup txId txByIdAfter of
+        Nothing -> pure Nothing
+        Just tx -> pure (Just (summarizeTx tx utxoBefore))
+
+{- | Convert traced threat model results into 'ThreatModelTrace' values
+suitable for inclusion in an 'IterationTrace'.
+
+Each 'ThreatModelCheckEntry' (one per 'Validate' call) produces a
+'ThreatModelTrace' with the actual modifications, original\/modified
+transactions, and outcome.
+-}
+toThreatModelTraces :: [(String, ThreatModelOutcome, [ThreatModelCheckEntry])] -> [ThreatModelTrace]
+toThreatModelTraces results = concatMap go results
+ where
+  go (name, outcome, []) =
+    -- No Validate calls: emit a single lightweight trace with just the outcome
+    [ ThreatModelTrace
+        { tmtName = T.pack name
+        , tmtTargetTxIndex = 0
+        , tmtModifications = []
+        , tmtOriginalTx = emptyTxSummary
+        , tmtModifiedTx = Nothing
+        , tmtOutcome = outcomeToTrace outcome
+        }
+    ]
+  go (name, outcome, entries) =
+    -- One ThreatModelTrace per Validate call
+    [ ThreatModelTrace
+        { tmtName = T.pack name
+        , tmtTargetTxIndex = tmceEnvIndex entry
+        , tmtModifications = renderModifications (tmceModifications entry)
+        , tmtOriginalTx = summarizeTx (tmceOriginalTx entry) (tmceOriginalUtxo entry)
+        , tmtModifiedTx = case tmceModifiedTx entry of
+            Just tx -> Just (summarizeTx tx (tmceModifiedUtxo entry))
+            Nothing -> Nothing
+        , tmtOutcome = outcomeToTrace outcome
+        }
+    | entry <- entries
+    ]
+
+  outcomeToTrace TMPassed = TMTOPassed
+  outcomeToTrace (TMFailed msg) = TMTOFailed (T.pack msg)
+  outcomeToTrace TMSkipped = TMTOSkipped "precondition not met"
+  outcomeToTrace (TMError msg) = TMTOError (T.pack msg)
+
+  renderModifications (TxModifier mods) = map toJSON mods
+
+  emptyTxSummary =
+    TxSummary
+      { txsId = Nothing
+      , txsInputs = []
+      , txsOutputs = []
+      , txsMint = Nothing
+      , txsFee = 0
+      , txsSigners = []
+      , txsValidRange = Nothing
+      }
+
+{- | Format a 'BalanceTxError' for display in trace output.
+For script execution errors, extracts just the error message and
+the last non-coverage log entry (typically the user's trace message),
+filtering out coverage annotation noise (CoverLocation/CoverBool).
+-}
+formatBalanceTxError :: BalanceTxError C.ConwayEra -> T.Text
+formatBalanceTxError (ABalancingError (ScriptExecutionErr errs)) =
+  T.intercalate "; " $ map formatScriptErr errs
+ where
+  formatScriptErr (_witness, errMsg, logs) =
+    let
+      -- Filter out coverage annotation log messages
+      userLogs = filter (not . isCoverageAnnotation) logs
+      -- Show the last user log (most informative) alongside the error
+      suffix = case userLogs of
+        [] -> ""
+        _ -> " | " <> last userLogs
+     in
+      errMsg <> suffix
+  isCoverageAnnotation msg =
+    "CoverLocation (" `T.isPrefixOf` msg
+      || "CoverBool (" `T.isPrefixOf` msg
+formatBalanceTxError err = T.pack (show err)
 
 -- | Initialize the blockchain and validate the model state
 runInitialization
