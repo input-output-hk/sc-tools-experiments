@@ -6,6 +6,8 @@ module Convex.TestingInterface.Trace.TxSummary (
   summarizeTxBody,
   renderAddress,
   toValueSummary,
+  renderAssetName,
+  renderDatum,
 ) where
 
 import Cardano.Api qualified as C

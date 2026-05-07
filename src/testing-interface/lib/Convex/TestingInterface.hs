@@ -1027,7 +1027,7 @@ toThreatModelTraces results = concatMap go results
   outcomeToTrace TMSkipped = TMTOSkipped "precondition not met"
   outcomeToTrace (TMError msg) = TMTOError (T.pack msg)
 
-  renderModifications (TxModifier mods) = map (T.pack . show) mods
+  renderModifications (TxModifier mods) = map toJSON mods
 
   emptyTxSummary =
     TxSummary
