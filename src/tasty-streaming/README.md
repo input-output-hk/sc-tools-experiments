@@ -215,6 +215,30 @@ cabal test convex-testing-interface-test \
   | jq -R 'fromjson? // empty | .tests[] | {id, name, path}'
 ```
 
+## JSON Schema
+
+A [JSON Schema (draft 2020-12)](https://json-schema.org/specification) describing every NDJSON event emitted by the streaming reporter lives at `schema/streaming-events.schema.json` in this package. Use it for VS Code extension type generation, payload validation, or as machine-readable documentation of the event format.
+
+### Regenerating the schema
+
+After modifying any `ToJSON` instance on streaming or trace types, regenerate the schema:
+
+```bash
+cabal run --project-file=cabal.project.schema-gen gen-schema \
+  > src/tasty-streaming/schema/streaming-events.schema.json
+```
+
+You need to regenerate whenever you change types in:
+
+- `Convex.TestingInterface.Trace`
+- `Convex.ThreatModel.TxModifier`
+- `Convex.Tasty.Streaming.Types`
+- `Convex.Tasty.Streaming.TMSummary`
+
+### How it works
+
+The `convex-schema-gen` package (in `src/schema-gen/`) defines `ToSchema` orphan instances (from `openapi3`) for all serialized types and converts them to JSON Schema. The `openapi3` dependency is quarantined in that package — it is never pulled into any library that users consume. A separate project file (`cabal.project.schema-gen`) includes `convex-schema-gen` without affecting the main Nix build.
+
 ## API Reference
 
 | Export                     | Type         | Description                                                          |
