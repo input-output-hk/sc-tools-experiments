@@ -1,0 +1,1244 @@
+{
+    "$defs": {
+        "AssetSummary": {
+            "properties": {
+                "name": {
+                    "type": "string"
+                },
+                "policyId": {
+                    "type": "string"
+                },
+                "quantity": {
+                    "type": "integer"
+                }
+            },
+            "required": [
+                "policyId",
+                "name",
+                "quantity"
+            ],
+            "type": "object"
+        },
+        "Event": {
+            "discriminator": {
+                "mapping": {},
+                "propertyName": "event"
+            },
+            "oneOf": [
+                {
+                    "properties": {
+                        "event": {
+                            "enum": [
+                                "suite_started"
+                            ],
+                            "type": "string"
+                        },
+                        "tests": {
+                            "items": {
+                                "$ref": "#/$defs/TestInfo"
+                            },
+                            "type": "array"
+                        }
+                    },
+                    "required": [
+                        "event",
+                        "tests"
+                    ],
+                    "type": "object"
+                },
+                {
+                    "properties": {
+                        "event": {
+                            "enum": [
+                                "test_started"
+                            ],
+                            "type": "string"
+                        },
+                        "id": {
+                            "type": "integer"
+                        }
+                    },
+                    "required": [
+                        "event",
+                        "id"
+                    ],
+                    "type": "object"
+                },
+                {
+                    "properties": {
+                        "event": {
+                            "enum": [
+                                "test_progress"
+                            ],
+                            "type": "string"
+                        },
+                        "id": {
+                            "type": "integer"
+                        },
+                        "message": {
+                            "type": "string"
+                        },
+                        "percent": {
+                            "format": "float",
+                            "type": "number"
+                        }
+                    },
+                    "required": [
+                        "event",
+                        "id",
+                        "message",
+                        "percent"
+                    ],
+                    "type": "object"
+                },
+                {
+                    "properties": {
+                        "description": {
+                            "type": "string"
+                        },
+                        "duration": {
+                            "format": "double",
+                            "type": "number"
+                        },
+                        "event": {
+                            "enum": [
+                                "test_done"
+                            ],
+                            "type": "string"
+                        },
+                        "failure": {
+                            "$ref": "#/$defs/FailureInfo"
+                        },
+                        "id": {
+                            "type": "integer"
+                        },
+                        "success": {
+                            "type": "boolean"
+                        },
+                        "threat_model": {
+                            "$ref": "#/$defs/ThreatModelSummary"
+                        }
+                    },
+                    "required": [
+                        "event",
+                        "id",
+                        "duration",
+                        "description",
+                        "success"
+                    ],
+                    "type": "object"
+                },
+                {
+                    "properties": {
+                        "category": {
+                            "type": "string"
+                        },
+                        "event": {
+                            "enum": [
+                                "test_trace"
+                            ],
+                            "type": "string"
+                        },
+                        "id": {
+                            "type": "integer"
+                        },
+                        "trace": {
+                            "$ref": "#/$defs/IterationTrace"
+                        }
+                    },
+                    "required": [
+                        "event",
+                        "id",
+                        "category",
+                        "trace"
+                    ],
+                    "type": "object"
+                },
+                {
+                    "properties": {
+                        "duration": {
+                            "format": "double",
+                            "type": "number"
+                        },
+                        "event": {
+                            "enum": [
+                                "suite_done"
+                            ],
+                            "type": "string"
+                        },
+                        "failed": {
+                            "type": "integer"
+                        },
+                        "passed": {
+                            "type": "integer"
+                        }
+                    },
+                    "required": [
+                        "event",
+                        "passed",
+                        "failed",
+                        "duration"
+                    ],
+                    "type": "object"
+                }
+            ]
+        },
+        "FailureInfo": {
+            "properties": {
+                "message": {
+                    "type": "string"
+                },
+                "reason": {
+                    "type": "string"
+                }
+            },
+            "required": [
+                "reason",
+                "message"
+            ],
+            "type": "object"
+        },
+        "IterationStatus": {
+            "discriminator": {
+                "mapping": {},
+                "propertyName": "status"
+            },
+            "oneOf": [
+                {
+                    "properties": {
+                        "status": {
+                            "enum": [
+                                "success"
+                            ],
+                            "type": "string"
+                        }
+                    },
+                    "required": [
+                        "status"
+                    ],
+                    "type": "object"
+                },
+                {
+                    "properties": {
+                        "message": {
+                            "type": "string"
+                        },
+                        "status": {
+                            "enum": [
+                                "failure"
+                            ],
+                            "type": "string"
+                        }
+                    },
+                    "required": [
+                        "status",
+                        "message"
+                    ],
+                    "type": "object"
+                },
+                {
+                    "properties": {
+                        "message": {
+                            "type": "string"
+                        },
+                        "status": {
+                            "enum": [
+                                "discarded"
+                            ],
+                            "type": "string"
+                        }
+                    },
+                    "required": [
+                        "status",
+                        "message"
+                    ],
+                    "type": "object"
+                }
+            ]
+        },
+        "IterationTrace": {
+            "properties": {
+                "index": {
+                    "type": "integer"
+                },
+                "status": {
+                    "$ref": "#/$defs/IterationStatus"
+                },
+                "threatModels": {
+                    "items": {
+                        "$ref": "#/$defs/ThreatModelTrace"
+                    },
+                    "type": "array"
+                },
+                "transitions": {
+                    "items": {
+                        "$ref": "#/$defs/Transition"
+                    },
+                    "type": "array"
+                }
+            },
+            "required": [
+                "index",
+                "status",
+                "transitions",
+                "threatModels"
+            ],
+            "type": "object"
+        },
+        "TestInfo": {
+            "properties": {
+                "id": {
+                    "type": "integer"
+                },
+                "name": {
+                    "type": "string"
+                },
+                "path": {
+                    "items": {
+                        "type": "string"
+                    },
+                    "type": "array"
+                }
+            },
+            "required": [
+                "id",
+                "name",
+                "path"
+            ],
+            "type": "object"
+        },
+        "ThreatModelSummary": {
+            "properties": {
+                "errors": {
+                    "type": "integer"
+                },
+                "failed": {
+                    "type": "integer"
+                },
+                "name": {
+                    "type": "string"
+                },
+                "passed": {
+                    "type": "integer"
+                },
+                "skipped": {
+                    "type": "integer"
+                },
+                "tested": {
+                    "type": "integer"
+                },
+                "total": {
+                    "type": "integer"
+                }
+            },
+            "required": [
+                "name",
+                "tested",
+                "total",
+                "passed",
+                "failed",
+                "skipped",
+                "errors"
+            ],
+            "type": "object"
+        },
+        "ThreatModelTrace": {
+            "properties": {
+                "modifications": {
+                    "items": {
+                        "$ref": "#/$defs/TxMod"
+                    },
+                    "type": "array"
+                },
+                "modifiedTx": {
+                    "allOf": [
+                        {
+                            "$ref": "#/$defs/TxSummary"
+                        }
+                    ],
+                    "nullable": true
+                },
+                "name": {
+                    "type": "string"
+                },
+                "originalTx": {
+                    "$ref": "#/$defs/TxSummary"
+                },
+                "outcome": {
+                    "$ref": "#/$defs/ThreatModelTraceOutcome"
+                },
+                "targetTxIndex": {
+                    "type": "integer"
+                }
+            },
+            "required": [
+                "name",
+                "targetTxIndex",
+                "modifications",
+                "originalTx",
+                "modifiedTx",
+                "outcome"
+            ],
+            "type": "object"
+        },
+        "ThreatModelTraceOutcome": {
+            "discriminator": {
+                "mapping": {},
+                "propertyName": "status"
+            },
+            "oneOf": [
+                {
+                    "properties": {
+                        "status": {
+                            "enum": [
+                                "passed"
+                            ],
+                            "type": "string"
+                        }
+                    },
+                    "required": [
+                        "status"
+                    ],
+                    "type": "object"
+                },
+                {
+                    "properties": {
+                        "reason": {
+                            "type": "string"
+                        },
+                        "status": {
+                            "enum": [
+                                "failed"
+                            ],
+                            "type": "string"
+                        }
+                    },
+                    "required": [
+                        "status",
+                        "reason"
+                    ],
+                    "type": "object"
+                },
+                {
+                    "properties": {
+                        "reason": {
+                            "type": "string"
+                        },
+                        "status": {
+                            "enum": [
+                                "skipped"
+                            ],
+                            "type": "string"
+                        }
+                    },
+                    "required": [
+                        "status",
+                        "reason"
+                    ],
+                    "type": "object"
+                },
+                {
+                    "properties": {
+                        "message": {
+                            "type": "string"
+                        },
+                        "status": {
+                            "enum": [
+                                "error"
+                            ],
+                            "type": "string"
+                        }
+                    },
+                    "required": [
+                        "status",
+                        "message"
+                    ],
+                    "type": "object"
+                }
+            ]
+        },
+        "Transition": {
+            "properties": {
+                "action": {
+                    "type": "string"
+                },
+                "result": {
+                    "$ref": "#/$defs/TransitionResult"
+                },
+                "stateAfter": {},
+                "stateBefore": {},
+                "stepIndex": {
+                    "type": "integer"
+                },
+                "transaction": {
+                    "allOf": [
+                        {
+                            "$ref": "#/$defs/TxSummary"
+                        }
+                    ],
+                    "nullable": true
+                }
+            },
+            "required": [
+                "stepIndex",
+                "action",
+                "stateBefore",
+                "stateAfter",
+                "transaction",
+                "result"
+            ],
+            "type": "object"
+        },
+        "TransitionResult": {
+            "discriminator": {
+                "mapping": {},
+                "propertyName": "status"
+            },
+            "oneOf": [
+                {
+                    "properties": {
+                        "status": {
+                            "enum": [
+                                "success"
+                            ],
+                            "type": "string"
+                        },
+                        "txId": {
+                            "type": "string"
+                        }
+                    },
+                    "required": [
+                        "status",
+                        "txId"
+                    ],
+                    "type": "object"
+                },
+                {
+                    "properties": {
+                        "error": {
+                            "type": "string"
+                        },
+                        "status": {
+                            "enum": [
+                                "failure"
+                            ],
+                            "type": "string"
+                        }
+                    },
+                    "required": [
+                        "status",
+                        "error"
+                    ],
+                    "type": "object"
+                }
+            ]
+        },
+        "TxInputSummary": {
+            "properties": {
+                "address": {
+                    "type": "string"
+                },
+                "utxo": {
+                    "type": "string"
+                },
+                "value": {
+                    "$ref": "#/$defs/ValueSummary"
+                }
+            },
+            "required": [
+                "utxo",
+                "address",
+                "value"
+            ],
+            "type": "object"
+        },
+        "TxMod": {
+            "discriminator": {
+                "mapping": {},
+                "propertyName": "type"
+            },
+            "oneOf": [
+                {
+                    "properties": {
+                        "type": {
+                            "enum": [
+                                "removeInput"
+                            ],
+                            "type": "string"
+                        },
+                        "utxo": {
+                            "type": "string"
+                        }
+                    },
+                    "required": [
+                        "type",
+                        "utxo"
+                    ],
+                    "type": "object"
+                },
+                {
+                    "properties": {
+                        "index": {
+                            "type": "integer"
+                        },
+                        "type": {
+                            "enum": [
+                                "removeOutput"
+                            ],
+                            "type": "string"
+                        }
+                    },
+                    "required": [
+                        "type",
+                        "index"
+                    ],
+                    "type": "object"
+                },
+                {
+                    "properties": {
+                        "address": {
+                            "nullable": true,
+                            "type": "string"
+                        },
+                        "datum": {
+                            "nullable": true,
+                            "type": "string"
+                        },
+                        "index": {
+                            "type": "integer"
+                        },
+                        "referenceScript": {
+                            "nullable": true,
+                            "type": "string"
+                        },
+                        "type": {
+                            "enum": [
+                                "changeOutput"
+                            ],
+                            "type": "string"
+                        },
+                        "value": {
+                            "allOf": [
+                                {
+                                    "$ref": "#/$defs/ValueSummary"
+                                }
+                            ],
+                            "nullable": true
+                        }
+                    },
+                    "required": [
+                        "type",
+                        "index",
+                        "address",
+                        "value",
+                        "datum",
+                        "referenceScript"
+                    ],
+                    "type": "object"
+                },
+                {
+                    "properties": {
+                        "address": {
+                            "nullable": true,
+                            "type": "string"
+                        },
+                        "datum": {
+                            "nullable": true,
+                            "type": "string"
+                        },
+                        "referenceScript": {
+                            "nullable": true,
+                            "type": "string"
+                        },
+                        "type": {
+                            "enum": [
+                                "changeInput"
+                            ],
+                            "type": "string"
+                        },
+                        "utxo": {
+                            "type": "string"
+                        },
+                        "value": {
+                            "allOf": [
+                                {
+                                    "$ref": "#/$defs/ValueSummary"
+                                }
+                            ],
+                            "nullable": true
+                        }
+                    },
+                    "required": [
+                        "type",
+                        "utxo",
+                        "address",
+                        "value",
+                        "datum",
+                        "referenceScript"
+                    ],
+                    "type": "object"
+                },
+                {
+                    "properties": {
+                        "datum": {
+                            "nullable": true,
+                            "type": "string"
+                        },
+                        "redeemer": {
+                            "nullable": true,
+                            "type": "string"
+                        },
+                        "referenceScript": {
+                            "nullable": true,
+                            "type": "string"
+                        },
+                        "type": {
+                            "enum": [
+                                "changeScriptInput"
+                            ],
+                            "type": "string"
+                        },
+                        "utxo": {
+                            "type": "string"
+                        },
+                        "value": {
+                            "allOf": [
+                                {
+                                    "$ref": "#/$defs/ValueSummary"
+                                }
+                            ],
+                            "nullable": true
+                        }
+                    },
+                    "required": [
+                        "type",
+                        "utxo",
+                        "value",
+                        "datum",
+                        "redeemer",
+                        "referenceScript"
+                    ],
+                    "type": "object"
+                },
+                {
+                    "properties": {
+                        "lowerBound": {
+                            "nullable": true,
+                            "type": "string"
+                        },
+                        "type": {
+                            "enum": [
+                                "changeValidityRange"
+                            ],
+                            "type": "string"
+                        },
+                        "upperBound": {
+                            "nullable": true,
+                            "type": "string"
+                        }
+                    },
+                    "required": [
+                        "type",
+                        "lowerBound",
+                        "upperBound"
+                    ],
+                    "type": "object"
+                },
+                {
+                    "properties": {
+                        "address": {
+                            "type": "string"
+                        },
+                        "datum": {
+                            "nullable": true,
+                            "type": "string"
+                        },
+                        "referenceScript": {
+                            "type": "string"
+                        },
+                        "type": {
+                            "enum": [
+                                "addOutput"
+                            ],
+                            "type": "string"
+                        },
+                        "value": {
+                            "$ref": "#/$defs/ValueSummary"
+                        }
+                    },
+                    "required": [
+                        "type",
+                        "address",
+                        "value",
+                        "datum",
+                        "referenceScript"
+                    ],
+                    "type": "object"
+                },
+                {
+                    "properties": {
+                        "address": {
+                            "type": "string"
+                        },
+                        "datum": {
+                            "nullable": true,
+                            "type": "string"
+                        },
+                        "isReferenceInput": {
+                            "type": "boolean"
+                        },
+                        "referenceScript": {
+                            "type": "string"
+                        },
+                        "type": {
+                            "enum": [
+                                "addInput"
+                            ],
+                            "type": "string"
+                        },
+                        "value": {
+                            "$ref": "#/$defs/ValueSummary"
+                        }
+                    },
+                    "required": [
+                        "type",
+                        "address",
+                        "value",
+                        "datum",
+                        "referenceScript",
+                        "isReferenceInput"
+                    ],
+                    "type": "object"
+                },
+                {
+                    "properties": {
+                        "datum": {
+                            "nullable": true,
+                            "type": "string"
+                        },
+                        "redeemer": {
+                            "type": "string"
+                        },
+                        "scriptHash": {
+                            "type": "string"
+                        },
+                        "type": {
+                            "enum": [
+                                "addReferenceScriptInput"
+                            ],
+                            "type": "string"
+                        },
+                        "value": {
+                            "$ref": "#/$defs/ValueSummary"
+                        }
+                    },
+                    "required": [
+                        "type",
+                        "scriptHash",
+                        "value",
+                        "datum",
+                        "redeemer"
+                    ],
+                    "type": "object"
+                },
+                {
+                    "properties": {
+                        "datum": {
+                            "nullable": true,
+                            "type": "string"
+                        },
+                        "redeemer": {
+                            "type": "string"
+                        },
+                        "referenceScript": {
+                            "type": "string"
+                        },
+                        "type": {
+                            "enum": [
+                                "addPlutusScriptInput"
+                            ],
+                            "type": "string"
+                        },
+                        "value": {
+                            "$ref": "#/$defs/ValueSummary"
+                        }
+                    },
+                    "required": [
+                        "type",
+                        "value",
+                        "datum",
+                        "redeemer",
+                        "referenceScript"
+                    ],
+                    "type": "object"
+                },
+                {
+                    "properties": {
+                        "datum": {
+                            "nullable": true,
+                            "type": "string"
+                        },
+                        "referenceScript": {
+                            "type": "string"
+                        },
+                        "type": {
+                            "enum": [
+                                "addPlutusScriptReferenceInput"
+                            ],
+                            "type": "string"
+                        },
+                        "value": {
+                            "$ref": "#/$defs/ValueSummary"
+                        }
+                    },
+                    "required": [
+                        "type",
+                        "value",
+                        "datum",
+                        "referenceScript"
+                    ],
+                    "type": "object"
+                },
+                {
+                    "properties": {
+                        "isReferenceInput": {
+                            "type": "boolean"
+                        },
+                        "referenceScript": {
+                            "type": "string"
+                        },
+                        "type": {
+                            "enum": [
+                                "addSimpleScriptInput"
+                            ],
+                            "type": "string"
+                        },
+                        "value": {
+                            "$ref": "#/$defs/ValueSummary"
+                        }
+                    },
+                    "required": [
+                        "type",
+                        "value",
+                        "referenceScript",
+                        "isReferenceInput"
+                    ],
+                    "type": "object"
+                },
+                {
+                    "properties": {
+                        "assetName": {
+                            "type": "string"
+                        },
+                        "quantity": {
+                            "type": "integer"
+                        },
+                        "redeemer": {
+                            "type": "string"
+                        },
+                        "type": {
+                            "enum": [
+                                "addPlutusScriptMint"
+                            ],
+                            "type": "string"
+                        }
+                    },
+                    "required": [
+                        "type",
+                        "assetName",
+                        "quantity",
+                        "redeemer"
+                    ],
+                    "type": "object"
+                },
+                {
+                    "properties": {
+                        "keyHash": {
+                            "type": "string"
+                        },
+                        "type": {
+                            "enum": [
+                                "removeRequiredSigner"
+                            ],
+                            "type": "string"
+                        }
+                    },
+                    "required": [
+                        "type",
+                        "keyHash"
+                    ],
+                    "type": "object"
+                },
+                {
+                    "properties": {
+                        "type": {
+                            "enum": [
+                                "replaceTx"
+                            ],
+                            "type": "string"
+                        }
+                    },
+                    "required": [
+                        "type"
+                    ],
+                    "type": "object"
+                }
+            ]
+        },
+        "TxOutputSummary": {
+            "properties": {
+                "address": {
+                    "type": "string"
+                },
+                "datum": {
+                    "nullable": true,
+                    "type": "string"
+                },
+                "utxo": {
+                    "type": "string"
+                },
+                "value": {
+                    "$ref": "#/$defs/ValueSummary"
+                }
+            },
+            "required": [
+                "utxo",
+                "address",
+                "value",
+                "datum"
+            ],
+            "type": "object"
+        },
+        "TxSummary": {
+            "properties": {
+                "fee": {
+                    "type": "integer"
+                },
+                "id": {
+                    "nullable": true,
+                    "type": "string"
+                },
+                "inputs": {
+                    "items": {
+                        "$ref": "#/$defs/TxInputSummary"
+                    },
+                    "type": "array"
+                },
+                "mint": {
+                    "allOf": [
+                        {
+                            "$ref": "#/$defs/ValueSummary"
+                        }
+                    ],
+                    "nullable": true
+                },
+                "outputs": {
+                    "items": {
+                        "$ref": "#/$defs/TxOutputSummary"
+                    },
+                    "type": "array"
+                },
+                "signers": {
+                    "items": {
+                        "type": "string"
+                    },
+                    "type": "array"
+                },
+                "validRange": {
+                    "nullable": true,
+                    "type": "string"
+                }
+            },
+            "required": [
+                "id",
+                "inputs",
+                "outputs",
+                "mint",
+                "fee",
+                "signers",
+                "validRange"
+            ],
+            "type": "object"
+        },
+        "ValueSummary": {
+            "properties": {
+                "assets": {
+                    "items": {
+                        "$ref": "#/$defs/AssetSummary"
+                    },
+                    "type": "array"
+                },
+                "lovelace": {
+                    "type": "integer"
+                }
+            },
+            "required": [
+                "lovelace",
+                "assets"
+            ],
+            "type": "object"
+        }
+    },
+    "$id": "https://github.com/j-mueller/sc-tools/streaming-events.schema.json",
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "description": "A single NDJSON line from the sc-tools test streaming reporter",
+    "oneOf": [
+        {
+            "properties": {
+                "event": {
+                    "enum": [
+                        "suite_started"
+                    ],
+                    "type": "string"
+                },
+                "tests": {
+                    "items": {
+                        "$ref": "#/$defs/TestInfo"
+                    },
+                    "type": "array"
+                }
+            },
+            "required": [
+                "event",
+                "tests"
+            ],
+            "type": "object"
+        },
+        {
+            "properties": {
+                "event": {
+                    "enum": [
+                        "test_started"
+                    ],
+                    "type": "string"
+                },
+                "id": {
+                    "type": "integer"
+                }
+            },
+            "required": [
+                "event",
+                "id"
+            ],
+            "type": "object"
+        },
+        {
+            "properties": {
+                "event": {
+                    "enum": [
+                        "test_progress"
+                    ],
+                    "type": "string"
+                },
+                "id": {
+                    "type": "integer"
+                },
+                "message": {
+                    "type": "string"
+                },
+                "percent": {
+                    "format": "float",
+                    "type": "number"
+                }
+            },
+            "required": [
+                "event",
+                "id",
+                "message",
+                "percent"
+            ],
+            "type": "object"
+        },
+        {
+            "properties": {
+                "description": {
+                    "type": "string"
+                },
+                "duration": {
+                    "format": "double",
+                    "type": "number"
+                },
+                "event": {
+                    "enum": [
+                        "test_done"
+                    ],
+                    "type": "string"
+                },
+                "failure": {
+                    "$ref": "#/$defs/FailureInfo"
+                },
+                "id": {
+                    "type": "integer"
+                },
+                "success": {
+                    "type": "boolean"
+                },
+                "threat_model": {
+                    "$ref": "#/$defs/ThreatModelSummary"
+                }
+            },
+            "required": [
+                "event",
+                "id",
+                "duration",
+                "description",
+                "success"
+            ],
+            "type": "object"
+        },
+        {
+            "properties": {
+                "category": {
+                    "type": "string"
+                },
+                "event": {
+                    "enum": [
+                        "test_trace"
+                    ],
+                    "type": "string"
+                },
+                "id": {
+                    "type": "integer"
+                },
+                "trace": {
+                    "$ref": "#/$defs/IterationTrace"
+                }
+            },
+            "required": [
+                "event",
+                "id",
+                "category",
+                "trace"
+            ],
+            "type": "object"
+        },
+        {
+            "properties": {
+                "duration": {
+                    "format": "double",
+                    "type": "number"
+                },
+                "event": {
+                    "enum": [
+                        "suite_done"
+                    ],
+                    "type": "string"
+                },
+                "failed": {
+                    "type": "integer"
+                },
+                "passed": {
+                    "type": "integer"
+                }
+            },
+            "required": [
+                "event",
+                "passed",
+                "failed",
+                "duration"
+            ],
+            "type": "object"
+        }
+    ],
+    "title": "SC-Tools Streaming Event"
+}

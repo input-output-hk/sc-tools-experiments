@@ -1,0 +1,14 @@
+-- cabal.project.schema-gen
+-- Separate project file for schema generation tool.
+-- Kept out of the main cabal.project to avoid pulling openapi3 into the
+-- Nix build (haskell.nix builds every package listed in cabal.project).
+--
+-- Usage:
+--   cabal build --project-file=cabal.project.schema-gen gen-schema
+--   cabal run   --project-file=cabal.project.schema-gen gen-schema \
+--     > src/tasty-streaming/schema/streaming-events.schema.json
+
+import: cabal.project
+
+packages:
+  src/schema-gen
