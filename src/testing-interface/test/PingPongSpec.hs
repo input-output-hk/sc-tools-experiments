@@ -1,13 +1,11 @@
 {-# LANGUAGE DerivingStrategies #-}
 {-# LANGUAGE InstanceSigs #-}
-{-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE NamedFieldPuns #-}
 {-# LANGUAGE NumericUnderscores #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE TypeApplications #-}
 {-# LANGUAGE TypeFamilies #-}
 {-# LANGUAGE TypeSynonymInstances #-}
-{-# LANGUAGE ViewPatterns #-}
 {-# OPTIONS_GHC -Wno-orphans #-}
 
 module PingPongSpec (
@@ -344,7 +342,7 @@ instance TestingInterface PingPongModel where
     checkStyle _ = False
 
   -- Here is an example of using the monitoring function to label actions in QuickCheck output.
-  monitoring _ (PlayRound action) = QC.label ("action=" <> show action)
+  monitoring _ action = QC.label ("action=" <> show action)
 
 instance ThreatModelsFor PingPongModel where
   threatModels =
