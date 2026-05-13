@@ -39,7 +39,7 @@ let
     "aarch64-darwin" = defaultHydraJobs;
   };
 
-  hydraJobs = utils.flattenDerivationTree "-" hydraJobsPerSystem.${system};
+  hydraJobs = utils.flattenDerivationTree "-" (hydraJobsPerSystem.${system} or {});
 in
 
 {
