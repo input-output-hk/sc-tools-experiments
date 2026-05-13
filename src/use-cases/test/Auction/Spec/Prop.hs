@@ -253,7 +253,7 @@ instance TestingInterface AuctionModel where
 
   validate _am = pure True
 
-  monitoring _ _ = error "monitoring not implemented"
+  monitoring _ _ = id
 
 instance ThreatModelsFor AuctionModel where
   threatModels = [doubleSatisfaction]

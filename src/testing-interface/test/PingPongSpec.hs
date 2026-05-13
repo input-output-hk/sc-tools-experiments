@@ -1,12 +1,11 @@
+{-# LANGUAGE DerivingStrategies #-}
 {-# LANGUAGE InstanceSigs #-}
-{-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE NamedFieldPuns #-}
 {-# LANGUAGE NumericUnderscores #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE TypeApplications #-}
 {-# LANGUAGE TypeFamilies #-}
 {-# LANGUAGE TypeSynonymInstances #-}
-{-# LANGUAGE ViewPatterns #-}
 {-# OPTIONS_GHC -Wno-orphans #-}
 
 module PingPongSpec (
@@ -53,7 +52,7 @@ import Convex.MockChain.Defaults qualified as Defaults
 import Convex.NodeParams (ledgerProtocolParameters)
 import Convex.TestingInterface (
   Options (Options, params),
-  RunOptions (mcOptions),
+  RunOptions (..),
   TestingInterface (..),
   ThreatModelsFor (..),
   genAction,
@@ -89,6 +88,7 @@ import Scripts.PingPong.Vulnerable qualified as VulnerablePingPong
 
 import Test.QuickCheck.Monadic (monadicIO, monitor, run)
 import Test.Tasty (TestTree, testGroup)
+import Test.Tasty.ExpectedFailure (expectFailBecause)
 import Test.Tasty.HUnit (testCase)
 import Test.Tasty.QuickCheck (
   Property,
@@ -341,7 +341,8 @@ instance TestingInterface PingPongModel where
     checkStyle (_, C.TxOut _ _ (C.TxOutDatumHash _ _) _) = modelDatumStyle == DatumHashStyle
     checkStyle _ = False
 
-  monitoring _state _action prop = prop
+  -- Here is an example of using the monitoring function to label actions in QuickCheck output.
+  monitoring _ action = QC.label ("action=" <> show action)
 
 instance ThreatModelsFor PingPongModel where
   threatModels =
@@ -354,6 +355,42 @@ instance ThreatModelsFor PingPongModel where
     , unprotectedScriptOutput
     ]
 
+  expectedVulnerabilities = []
+
+newtype PingPongMonitoringModel = PingPongMonitoringModel
+  { unPingPongMonitoringModel :: PingPongModel
+  }
+  deriving stock (Show, Eq)
+
+instance TestingInterface PingPongMonitoringModel where
+  data Action PingPongMonitoringModel
+    = MonitorPingPongAction (Action PingPongModel)
+    deriving stock (Show, Eq)
+
+  initialize = PingPongMonitoringModel <$> initialize @PingPongModel
+
+  arbitraryAction (PingPongMonitoringModel model) =
+    MonitorPingPongAction <$> arbitraryAction model
+
+  precondition (PingPongMonitoringModel model) (MonitorPingPongAction action) =
+    precondition model action
+
+  perform (PingPongMonitoringModel model) (MonitorPingPongAction action) =
+    PingPongMonitoringModel <$> perform model action
+
+  validate (PingPongMonitoringModel model) = validate model
+
+  monitoring (PingPongMonitoringModel state) (MonitorPingPongAction action) _ =
+    QC.counterexample
+      ( "PingPong monitoring forced failure after action "
+          <> show action
+          <> " with state "
+          <> show state
+      )
+      (QC.property False)
+
+instance ThreatModelsFor PingPongMonitoringModel where
+  threatModels = []
   expectedVulnerabilities = []
 
 plutusScript :: (C.IsPlutusScriptLanguage lang) => C.PlutusScript lang -> C.Script lang
@@ -827,6 +864,12 @@ pingPongTests opts runOpts =
     , propRunActionsWithOptions @PingPongModel
         "Property-based test ping-pong validator with TestingInterface"
         runOpts
+    , expectFailBecause "monitoring regression intentionally fails after the first successful action" $
+        propRunActionsWithOptions @PingPongMonitoringModel
+          "Property-based test with failing monitoring"
+          runOpts
+            { maxActions = 1
+            }
     , testProperty
         "PingPong VULNERABLE to unprotected output redirect"
         (propPingPongVulnerableToOutputRedirect runOpts)

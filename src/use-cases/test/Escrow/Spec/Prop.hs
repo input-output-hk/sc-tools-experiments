@@ -205,7 +205,7 @@ instance TestingInterface EscrowModel where
 
   validate _em = pure True
 
-  monitoring _ _ = error "monitoring not implemented"
+  monitoring _ _ = id
 
 instance ThreatModelsFor EscrowModel where
   threatModels =
