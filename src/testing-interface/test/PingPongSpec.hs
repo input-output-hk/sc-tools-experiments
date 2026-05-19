@@ -118,6 +118,9 @@ instance ToJSON ScriptDatumStyle where
 instance ToJSON PingPongModel where
   toJSON = toJSON . show
 
+instance ToJSON PingPongMonitoringModel where
+  toJSON = toJSON . show
+
 instance TestingInterface PingPongModel where
   data Action PingPongModel
     = StartWithInlineDatum
