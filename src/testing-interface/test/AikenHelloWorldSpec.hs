@@ -316,6 +316,9 @@ data HelloWorldModel = HelloWorldModel
 instance ToJSON HelloWorldModel where
   toJSON = toJSON . show
 
+instance ToJSON HelloWorldMonitoringModel where
+  toJSON = toJSON . show
+
 instance TestingInterface HelloWorldModel where
   -- Actions for CTF Hello World: lock funds and unlock (correct password only)
   data Action HelloWorldModel
