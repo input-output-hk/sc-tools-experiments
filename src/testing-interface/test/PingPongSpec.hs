@@ -86,17 +86,17 @@ import Scripts qualified
 import Scripts.PingPong qualified as PingPong
 import Scripts.PingPong.Vulnerable qualified as VulnerablePingPong
 
-import Data.Aeson (ToJSON (..))
-import Test.QuickCheck.Monadic (monadicIO, monitor, run)
-import Test.Tasty (TestTree, testGroup)
-import Test.Tasty.ExpectedFailure (expectFailBecause)
-import Test.Tasty.HUnit (testCase)
-import Test.Tasty.QuickCheck (
+import Convex.Tasty.HUnit (testCase)
+import Convex.Tasty.QuickCheck (
   Property,
   counterexample,
   testProperty,
  )
-import Test.Tasty.QuickCheck qualified as QC
+import Convex.Tasty.QuickCheck qualified as QC
+import Data.Aeson (ToJSON (..))
+import Test.QuickCheck.Monadic (monadicIO, monitor, run)
+import Test.Tasty (TestTree, testGroup)
+import Test.Tasty.ExpectedFailure (expectFailBecause)
 
 data ScriptDatumStyle = InlineDatumStyle | DatumHashStyle
   deriving (Show, Eq)
@@ -143,28 +143,26 @@ instance TestingInterface PingPongModel where
     if not modelInitialized
       then QC.elements [StartWithInlineDatum, StartWithDatumHash]
       else
-        let
-          allRedeemers = [PingPong.Ping, PingPong.Pong, PingPong.Stop]
-          genSingle = PlayRound <$> QC.elements allRedeemers
-          genDual = SpendTwoScriptInputs <$> QC.elements allRedeemers
-         in
-          case modelScriptUtxoCount of
-            1
-              | modelState /= PingPong.Stopped ->
-                  case modelDatumStyle of
-                    InlineDatumStyle ->
-                      QC.frequency
-                        [ (7, genSingle)
-                        , (3, pure DeployExtraScriptUtxo)
-                        ]
-                    DatumHashStyle ->
-                      genSingle
-              | otherwise -> genSingle
-            _
-              | modelScriptUtxoCount >= 2 && modelDatumStyle == InlineDatumStyle ->
-                  genDual
-            _ ->
-              genSingle
+        let allRedeemers = [PingPong.Ping, PingPong.Pong, PingPong.Stop]
+            genSingle = PlayRound <$> QC.elements allRedeemers
+            genDual = SpendTwoScriptInputs <$> QC.elements allRedeemers
+         in case modelScriptUtxoCount of
+              1
+                | modelState /= PingPong.Stopped ->
+                    case modelDatumStyle of
+                      InlineDatumStyle ->
+                        QC.frequency
+                          [ (7, genSingle)
+                          , (3, pure DeployExtraScriptUtxo)
+                          ]
+                      DatumHashStyle ->
+                        genSingle
+                | otherwise -> genSingle
+              _
+                | modelScriptUtxoCount >= 2 && modelDatumStyle == InlineDatumStyle ->
+                    genDual
+              _ ->
+                genSingle
 
   precondition :: PingPongModel -> Action PingPongModel -> Bool
   precondition PingPongModel{modelState, modelScriptUtxoCount, modelInitialized, modelDatumStyle} action =
@@ -547,30 +545,33 @@ NOTE: This test uses runThreatModelM which runs INSIDE MockchainT for full
 Phase 1 + Phase 2 validation with re-balancing and re-signing.
 -}
 propPingPongVulnerableToOutputRedirect :: RunOptions -> Property
-propPingPongVulnerableToOutputRedirect opts = QC.expectFailure $ monadicIO $ do
-  let Options{params} = mcOptions opts
+propPingPongVulnerableToOutputRedirect opts = QC.expectFailure $
+  monadicIO $ do
+    let Options{params} = mcOptions opts
 
-  -- Run the scenario AND the threat model INSIDE MockchainT
-  result <- run $ runMockchain0IOWith Wallet.initialUTxOs params $ runExceptT $ do
-    (tx, utxo) <- vulnerablePingPongScenario
+    -- Run the scenario AND the threat model INSIDE MockchainT
+    result <- run $
+      runMockchain0IOWith Wallet.initialUTxOs params $
+        runExceptT $ do
+          (tx, utxo) <- vulnerablePingPongScenario
 
-    let pparams' = params ^. ledgerProtocolParameters
-        env =
-          ThreatModelEnv
-            { currentTx = tx
-            , currentUTxOs = utxo
-            , pparams = pparams'
-            }
+          let pparams' = params ^. ledgerProtocolParameters
+              env =
+                ThreatModelEnv
+                  { currentTx = tx
+                  , currentUTxOs = utxo
+                  , pparams = pparams'
+                  }
 
-    -- Run the threat model INSIDE MockchainT with full Phase 1 + Phase 2 validation
-    -- Use runThreatModelMQuiet to suppress verbose counterexample output
-    lift $ runThreatModelMQuiet (SignWith Wallet.w1) unprotectedScriptOutput [env]
+          -- Run the threat model INSIDE MockchainT with full Phase 1 + Phase 2 validation
+          -- Use runThreatModelMQuiet to suppress verbose counterexample output
+          lift $ runThreatModelMQuiet (SignWith Wallet.w1) unprotectedScriptOutput [env]
 
-  case result of
-    (Left err, _) -> do
-      monitor (counterexample $ "Mockchain error: " ++ show err)
-      pure $ QC.property False
-    (Right prop, _finalState) -> pure prop
+    case result of
+      (Left err, _) -> do
+        monitor (counterexample $ "Mockchain error: " ++ show err)
+        pure $ QC.property False
+      (Right prop, _finalState) -> pure prop
  where
   vulnerablePingPongScenario
     :: ( MonadMockchain C.ConwayEra m
@@ -623,30 +624,33 @@ This test is expected to "fail" from QuickCheck's perspective - which means
 the threat model successfully found the vulnerability.
 -}
 propPingPongVulnerableToLargeData :: RunOptions -> Property
-propPingPongVulnerableToLargeData opts = QC.expectFailure $ monadicIO $ do
-  let Options{params} = mcOptions opts
+propPingPongVulnerableToLargeData opts = QC.expectFailure $
+  monadicIO $ do
+    let Options{params} = mcOptions opts
 
-  -- Run the scenario AND the threat model INSIDE MockchainT
-  result <- run $ runMockchain0IOWith Wallet.initialUTxOs params $ runExceptT $ do
-    (tx, utxo) <- vulnerablePingPongLargeDataScenario
+    -- Run the scenario AND the threat model INSIDE MockchainT
+    result <- run $
+      runMockchain0IOWith Wallet.initialUTxOs params $
+        runExceptT $ do
+          (tx, utxo) <- vulnerablePingPongLargeDataScenario
 
-    let pparams' = params ^. ledgerProtocolParameters
-        env =
-          ThreatModelEnv
-            { currentTx = tx
-            , currentUTxOs = utxo
-            , pparams = pparams'
-            }
+          let pparams' = params ^. ledgerProtocolParameters
+              env =
+                ThreatModelEnv
+                  { currentTx = tx
+                  , currentUTxOs = utxo
+                  , pparams = pparams'
+                  }
 
-    -- Run threat model inside MockchainT
-    -- Use runThreatModelMQuiet to suppress verbose counterexample output
-    lift $ runThreatModelMQuiet (SignWith Wallet.w1) (largeDataAttackWith 10) [env]
+          -- Run threat model inside MockchainT
+          -- Use runThreatModelMQuiet to suppress verbose counterexample output
+          lift $ runThreatModelMQuiet (SignWith Wallet.w1) (largeDataAttackWith 10) [env]
 
-  case result of
-    (Left err, _) -> do
-      monitor (counterexample $ "Mockchain error: " ++ show err)
-      pure $ QC.property False
-    (Right prop, _finalState) -> pure prop
+    case result of
+      (Left err, _) -> do
+        monitor (counterexample $ "Mockchain error: " ++ show err)
+        pure $ QC.property False
+      (Right prop, _finalState) -> pure prop
  where
   vulnerablePingPongLargeDataScenario
     :: ( MonadMockchain C.ConwayEra m
@@ -703,30 +707,33 @@ check the Value structure of outputs, making it susceptible to having junk token
 added to its UTxOs.
 -}
 propPingPongVulnerableToLargeValue :: RunOptions -> Property
-propPingPongVulnerableToLargeValue opts = QC.expectFailure $ monadicIO $ do
-  let Options{params} = mcOptions opts
+propPingPongVulnerableToLargeValue opts = QC.expectFailure $
+  monadicIO $ do
+    let Options{params} = mcOptions opts
 
-  -- Run the scenario AND the threat model INSIDE MockchainT
-  result <- run $ runMockchain0IOWith Wallet.initialUTxOs params $ runExceptT $ do
-    (tx, utxo) <- vulnerablePingPongLargeValueScenario
+    -- Run the scenario AND the threat model INSIDE MockchainT
+    result <- run $
+      runMockchain0IOWith Wallet.initialUTxOs params $
+        runExceptT $ do
+          (tx, utxo) <- vulnerablePingPongLargeValueScenario
 
-    let pparams' = params ^. ledgerProtocolParameters
-        env =
-          ThreatModelEnv
-            { currentTx = tx
-            , currentUTxOs = utxo
-            , pparams = pparams'
-            }
+          let pparams' = params ^. ledgerProtocolParameters
+              env =
+                ThreatModelEnv
+                  { currentTx = tx
+                  , currentUTxOs = utxo
+                  , pparams = pparams'
+                  }
 
-    -- Run threat model inside MockchainT
-    -- Use runThreatModelMQuiet to suppress verbose counterexample output
-    lift $ runThreatModelMQuiet (SignWith Wallet.w1) (largeValueAttackWith 10) [env]
+          -- Run threat model inside MockchainT
+          -- Use runThreatModelMQuiet to suppress verbose counterexample output
+          lift $ runThreatModelMQuiet (SignWith Wallet.w1) (largeValueAttackWith 10) [env]
 
-  case result of
-    (Left err, _) -> do
-      monitor (counterexample $ "Mockchain error: " ++ show err)
-      pure $ QC.property False
-    (Right prop, _finalState) -> pure prop
+    case result of
+      (Left err, _) -> do
+        monitor (counterexample $ "Mockchain error: " ++ show err)
+        pure $ QC.property False
+      (Right prop, _finalState) -> pure prop
  where
   vulnerablePingPongLargeValueScenario
     :: ( MonadMockchain C.ConwayEra m

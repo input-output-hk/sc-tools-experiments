@@ -88,12 +88,12 @@ import PlutusLedgerApi.Common qualified as PlutusLedgerApi
 import PlutusTx qualified
 import PlutusTx.Builtins qualified as PlutusTx
 
+import Convex.Tasty.HUnit (assertFailure, testCase)
+import Convex.Tasty.QuickCheck ()
+import Convex.Tasty.QuickCheck qualified as QC
 import Data.Aeson (ToJSON (..))
 import System.IO.Unsafe (unsafePerformIO)
 import Test.Tasty (TestTree, testGroup)
-import Test.Tasty.HUnit (assertFailure, testCase)
-import Test.Tasty.QuickCheck ()
-import Test.Tasty.QuickCheck qualified as QC
 import UntypedPlutusCore qualified as UPLC
 
 -- ----------------------------------------------------------------------------

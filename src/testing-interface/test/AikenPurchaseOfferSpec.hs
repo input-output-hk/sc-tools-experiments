@@ -80,19 +80,19 @@ import PlutusLedgerApi.V1 qualified as PV1
 import PlutusTx qualified
 import PlutusTx.Builtins qualified as PlutusTx
 
+import Convex.Tasty.HUnit (assertFailure, testCase)
+import Convex.Tasty.QuickCheck (
+  Property,
+  counterexample,
+  testProperty,
+ )
+import Convex.Tasty.QuickCheck qualified as QC
 import Convex.ThreatModel.LargeData (largeDataAttack)
 import Convex.ThreatModel.TimeBoundManipulation (timeBoundManipulation)
 import Data.Aeson (ToJSON (..))
 import System.IO.Unsafe (unsafePerformIO)
 import Test.QuickCheck.Monadic (monadicIO, monitor, run)
 import Test.Tasty (TestTree, testGroup)
-import Test.Tasty.HUnit (assertFailure, testCase)
-import Test.Tasty.QuickCheck (
-  Property,
-  counterexample,
-  testProperty,
- )
-import Test.Tasty.QuickCheck qualified as QC
 
 -- ----------------------------------------------------------------------------
 -- Purchase Offer Datum and Redeemer types (wire-compatible with Aiken)
@@ -612,12 +612,14 @@ propPurchaseOfferVulnerableToRedeemerManipulation opts = monadicIO $ do
   let Options{params} = mcOptions opts
 
   -- Run the scenario INSIDE MockchainT
-  result <- run $ runMockchain0IOWith Wallet.initialUTxOs params $ runExceptT $ do
-    -- Create vulnerable offer and attempt exploit
-    -- The scenario succeeds if an attacker can fulfill with a worthless token
-    (_tx, _utxo) <- purchaseOfferScenario
-    -- If we get here, the exploit succeeded - the worthless token was accepted!
-    pure ()
+  result <- run $
+    runMockchain0IOWith Wallet.initialUTxOs params $
+      runExceptT $ do
+        -- Create vulnerable offer and attempt exploit
+        -- The scenario succeeds if an attacker can fulfill with a worthless token
+        (_tx, _utxo) <- purchaseOfferScenario
+        -- If we get here, the exploit succeeded - the worthless token was accepted!
+        pure ()
 
   case result of
     (Left err, _) -> do

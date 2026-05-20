@@ -94,16 +94,16 @@ import PlutusLedgerApi.V1 qualified as PV1
 import PlutusTx qualified
 import PlutusTx.Builtins qualified as PlutusTx
 
+import Convex.Tasty.HUnit (assertFailure, testCase)
+import Convex.Tasty.QuickCheck (
+  Property,
+  counterexample,
+ )
+import Convex.Tasty.QuickCheck qualified as QC
 import Data.Aeson (ToJSON (..))
 import System.IO.Unsafe (unsafePerformIO)
 import Test.QuickCheck.Monadic (monadicIO, monitor, run)
 import Test.Tasty (TestTree, testGroup)
-import Test.Tasty.HUnit (assertFailure, testCase)
-import Test.Tasty.QuickCheck (
-  Property,
-  counterexample,
- )
-import Test.Tasty.QuickCheck qualified as QC
 
 -- ----------------------------------------------------------------------------
 -- Multisig V3 Datum and Redeemer types (wire-compatible with Aiken)
@@ -597,44 +597,46 @@ propMultisigV3SignReplayExploit :: RunOptions -> Property
 propMultisigV3SignReplayExploit opts = monadicIO $ do
   let Options{params} = mcOptions opts
 
-  result <- run $ runMockchain0IOWith Wallet.initialUTxOs params $ runExceptT $ do
-    -- Initialize 2-of-2 multisig
-    let initTxBody = execBuildTx $ initMultisigV3 @C.ConwayEra Defaults.networkId Wallet.w1 20_000_000
-    _ <- tryBalanceAndSubmit mempty Wallet.w1 initTxBody TrailingChange []
+  result <- run $
+    runMockchain0IOWith Wallet.initialUTxOs params $
+      runExceptT $ do
+        -- Initialize 2-of-2 multisig
+        let initTxBody = execBuildTx $ initMultisigV3 @C.ConwayEra Defaults.networkId Wallet.w1 20_000_000
+        _ <- tryBalanceAndSubmit mempty Wallet.w1 initTxBody TrailingChange []
 
-    -- w1 signs first time
-    result1 <- findMultisigV3Utxos
-    case result1 of
-      [] -> fail "Expected UTxO at script address"
-      ((txIn1, value1, datum1) : _) -> do
-        let sign1TxBody = execBuildTx $ signMultisigV3 @C.ConwayEra Defaults.networkId txIn1 datum1 value1 Wallet.w1
-        _ <- tryBalanceAndSubmit mempty Wallet.w1 sign1TxBody TrailingChange []
+        -- w1 signs first time
+        result1 <- findMultisigV3Utxos
+        case result1 of
+          [] -> fail "Expected UTxO at script address"
+          ((txIn1, value1, datum1) : _) -> do
+            let sign1TxBody = execBuildTx $ signMultisigV3 @C.ConwayEra Defaults.networkId txIn1 datum1 value1 Wallet.w1
+            _ <- tryBalanceAndSubmit mempty Wallet.w1 sign1TxBody TrailingChange []
 
-        -- w1 signs SECOND time (exploit!)
-        result2 <- findMultisigV3Utxos
-        case result2 of
-          [] -> fail "Expected UTxO after first sign"
-          ((txIn2, value2, datum2) : _) -> do
-            let sign2TxBody = execBuildTx $ signMultisigV3 @C.ConwayEra Defaults.networkId txIn2 datum2 value2 Wallet.w1
-            _ <- tryBalanceAndSubmit mempty Wallet.w1 sign2TxBody TrailingChange []
+            -- w1 signs SECOND time (exploit!)
+            result2 <- findMultisigV3Utxos
+            case result2 of
+              [] -> fail "Expected UTxO after first sign"
+              ((txIn2, value2, datum2) : _) -> do
+                let sign2TxBody = execBuildTx $ signMultisigV3 @C.ConwayEra Defaults.networkId txIn2 datum2 value2 Wallet.w1
+                _ <- tryBalanceAndSubmit mempty Wallet.w1 sign2TxBody TrailingChange []
 
-            -- Mint validation token (with collateral output)
-            let w1Addr = addressInEra Defaults.networkId Wallet.w1
-                mintTxBody = execBuildTx $ mintValidationTokenV3WithCollateral @C.ConwayEra w1Addr Wallet.w1
-            _ <- tryBalanceAndSubmit mempty Wallet.w1 mintTxBody TrailingChange []
+                -- Mint validation token (with collateral output)
+                let w1Addr = addressInEra Defaults.networkId Wallet.w1
+                    mintTxBody = execBuildTx $ mintValidationTokenV3WithCollateral @C.ConwayEra w1Addr Wallet.w1
+                _ <- tryBalanceAndSubmit mempty Wallet.w1 mintTxBody TrailingChange []
 
-            -- Capture UTxO before exploit
-            utxoBefore <- fromLedgerUTxO C.shelleyBasedEra <$> getUtxo
+                -- Capture UTxO before exploit
+                utxoBefore <- fromLedgerUTxO C.shelleyBasedEra <$> getUtxo
 
-            -- w1 drains using burned token
-            result3 <- findMultisigV3Utxos
-            case result3 of
-              [] -> fail "Expected UTxO after signing"
-              ((txIn3, _, _) : _) -> do
-                let beneficiaryAddr = addressInEra Defaults.networkId Wallet.w1
-                    useTxBody = execBuildTx $ useMultisigV3 @C.ConwayEra txIn3 beneficiaryAddr 10_000_000 Wallet.w1
-                exploitTx <- tryBalanceAndSubmit mempty Wallet.w1 useTxBody TrailingChange []
-                pure (exploitTx, utxoBefore)
+                -- w1 drains using burned token
+                result3 <- findMultisigV3Utxos
+                case result3 of
+                  [] -> fail "Expected UTxO after signing"
+                  ((txIn3, _, _) : _) -> do
+                    let beneficiaryAddr = addressInEra Defaults.networkId Wallet.w1
+                        useTxBody = execBuildTx $ useMultisigV3 @C.ConwayEra txIn3 beneficiaryAddr 10_000_000 Wallet.w1
+                    exploitTx <- tryBalanceAndSubmit mempty Wallet.w1 useTxBody TrailingChange []
+                    pure (exploitTx, utxoBefore)
 
   case result of
     (Left err, _) -> do

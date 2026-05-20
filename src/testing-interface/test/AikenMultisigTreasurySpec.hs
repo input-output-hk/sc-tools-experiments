@@ -78,16 +78,16 @@ import PlutusLedgerApi.V1 qualified as PV1
 import PlutusTx qualified
 import PlutusTx.Builtins qualified as PlutusTx
 
+import Convex.Tasty.HUnit (assertFailure, testCase)
+import Convex.Tasty.QuickCheck (
+  Property,
+  counterexample,
+ )
+import Convex.Tasty.QuickCheck qualified as QC
 import Data.Aeson (ToJSON (..))
 import System.IO.Unsafe (unsafePerformIO)
 import Test.QuickCheck.Monadic (monadicIO, monitor, run)
 import Test.Tasty (TestTree, testGroup)
-import Test.Tasty.HUnit (assertFailure, testCase)
-import Test.Tasty.QuickCheck (
-  Property,
-  counterexample,
- )
-import Test.Tasty.QuickCheck qualified as QC
 
 -- ----------------------------------------------------------------------------
 -- Multisig Datum and Redeemer types (wire-compatible with Aiken)
@@ -507,41 +507,43 @@ propMultisigVulnerableToSingleSignerUse opts = monadicIO $ do
   let Options{params} = mcOptions opts
 
   -- Run the scenario AND the threat model INSIDE MockchainT
-  result <- run $ runMockchain0IOWith Wallet.initialUTxOs params $ runExceptT $ do
-    -- Initialize with w1 already in signed_users (simulating partial signing)
-    let beneficiaryAddr = walletPlutusAddress Wallet.w1
-        datum =
-          MultisigDatum
-            { mdReleaseValue = 10_000_000
-            , mdBeneficiary = beneficiaryAddr
-            , mdRequiredSigners = [walletPkhBytes Wallet.w1, walletPkhBytes Wallet.w2]
-            , mdSignedUsers = [walletPkhBytes Wallet.w1] -- Only w1 has "signed"
-            }
-    let initTxBody =
-          execBuildTx $
-            BuildTx.payToScriptInlineDatum
-              Defaults.networkId
-              multisigScriptHash
-              datum
-              C.NoStakeAddress
-              (C.lovelaceToValue 20_000_000)
-    _ <- tryBalanceAndSubmit mempty Wallet.w1 initTxBody TrailingChange []
+  result <- run $
+    runMockchain0IOWith Wallet.initialUTxOs params $
+      runExceptT $ do
+        -- Initialize with w1 already in signed_users (simulating partial signing)
+        let beneficiaryAddr = walletPlutusAddress Wallet.w1
+            datum =
+              MultisigDatum
+                { mdReleaseValue = 10_000_000
+                , mdBeneficiary = beneficiaryAddr
+                , mdRequiredSigners = [walletPkhBytes Wallet.w1, walletPkhBytes Wallet.w2]
+                , mdSignedUsers = [walletPkhBytes Wallet.w1] -- Only w1 has "signed"
+                }
+        let initTxBody =
+              execBuildTx $
+                BuildTx.payToScriptInlineDatum
+                  Defaults.networkId
+                  multisigScriptHash
+                  datum
+                  C.NoStakeAddress
+                  (C.lovelaceToValue 20_000_000)
+        _ <- tryBalanceAndSubmit mempty Wallet.w1 initTxBody TrailingChange []
 
-    -- Capture UTxO BEFORE Use
-    utxoBefore <- fromLedgerUTxO C.shelleyBasedEra <$> getUtxo
+        -- Capture UTxO BEFORE Use
+        utxoBefore <- fromLedgerUTxO C.shelleyBasedEra <$> getUtxo
 
-    -- Try to Use with only w1 signing
-    msResult <- findMultisigUtxos
-    case msResult of
-      [] -> fail "Expected UTxO at script address"
-      ((txIn, _, _) : _) -> do
-        let beneficiaryAddrC = addressInEra Defaults.networkId Wallet.w1
-            useTxBody = execBuildTx $ useMultisig @C.ConwayEra txIn beneficiaryAddrC 10_000_000 Wallet.w1
-        useTx <- tryBalanceAndSubmit mempty Wallet.w1 useTxBody TrailingChange []
+        -- Try to Use with only w1 signing
+        msResult <- findMultisigUtxos
+        case msResult of
+          [] -> fail "Expected UTxO at script address"
+          ((txIn, _, _) : _) -> do
+            let beneficiaryAddrC = addressInEra Defaults.networkId Wallet.w1
+                useTxBody = execBuildTx $ useMultisig @C.ConwayEra txIn beneficiaryAddrC 10_000_000 Wallet.w1
+            useTx <- tryBalanceAndSubmit mempty Wallet.w1 useTxBody TrailingChange []
 
-        -- If we get here, the vulnerability exists! Use succeeded with only 1 signer.
-        -- The test "passes" (vulnerability confirmed) by returning True
-        pure (useTx, utxoBefore)
+            -- If we get here, the vulnerability exists! Use succeeded with only 1 signer.
+            -- The test "passes" (vulnerability confirmed) by returning True
+            pure (useTx, utxoBefore)
 
   case result of
     (Left err, _) -> do
@@ -567,27 +569,29 @@ propMultisigVulnerableToSignDestruction opts = monadicIO $ do
   let Options{params} = mcOptions opts
 
   -- Run the scenario AND the threat model INSIDE MockchainT
-  result <- run $ runMockchain0IOWith Wallet.initialUTxOs params $ runExceptT $ do
-    -- Initialize multisig
-    let initTxBody = execBuildTx $ initMultisig @C.ConwayEra Defaults.networkId Wallet.w1 20_000_000
-    _ <- tryBalanceAndSubmit mempty Wallet.w1 initTxBody TrailingChange []
+  result <- run $
+    runMockchain0IOWith Wallet.initialUTxOs params $
+      runExceptT $ do
+        -- Initialize multisig
+        let initTxBody = execBuildTx $ initMultisig @C.ConwayEra Defaults.networkId Wallet.w1 20_000_000
+        _ <- tryBalanceAndSubmit mempty Wallet.w1 initTxBody TrailingChange []
 
-    -- Capture UTxO BEFORE signing
-    utxoBefore <- fromLedgerUTxO C.shelleyBasedEra <$> getUtxo
+        -- Capture UTxO BEFORE signing
+        utxoBefore <- fromLedgerUTxO C.shelleyBasedEra <$> getUtxo
 
-    -- Sign WITHOUT continuation
-    msResult <- findMultisigUtxos
-    case msResult of
-      [] -> fail "Expected UTxO at script address"
-      ((txIn, _, _) : _) -> do
-        let signTxBody = execBuildTx $ signMultisigNoContinuation @C.ConwayEra txIn Wallet.w1
-        signTx <- tryBalanceAndSubmit mempty Wallet.w1 signTxBody TrailingChange []
+        -- Sign WITHOUT continuation
+        msResult <- findMultisigUtxos
+        case msResult of
+          [] -> fail "Expected UTxO at script address"
+          ((txIn, _, _) : _) -> do
+            let signTxBody = execBuildTx $ signMultisigNoContinuation @C.ConwayEra txIn Wallet.w1
+            signTx <- tryBalanceAndSubmit mempty Wallet.w1 signTxBody TrailingChange []
 
-        -- Check if UTxO was destroyed
-        msResult2 <- findMultisigUtxos
-        case msResult2 of
-          [] -> pure (signTx, utxoBefore) -- UTxO destroyed - vulnerability confirmed!
-          _ -> fail "UTxO should have been destroyed but wasn't"
+            -- Check if UTxO was destroyed
+            msResult2 <- findMultisigUtxos
+            case msResult2 of
+              [] -> pure (signTx, utxoBefore) -- UTxO destroyed - vulnerability confirmed!
+              _ -> fail "UTxO should have been destroyed but wasn't"
 
   case result of
     (Left err, _) -> do

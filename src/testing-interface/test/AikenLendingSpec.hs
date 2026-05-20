@@ -93,17 +93,17 @@ import PlutusLedgerApi.V1 qualified as PV1
 import PlutusTx qualified
 import PlutusTx.Builtins qualified as PlutusTx
 
-import Data.Aeson (ToJSON (..))
-import System.IO.Unsafe (unsafePerformIO)
-import Test.QuickCheck.Monadic (monadicIO, monitor, run)
-import Test.Tasty (TestTree, testGroup)
-import Test.Tasty.HUnit (assertFailure, testCase)
-import Test.Tasty.QuickCheck (
+import Convex.Tasty.HUnit (assertFailure, testCase)
+import Convex.Tasty.QuickCheck (
   Property,
   counterexample,
   testProperty,
  )
-import Test.Tasty.QuickCheck qualified as QC
+import Convex.Tasty.QuickCheck qualified as QC
+import Data.Aeson (ToJSON (..))
+import System.IO.Unsafe (unsafePerformIO)
+import Test.QuickCheck.Monadic (monadicIO, monitor, run)
+import Test.Tasty (TestTree, testGroup)
 
 -- ----------------------------------------------------------------------------
 -- Lending Datum and Redeemer types (wire-compatible with Aiken)
@@ -620,35 +620,37 @@ propLendingVulnerableToInputOrdering :: RunOptions -> Property
 propLendingVulnerableToInputOrdering opts = monadicIO $ do
   let Options{params} = mcOptions opts
 
-  result <- run $ runMockchain0IOWith Wallet.initialUTxOs params $ runExceptT $ do
-    -- Create loan request from w1
-    let request1 = execBuildTx $ requestLoan @C.ConwayEra Defaults.networkId Wallet.w1 50_000_000 5_000_000 10_000_000
-    _ <- tryBalanceAndSubmit mempty Wallet.w1 request1 TrailingChange []
+  result <- run $
+    runMockchain0IOWith Wallet.initialUTxOs params $
+      runExceptT $ do
+        -- Create loan request from w1
+        let request1 = execBuildTx $ requestLoan @C.ConwayEra Defaults.networkId Wallet.w1 50_000_000 5_000_000 10_000_000
+        _ <- tryBalanceAndSubmit mempty Wallet.w1 request1 TrailingChange []
 
-    -- Create loan request from w2
-    let request2 = execBuildTx $ requestLoan @C.ConwayEra Defaults.networkId Wallet.w2 100_000_000 10_000_000 10_000_000
-    _ <- tryBalanceAndSubmit mempty Wallet.w2 request2 TrailingChange []
+        -- Create loan request from w2
+        let request2 = execBuildTx $ requestLoan @C.ConwayEra Defaults.networkId Wallet.w2 100_000_000 10_000_000 10_000_000
+        _ <- tryBalanceAndSubmit mempty Wallet.w2 request2 TrailingChange []
 
-    -- Find both loan requests
-    loans <- findLendingUtxos
-    case loans of
-      ((txIn1, value1, datum1) : (txIn2, value2, datum2) : _) -> do
-        -- Order inputs so the smaller loan (w1's 50 ADA) is first
-        let (first, firstV, firstD, second, secondV, secondD) =
-              if ldBorrowedAmount datum1 <= ldBorrowedAmount datum2
-                then (txIn1, value1, datum1, txIn2, value2, datum2)
-                else (txIn2, value2, datum2, txIn1, value1, datum1)
+        -- Find both loan requests
+        loans <- findLendingUtxos
+        case loans of
+          ((txIn1, value1, datum1) : (txIn2, value2, datum2) : _) -> do
+            -- Order inputs so the smaller loan (w1's 50 ADA) is first
+            let (first, firstV, firstD, second, secondV, secondD) =
+                  if ldBorrowedAmount datum1 <= ldBorrowedAmount datum2
+                    then (txIn1, value1, datum1, txIn2, value2, datum2)
+                    else (txIn2, value2, datum2, txIn1, value1, datum1)
 
-        -- Capture UTxO before exploit
-        utxoBefore <- fromLedgerUTxO C.shelleyBasedEra <$> getUtxo
+            -- Capture UTxO before exploit
+            utxoBefore <- fromLedgerUTxO C.shelleyBasedEra <$> getUtxo
 
-        -- Exploit: fund both loans but only pay first borrower
-        let exploitTxBody = execBuildTx $ lendFundsExploit Defaults.networkId first firstD firstV second secondD secondV Wallet.w3
-        exploitTx <- tryBalanceAndSubmit mempty Wallet.w3 exploitTxBody TrailingChange []
+            -- Exploit: fund both loans but only pay first borrower
+            let exploitTxBody = execBuildTx $ lendFundsExploit Defaults.networkId first firstD firstV second secondD secondV Wallet.w3
+            exploitTx <- tryBalanceAndSubmit mempty Wallet.w3 exploitTxBody TrailingChange []
 
-        -- If we get here, the vulnerability exists!
-        pure (exploitTx, utxoBefore)
-      _ -> fail "Expected at least 2 loan request UTxOs"
+            -- If we get here, the vulnerability exists!
+            pure (exploitTx, utxoBefore)
+          _ -> fail "Expected at least 2 loan request UTxOs"
 
   case result of
     (Left err, _) -> do
@@ -678,49 +680,52 @@ TODO: Fix the inputDuplication threat model to properly calculate execution unit
 for added script inputs, which would allow detection of this vulnerability class.
 -}
 propLendingVulnerableToInputDuplication :: RunOptions -> Property
-propLendingVulnerableToInputDuplication opts = QC.expectFailure $ monadicIO $ do
-  let Options{params} = mcOptions opts
+propLendingVulnerableToInputDuplication opts = QC.expectFailure $
+  monadicIO $ do
+    let Options{params} = mcOptions opts
 
-  result <- run $ runMockchain0IOWith Wallet.initialUTxOs params $ runExceptT $ do
-    -- Create loan request from w1 (will be funded)
-    let request1 = execBuildTx $ requestLoan @C.ConwayEra Defaults.networkId Wallet.w1 50_000_000 5_000_000 10_000_000
-    _ <- tryBalanceAndSubmit mempty Wallet.w1 request1 TrailingChange []
+    result <- run $
+      runMockchain0IOWith Wallet.initialUTxOs params $
+        runExceptT $ do
+          -- Create loan request from w1 (will be funded)
+          let request1 = execBuildTx $ requestLoan @C.ConwayEra Defaults.networkId Wallet.w1 50_000_000 5_000_000 10_000_000
+          _ <- tryBalanceAndSubmit mempty Wallet.w1 request1 TrailingChange []
 
-    -- Create loan request from w2 (will be the "extra" input for threat model)
-    let request2 = execBuildTx $ requestLoan @C.ConwayEra Defaults.networkId Wallet.w2 100_000_000 10_000_000 10_000_000
-    _ <- tryBalanceAndSubmit mempty Wallet.w2 request2 TrailingChange []
+          -- Create loan request from w2 (will be the "extra" input for threat model)
+          let request2 = execBuildTx $ requestLoan @C.ConwayEra Defaults.networkId Wallet.w2 100_000_000 10_000_000 10_000_000
+          _ <- tryBalanceAndSubmit mempty Wallet.w2 request2 TrailingChange []
 
-    -- Find both loan requests
-    loans <- findLendingUtxos
-    case loans of
-      ((txIn1, value1, datum1) : _secondLoan : _) -> do
-        -- Capture UTxO BEFORE funding (includes both loan UTxOs)
-        utxoBefore <- fromLedgerUTxO C.shelleyBasedEra <$> getUtxo
+          -- Find both loan requests
+          loans <- findLendingUtxos
+          case loans of
+            ((txIn1, value1, datum1) : _secondLoan : _) -> do
+              -- Capture UTxO BEFORE funding (includes both loan UTxOs)
+              utxoBefore <- fromLedgerUTxO C.shelleyBasedEra <$> getUtxo
 
-        -- Fund ONLY the first loan with a valid transaction
-        let lendTxBody = execBuildTx $ lendFunds Defaults.networkId txIn1 datum1 value1 Wallet.w3
-        lendTx <- tryBalanceAndSubmit mempty Wallet.w3 lendTxBody TrailingChange []
+              -- Fund ONLY the first loan with a valid transaction
+              let lendTxBody = execBuildTx $ lendFunds Defaults.networkId txIn1 datum1 value1 Wallet.w3
+              lendTx <- tryBalanceAndSubmit mempty Wallet.w3 lendTxBody TrailingChange []
 
-        let pparams' = params ^. ledgerProtocolParameters
-            env =
-              ThreatModelEnv
-                { currentTx = lendTx
-                , currentUTxOs = utxoBefore
-                , pparams = pparams'
-                }
+              let pparams' = params ^. ledgerProtocolParameters
+                  env =
+                    ThreatModelEnv
+                      { currentTx = lendTx
+                      , currentUTxOs = utxoBefore
+                      , pparams = pparams'
+                      }
 
-        -- Run inputDuplication threat model
-        -- It should find the second loan UTxO and try adding it as another input
-        lift $ runThreatModelMQuiet (SignWith Wallet.w3) inputDuplication [env]
-      _ -> fail "Expected at least 2 loan request UTxOs"
+              -- Run inputDuplication threat model
+              -- It should find the second loan UTxO and try adding it as another input
+              lift $ runThreatModelMQuiet (SignWith Wallet.w3) inputDuplication [env]
+            _ -> fail "Expected at least 2 loan request UTxOs"
 
-  case result of
-    (Left err, _) -> do
-      monitor (counterexample $ "Mockchain error: " ++ show err)
-      pure $ QC.property False
-    (Right prop, _finalState) -> do
-      monitor (counterexample "Testing ctf_lending for input duplication vulnerability")
-      pure prop
+    case result of
+      (Left err, _) -> do
+        monitor (counterexample $ "Mockchain error: " ++ show err)
+        pure $ QC.property False
+      (Right prop, _finalState) -> do
+        monitor (counterexample "Testing ctf_lending for input duplication vulnerability")
+        pure prop
 
 -- ----------------------------------------------------------------------------
 -- TestingInterface instance
