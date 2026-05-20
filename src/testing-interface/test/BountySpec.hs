@@ -35,6 +35,12 @@ import Convex.MockChain.CoinSelection (
 import Convex.MockChain.Defaults qualified as Defaults
 import Convex.NodeParams (ledgerProtocolParameters)
 import Convex.PlutusLedger.V1 (transPubKeyHash)
+import Convex.Tasty.QuickCheck (
+  Property,
+  counterexample,
+  testProperty,
+ )
+import Convex.Tasty.QuickCheck qualified as QC
 import Convex.TestingInterface (
   Options (Options, params),
   RunOptions (mcOptions),
@@ -51,12 +57,6 @@ import Convex.Wallet.MockWallet qualified as Wallet
 import Scripts qualified
 import Test.QuickCheck.Monadic (monadicIO, monitor, run)
 import Test.Tasty (TestTree, testGroup)
-import Test.Tasty.QuickCheck (
-  Property,
-  counterexample,
-  testProperty,
- )
-import Test.Tasty.QuickCheck qualified as QC
 
 plutusScript :: (C.IsPlutusScriptLanguage lang) => C.PlutusScript lang -> C.Script lang
 plutusScript = C.PlutusScript C.plutusScriptVersion
@@ -92,30 +92,33 @@ NOTE: This test uses runThreatModelM which runs INSIDE MockchainT for full
 Phase 1 + Phase 2 validation with re-balancing and re-signing.
 -}
 propBountyVulnerableToDoubleSatisfaction :: RunOptions -> Property
-propBountyVulnerableToDoubleSatisfaction opts = QC.expectFailure $ monadicIO $ do
-  let Options{params} = mcOptions opts
+propBountyVulnerableToDoubleSatisfaction opts = QC.expectFailure $
+  monadicIO $ do
+    let Options{params} = mcOptions opts
 
-  -- Run the scenario AND the threat model INSIDE MockchainT
-  result <- run $ runMockchain0IOWith Wallet.initialUTxOs params $ runExceptT $ do
-    (tx, utxo) <- bountyVulnerableScenario
+    -- Run the scenario AND the threat model INSIDE MockchainT
+    result <- run $
+      runMockchain0IOWith Wallet.initialUTxOs params $
+        runExceptT $ do
+          (tx, utxo) <- bountyVulnerableScenario
 
-    let pparams' = params ^. ledgerProtocolParameters
-        env =
-          ThreatModelEnv
-            { currentTx = tx
-            , currentUTxOs = utxo
-            , pparams = pparams'
-            }
+          let pparams' = params ^. ledgerProtocolParameters
+              env =
+                ThreatModelEnv
+                  { currentTx = tx
+                  , currentUTxOs = utxo
+                  , pparams = pparams'
+                  }
 
-    -- Run the threat model INSIDE MockchainT with full Phase 1 + Phase 2 validation
-    -- Use runThreatModelMQuiet to suppress verbose counterexample output
-    lift $ runThreatModelMQuiet (SignWith Wallet.w1) doubleSatisfaction [env]
+          -- Run the threat model INSIDE MockchainT with full Phase 1 + Phase 2 validation
+          -- Use runThreatModelMQuiet to suppress verbose counterexample output
+          lift $ runThreatModelMQuiet (SignWith Wallet.w1) doubleSatisfaction [env]
 
-  case result of
-    (Left err, _) -> do
-      monitor (counterexample $ "Mockchain error: " ++ show err)
-      pure $ QC.property False
-    (Right prop, _finalState) -> pure prop
+    case result of
+      (Left err, _) -> do
+        monitor (counterexample $ "Mockchain error: " ++ show err)
+        pure $ QC.property False
+      (Right prop, _finalState) -> pure prop
  where
   bountyVulnerableScenario
     :: ( MonadMockchain C.ConwayEra m
@@ -184,19 +187,21 @@ propBountySecureAgainstDoubleSatisfaction opts = monadicIO $ do
   let Options{params} = mcOptions opts
 
   -- Run the scenario AND the threat model INSIDE MockchainT
-  result <- run $ runMockchain0IOWith Wallet.initialUTxOs params $ runExceptT $ do
-    (tx, utxo) <- bountySecureScenario
+  result <- run $
+    runMockchain0IOWith Wallet.initialUTxOs params $
+      runExceptT $ do
+        (tx, utxo) <- bountySecureScenario
 
-    let pparams' = params ^. ledgerProtocolParameters
-        env =
-          ThreatModelEnv
-            { currentTx = tx
-            , currentUTxOs = utxo
-            , pparams = pparams'
-            }
+        let pparams' = params ^. ledgerProtocolParameters
+            env =
+              ThreatModelEnv
+                { currentTx = tx
+                , currentUTxOs = utxo
+                , pparams = pparams'
+                }
 
-    -- Run the threat model INSIDE MockchainT with full Phase 1 + Phase 2 validation
-    lift $ runThreatModelM (SignWith Wallet.w1) doubleSatisfaction [env]
+        -- Run the threat model INSIDE MockchainT with full Phase 1 + Phase 2 validation
+        lift $ runThreatModelM (SignWith Wallet.w1) doubleSatisfaction [env]
 
   case result of
     (Left err, _) -> do

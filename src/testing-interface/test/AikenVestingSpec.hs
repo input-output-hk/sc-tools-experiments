@@ -70,11 +70,11 @@ import Paths_convex_testing_interface qualified as Pkg
 import PlutusTx qualified
 import PlutusTx.Builtins qualified as PlutusTx
 
+import Convex.Tasty.HUnit (assertFailure, testCase)
+import Convex.Tasty.QuickCheck qualified as QC
 import Data.Aeson (ToJSON (..))
 import System.IO.Unsafe (unsafePerformIO)
 import Test.Tasty (TestTree, testGroup)
-import Test.Tasty.HUnit (assertFailure, testCase)
-import Test.Tasty.QuickCheck qualified as QC
 
 -- ----------------------------------------------------------------------------
 -- Vesting Datum type (wire-compatible with Aiken)

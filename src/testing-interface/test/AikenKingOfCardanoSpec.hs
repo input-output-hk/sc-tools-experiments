@@ -84,17 +84,17 @@ import PlutusLedgerApi.V1 qualified as PV1
 import PlutusTx qualified
 import PlutusTx.Builtins qualified as PlutusTx
 
-import Data.Aeson (ToJSON (..))
-import System.IO.Unsafe (unsafePerformIO)
-import Test.QuickCheck.Monadic (monadicIO, monitor, run)
-import Test.Tasty (TestTree, testGroup)
-import Test.Tasty.HUnit (assertFailure, testCase)
-import Test.Tasty.QuickCheck (
+import Convex.Tasty.HUnit (assertFailure, testCase)
+import Convex.Tasty.QuickCheck (
   Property,
   counterexample,
   testProperty,
  )
-import Test.Tasty.QuickCheck qualified as QC
+import Convex.Tasty.QuickCheck qualified as QC
+import Data.Aeson (ToJSON (..))
+import System.IO.Unsafe (unsafePerformIO)
+import Test.QuickCheck.Monadic (monadicIO, monitor, run)
+import Test.Tasty (TestTree, testGroup)
 
 -- ----------------------------------------------------------------------------
 -- King of Cardano Datum and Redeemer types (wire-compatible with Aiken)
@@ -613,24 +613,26 @@ propKingVulnerableToSelfReference opts = monadicIO $ do
   let Options{params} = mcOptions opts
 
   -- Run the scenario inside MockchainT
-  result <- run $ runMockchain0IOWith Wallet.initialUTxOs params $ runExceptT $ do
-    -- Initialize with self-reference (script address as king)
-    let initTxBody = execBuildTx $ initCompetitionWithSelfReference @C.ConwayEra Defaults.networkId 20_000_000
-    _ <- tryBalanceAndSubmit mempty Wallet.w1 initTxBody TrailingChange []
+  result <- run $
+    runMockchain0IOWith Wallet.initialUTxOs params $
+      runExceptT $ do
+        -- Initialize with self-reference (script address as king)
+        let initTxBody = execBuildTx $ initCompetitionWithSelfReference @C.ConwayEra Defaults.networkId 20_000_000
+        _ <- tryBalanceAndSubmit mempty Wallet.w1 initTxBody TrailingChange []
 
-    -- Capture UTxO BEFORE exploit
-    utxoBefore <- fromLedgerUTxO C.shelleyBasedEra <$> getUtxo
+        -- Capture UTxO BEFORE exploit
+        utxoBefore <- fromLedgerUTxO C.shelleyBasedEra <$> getUtxo
 
-    -- Perform the exploit
-    msResult <- findKingUtxos
-    case msResult of
-      [] -> fail "Expected UTxO at script address"
-      ((txIn, _, _) : _) -> do
-        let exploitTxBody = execBuildTx $ overthrowKingSelfReference @C.ConwayEra Defaults.networkId txIn 20_000_000 Wallet.w2 25_000_000
-        exploitTx <- tryBalanceAndSubmit mempty Wallet.w2 exploitTxBody TrailingChange []
+        -- Perform the exploit
+        msResult <- findKingUtxos
+        case msResult of
+          [] -> fail "Expected UTxO at script address"
+          ((txIn, _, _) : _) -> do
+            let exploitTxBody = execBuildTx $ overthrowKingSelfReference @C.ConwayEra Defaults.networkId txIn 20_000_000 Wallet.w2 25_000_000
+            exploitTx <- tryBalanceAndSubmit mempty Wallet.w2 exploitTxBody TrailingChange []
 
-        -- If we get here, the vulnerability exists! Overthrow succeeded without payment.
-        pure (exploitTx, utxoBefore)
+            -- If we get here, the vulnerability exists! Overthrow succeeded without payment.
+            pure (exploitTx, utxoBefore)
 
   case result of
     (Left err, _) -> do
@@ -684,19 +686,21 @@ propKingUnprotectedOutput :: RunOptions -> Property
 propKingUnprotectedOutput opts = monadicIO $ do
   let Options{params} = mcOptions opts
 
-  result <- run $ runMockchain0IOWith Wallet.initialUTxOs params $ runExceptT $ do
-    (tx, utxo) <- kingScenario
+  result <- run $
+    runMockchain0IOWith Wallet.initialUTxOs params $
+      runExceptT $ do
+        (tx, utxo) <- kingScenario
 
-    let pparams' = params ^. ledgerProtocolParameters
-        env =
-          ThreatModelEnv
-            { currentTx = tx
-            , currentUTxOs = utxo
-            , pparams = pparams'
-            }
+        let pparams' = params ^. ledgerProtocolParameters
+            env =
+              ThreatModelEnv
+                { currentTx = tx
+                , currentUTxOs = utxo
+                , pparams = pparams'
+                }
 
-    -- Run the threat model INSIDE MockchainT with full Phase 1 + Phase 2 validation
-    lift $ runThreatModelM (SignWith Wallet.w1) unprotectedScriptOutput [env]
+        -- Run the threat model INSIDE MockchainT with full Phase 1 + Phase 2 validation
+        lift $ runThreatModelM (SignWith Wallet.w1) unprotectedScriptOutput [env]
 
   case result of
     (Left err, _) -> do

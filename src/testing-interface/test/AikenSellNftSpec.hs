@@ -62,11 +62,11 @@ import Paths_convex_testing_interface qualified as Pkg
 import PlutusLedgerApi.V1 qualified as PV1
 import PlutusTx qualified
 
+import Convex.Tasty.HUnit (assertFailure, testCase)
+import Convex.Tasty.QuickCheck qualified as QC
 import Data.Aeson (ToJSON (..))
 import System.IO.Unsafe (unsafePerformIO)
 import Test.Tasty (TestTree, testGroup)
-import Test.Tasty.HUnit (assertFailure, testCase)
-import Test.Tasty.QuickCheck qualified as QC
 
 -- ----------------------------------------------------------------------------
 -- Sell NFT Datum type (wire-compatible with Aiken)

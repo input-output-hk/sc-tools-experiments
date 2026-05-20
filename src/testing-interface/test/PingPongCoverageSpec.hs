@@ -20,6 +20,7 @@ import Convex.MockChain (fromLedgerUTxO)
 import Convex.MockChain.CoinSelection (tryBalanceAndSubmit)
 import Convex.MockChain.Defaults qualified as Defaults
 
+import Convex.Tasty.HUnit (Assertion, testCase)
 import Convex.TestingInterface (Options (..), mockchainFailsWithOptions, mockchainSucceedsWithOptions)
 import Convex.Utils.String (unsafeAssetName, unsafeDatumHash)
 import Convex.Wallet.MockWallet qualified as Wallet
@@ -28,7 +29,6 @@ import PlutusLedgerApi.V3 qualified as PV3
 import Scripts qualified
 import Scripts.PingPong qualified as PingPong
 import Test.Tasty (TestTree, testGroup)
-import Test.Tasty.HUnit (Assertion, testCase)
 
 {- | Test group for PingPong coverage tests.
 

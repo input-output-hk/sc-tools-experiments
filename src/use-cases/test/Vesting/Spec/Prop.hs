@@ -17,6 +17,7 @@ import Convex.CoinSelection (BalanceTxError, ChangeOutputPosition (TrailingChang
 import Convex.MockChain.CoinSelection (tryBalanceAndSubmit)
 import Convex.MockChain.Defaults qualified as Defaults
 import Convex.PlutusLedger.V1 (transPubKeyHash)
+import Convex.Tasty.QuickCheck qualified as QC
 import Convex.TestingInterface (RunOptions, TestingInterface (..), ThreatModelsFor (..), propRunActionsWithOptions)
 import Convex.ThreatModel.LargeValue (largeValueAttackWith)
 import Convex.ThreatModel.MutualExclusion (mutualExclusionAttack)
@@ -34,7 +35,6 @@ import GHC.Generics (Generic)
 import PlutusLedgerApi.V1 (Lovelace (getLovelace), lovelaceValue, lovelaceValueOf)
 import Test.QuickCheck.Gen qualified as Gen
 import Test.Tasty (TestTree, testGroup)
-import Test.Tasty.QuickCheck qualified as QC
 import Vesting.Scripts (vestingValidatorScript)
 import Vesting.Validator (Vesting (..), VestingParams (..))
 

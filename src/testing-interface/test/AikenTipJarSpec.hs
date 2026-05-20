@@ -67,11 +67,11 @@ import PlutusTx qualified
 import PlutusTx.Builtins qualified as PlutusTx
 import PlutusTx.IsData.Class (UnsafeFromData (unsafeFromBuiltinData))
 
+import Convex.Tasty.HUnit (Assertion, assertFailure, testCase)
+import Convex.Tasty.QuickCheck qualified as QC
 import Data.Aeson (ToJSON (..))
 import System.IO.Unsafe (unsafePerformIO)
 import Test.Tasty (TestTree, testGroup)
-import Test.Tasty.HUnit (Assertion, assertFailure, testCase)
-import Test.Tasty.QuickCheck qualified as QC
 
 -- ----------------------------------------------------------------------------
 -- TipJar Datum and Redeemer types (wire-compatible with Aiken)
@@ -343,66 +343,67 @@ hugeMessagePermanentlyLocksTipjar = do
   let hugeMessageSize = 14_000
 
   -- Run the test directly in MockchainIO
-  _ <- runMockchain0IOWith Wallet.initialUTxOs Defaults.nodeParams $ failOnError $ do
-    -- Step 1: Initialize tipjar with w1 as owner
-    let initTxBody = execBuildTx $ initTipJar @C.ConwayEra Defaults.networkId Wallet.w1 10_000_000
-    initTx <- tryBalanceAndSubmit mempty Wallet.w1 initTxBody TrailingChange []
-    let txIn = C.TxIn (C.getTxId (C.getTxBody initTx)) (C.TxIx 0)
-        ownerBytes = PlutusTx.toBuiltin $ C.serialiseToRawBytes (verificationKeyHash Wallet.w1)
-        initialDatum = TipJarDatum{tjOwner = ownerBytes, tjMessages = []}
+  _ <- runMockchain0IOWith Wallet.initialUTxOs Defaults.nodeParams $
+    failOnError $ do
+      -- Step 1: Initialize tipjar with w1 as owner
+      let initTxBody = execBuildTx $ initTipJar @C.ConwayEra Defaults.networkId Wallet.w1 10_000_000
+      initTx <- tryBalanceAndSubmit mempty Wallet.w1 initTxBody TrailingChange []
+      let txIn = C.TxIn (C.getTxId (C.getTxBody initTx)) (C.TxIx 0)
+          ownerBytes = PlutusTx.toBuiltin $ C.serialiseToRawBytes (verificationKeyHash Wallet.w1)
+          initialDatum = TipJarDatum{tjOwner = ownerBytes, tjMessages = []}
 
-    -- Step 2: Add a tip with a HUGE message - this is the attack!
-    -- A 14KB datum requires ~60 ADA of min-UTxO
-    let hugeMsg = PlutusTx.toBuiltin (BS.replicate hugeMessageSize 0x41) -- 14000 'A's
-    -- Provide 60 ADA as tip (current value 10 + tip 60 = 70 ADA, exceeds min-UTxO)
-        tipTxBody = execBuildTx $ addTip @C.ConwayEra Defaults.networkId txIn initialDatum 10_000_000 60_000_000 hugeMsg
+      -- Step 2: Add a tip with a HUGE message - this is the attack!
+      -- A 14KB datum requires ~60 ADA of min-UTxO
+      let hugeMsg = PlutusTx.toBuiltin (BS.replicate hugeMessageSize 0x41) -- 14000 'A's
+      -- Provide 60 ADA as tip (current value 10 + tip 60 = 70 ADA, exceeds min-UTxO)
+          tipTxBody = execBuildTx $ addTip @C.ConwayEra Defaults.networkId txIn initialDatum 10_000_000 60_000_000 hugeMsg
 
-    -- The tip transaction should succeed (datum in output, tx is ~16KB)
-    _ <- tryBalanceAndSubmit mempty Wallet.w2 tipTxBody TrailingChange []
+      -- The tip transaction should succeed (datum in output, tx is ~16KB)
+      _ <- tryBalanceAndSubmit mempty Wallet.w2 tipTxBody TrailingChange []
 
-    -- Step 3: Find the bloated tipjar UTxO
-    utxoSet <- fromLedgerUTxO C.shelleyBasedEra <$> getUtxo
-    let C.UTxO utxos = utxoSet
-        scriptUtxos = Map.filter (\(C.TxOut addr _ _ _) -> addr == tipJarAddress) utxos
-    (txIn2, tipJarValue, bloatedDatum) <- case Map.toList scriptUtxos of
-      [(ti, C.TxOut _ (C.TxOutValueShelleyBased _ val) datum _)] -> do
-        currentDatum <- case datum of
-          C.TxOutDatumInline _ scriptData ->
-            pure $
-              unsafeFromBuiltinData @TipJarDatum
-                (PlutusTx.dataToBuiltinData $ C.toPlutusData $ C.getScriptData scriptData)
-          _ -> fail "Expected inline datum"
-        pure (ti, C.fromMaryValue val, currentDatum)
-      _ -> fail "Expected exactly one tipjar UTxO after huge tip"
+      -- Step 3: Find the bloated tipjar UTxO
+      utxoSet <- fromLedgerUTxO C.shelleyBasedEra <$> getUtxo
+      let C.UTxO utxos = utxoSet
+          scriptUtxos = Map.filter (\(C.TxOut addr _ _ _) -> addr == tipJarAddress) utxos
+      (txIn2, tipJarValue, bloatedDatum) <- case Map.toList scriptUtxos of
+        [(ti, C.TxOut _ (C.TxOutValueShelleyBased _ val) datum _)] -> do
+          currentDatum <- case datum of
+            C.TxOutDatumInline _ scriptData ->
+              pure $
+                unsafeFromBuiltinData @TipJarDatum
+                  (PlutusTx.dataToBuiltinData $ C.toPlutusData $ C.getScriptData scriptData)
+            _ -> fail "Expected inline datum"
+          pure (ti, C.fromMaryValue val, currentDatum)
+        _ -> fail "Expected exactly one tipjar UTxO after huge tip"
 
-    -- Step 4: Try to add another tiny tip - this should FAIL!
-    -- The new output datum would be: existing 14KB + 2 bytes = exceeds tx size limit
-    let tinyMsg = PlutusTx.toBuiltin ("hi" :: BS.ByteString)
-        newTipTxBody = execBuildTx $ addTip @C.ConwayEra Defaults.networkId txIn2 bloatedDatum (C.selectLovelace tipJarValue) 1_000_000 tinyMsg
-    -- Use runExceptT to catch balancing errors (like MaxTxSizeUTxO or script execution errors)
-    newTipResult <- lift $ runExceptT $ balanceAndSubmit mempty Wallet.w3 newTipTxBody TrailingChange []
-    case newTipResult of
-      Left _err -> pure () -- Expected: balancing fails (datum too large for new tx)
-      Right (Left _err) -> pure () -- Expected: validation fails
-      Right (Right _) -> liftIO $ assertFailure "ERROR: New tip should have failed! The tipjar should be unusable."
+      -- Step 4: Try to add another tiny tip - this should FAIL!
+      -- The new output datum would be: existing 14KB + 2 bytes = exceeds tx size limit
+      let tinyMsg = PlutusTx.toBuiltin ("hi" :: BS.ByteString)
+          newTipTxBody = execBuildTx $ addTip @C.ConwayEra Defaults.networkId txIn2 bloatedDatum (C.selectLovelace tipJarValue) 1_000_000 tinyMsg
+      -- Use runExceptT to catch balancing errors (like MaxTxSizeUTxO or script execution errors)
+      newTipResult <- lift $ runExceptT $ balanceAndSubmit mempty Wallet.w3 newTipTxBody TrailingChange []
+      case newTipResult of
+        Left _err -> pure () -- Expected: balancing fails (datum too large for new tx)
+        Right (Left _err) -> pure () -- Expected: validation fails
+        Right (Right _) -> liftIO $ assertFailure "ERROR: New tip should have failed! The tipjar should be unusable."
 
-    -- Step 5: Verify owner can still CLAIM - funds are NOT locked
-    -- Re-fetch the UTxO (it wasn't spent by the failed tip)
-    utxoSet2 <- fromLedgerUTxO C.shelleyBasedEra <$> getUtxo
-    let C.UTxO utxos2 = utxoSet2
-        scriptUtxos2 = Map.filter (\(C.TxOut addr _ _ _) -> addr == tipJarAddress) utxos2
-    (txIn3, tipJarValue2) <- case Map.toList scriptUtxos2 of
-      [(ti, C.TxOut _ (C.TxOutValueShelleyBased _ val) _ _)] ->
-        pure (ti, C.fromMaryValue val)
-      _ -> fail "Expected exactly one tipjar UTxO"
+      -- Step 5: Verify owner can still CLAIM - funds are NOT locked
+      -- Re-fetch the UTxO (it wasn't spent by the failed tip)
+      utxoSet2 <- fromLedgerUTxO C.shelleyBasedEra <$> getUtxo
+      let C.UTxO utxos2 = utxoSet2
+          scriptUtxos2 = Map.filter (\(C.TxOut addr _ _ _) -> addr == tipJarAddress) utxos2
+      (txIn3, tipJarValue2) <- case Map.toList scriptUtxos2 of
+        [(ti, C.TxOut _ (C.TxOutValueShelleyBased _ val) _ _)] ->
+          pure (ti, C.fromMaryValue val)
+        _ -> fail "Expected exactly one tipjar UTxO"
 
-    let claimTxBody = execBuildTx $ claimJar @C.ConwayEra Defaults.networkId txIn3 tipJarValue2 Wallet.w1
-    claimResult <- balanceAndSubmit mempty Wallet.w1 claimTxBody TrailingChange []
-    case claimResult of
-      Left err -> liftIO $ assertFailure $ "ERROR: Claim should have succeeded! Error: " ++ show err
-      Right _ -> pure ()
+      let claimTxBody = execBuildTx $ claimJar @C.ConwayEra Defaults.networkId txIn3 tipJarValue2 Wallet.w1
+      claimResult <- balanceAndSubmit mempty Wallet.w1 claimTxBody TrailingChange []
+      case claimResult of
+        Left err -> liftIO $ assertFailure $ "ERROR: Claim should have succeeded! Error: " ++ show err
+        Right _ -> pure ()
 
-    pure ()
+      pure ()
 
   -- The test passes if we got here - the assertions inside verified:
   -- 1. Huge tip succeeded

@@ -20,6 +20,7 @@ import Convex.CoinSelection (BalanceTxError, ChangeOutputPosition (TrailingChang
 import Convex.MockChain.CoinSelection (tryBalanceAndSubmit)
 import Convex.MockChain.Defaults qualified as Defaults
 import Convex.PlutusLedger.V1 (transPubKeyHash, unTransAssetName)
+import Convex.Tasty.QuickCheck qualified as QC
 import Convex.TestingInterface (TestingInterface (..), ThreatModelsFor (..), propRunActions)
 import Convex.ThreatModel.DoubleSatisfaction (doubleSatisfaction)
 import Convex.ThreatModel.TimeBoundManipulation (timeBoundManipulation)
@@ -35,7 +36,6 @@ import PlutusLedgerApi.Common qualified as PlutusTx
 import PlutusLedgerApi.V1 (CurrencySymbol (..), tokenName)
 import Test.QuickCheck.Gen qualified as Gen
 import Test.Tasty (TestTree, testGroup)
-import Test.Tasty.QuickCheck qualified as QC
 
 -------------------------------------------------------------------------------
 -- Property-based tests for the Auction contract

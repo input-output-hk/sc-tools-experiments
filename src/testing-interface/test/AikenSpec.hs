@@ -25,13 +25,13 @@ import Convex.Class (MonadMockchain)
 import Convex.CoinSelection (BalanceTxError, ChangeOutputPosition (TrailingChange))
 import Convex.MockChain.CoinSelection (tryBalanceAndSubmit)
 import Convex.MockChain.Defaults qualified as Defaults
+import Convex.Tasty.HUnit (testCase)
 import Convex.TestingInterface (Options, mockchainFailsWithOptions, mockchainSucceedsWithOptions)
 import Convex.Utils (failOnError)
 import Convex.Wallet.MockWallet qualified as Wallet
 import Data.Map qualified as Map
 import Paths_convex_testing_interface qualified as Pkg
 import Test.Tasty (TestTree, testGroup, withResource)
-import Test.Tasty.HUnit (testCase)
 
 -- | Load the Aiken "check_answer" validator from the embedded blueprint
 loadCheckAnswerScript :: IO (C.PlutusScript C.PlutusScriptV3)

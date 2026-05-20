@@ -19,6 +19,7 @@ import Convex.MockChain (utxoSet)
 import Convex.MockChain.CoinSelection (tryBalanceAndSubmit)
 import Convex.MockChain.Defaults qualified as Defaults
 import Convex.PlutusLedger.V1 (transPubKeyHash)
+import Convex.Tasty.QuickCheck qualified as QC
 import Convex.TestingInterface (TestingInterface (..), ThreatModelsFor (..), propRunActions)
 import Convex.ThreatModel.DatumBloat (datumListBloatAttack)
 import Convex.ThreatModel.DuplicateListEntry (duplicateListEntryAttack)
@@ -40,7 +41,6 @@ import MultiPlayerPingPong.Validator (BallState (Pinged, Ponged), MultiPingPongD
 import PlutusLedgerApi.V1.Crypto (PubKeyHash)
 import Test.QuickCheck.Gen qualified as Gen
 import Test.Tasty (TestTree, testGroup)
-import Test.Tasty.QuickCheck qualified as QC
 
 -------------------------------------------------------------------------------
 -- Property-based tests for MultiPlayerPingPong validator

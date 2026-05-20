@@ -2,6 +2,7 @@
 
 import Cardano.Api qualified as C
 import Convex.MockChain.Utils (mockchainFails)
+import Convex.Tasty.HUnit (testCase)
 import Convex.Tasty.Streaming (defaultMainStreaming)
 import Convex.TestingInterface (
   CoverageConfig (..),
@@ -14,7 +15,6 @@ import Convex.TestingInterface (
  )
 import Convex.Utils (failOnError)
 import Test.Tasty (TestTree, testGroup)
-import Test.Tasty.HUnit (testCase)
 
 import AikenBankSpec (aikenBankTests)
 import AikenHelloWorldSpec (aikenHelloWorldTests)

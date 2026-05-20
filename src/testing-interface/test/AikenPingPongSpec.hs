@@ -45,6 +45,8 @@ import Convex.MockChain.CoinSelection (
   balanceAndSubmit,
  )
 import Convex.MockChain.Defaults qualified as Defaults
+import Convex.Tasty.QuickCheck ()
+import Convex.Tasty.QuickCheck qualified as QC
 import Convex.TestingInterface (
   RunOptions,
   TestingInterface (..),
@@ -64,8 +66,6 @@ import PlutusTx.IsData.Class (UnsafeFromData (unsafeFromBuiltinData))
 import Scripts.PingPong qualified as PingPong
 import System.IO.Unsafe (unsafePerformIO)
 import Test.Tasty (TestTree, testGroup)
-import Test.Tasty.QuickCheck ()
-import Test.Tasty.QuickCheck qualified as QC
 
 -- | Load the Aiken "ping_pong" validator from the embedded blueprint
 loadPingPongScript :: IO (C.PlutusScript C.PlutusScriptV3)
@@ -148,22 +148,21 @@ instance TestingInterface AikenPingPongModel where
   initialize = do
     -- liftIO $ putStrLn $ "[Aiken] Initializing contract with state: " ++ show state
     -- Deploy the contract with the initial state
-    let
-      model =
-        AikenPingPongModel
-          { apmState = PingPong.Pinged
-          , apmTxIn = C.TxIn dummyTxId (C.TxIx 0)
-          , apmValue = 10_000_000
-          }
-      txBody =
-        execBuildTx
-          ( BuildTx.payToScriptInlineDatum
-              Defaults.networkId
-              (C.hashScript (plutusScript aikenPingPongScript))
-              (apmState model)
-              C.NoStakeAddress
-              (C.lovelaceToValue $ apmValue model)
-          )
+    let model =
+          AikenPingPongModel
+            { apmState = PingPong.Pinged
+            , apmTxIn = C.TxIn dummyTxId (C.TxIx 0)
+            , apmValue = 10_000_000
+            }
+        txBody =
+          execBuildTx
+            ( BuildTx.payToScriptInlineDatum
+                Defaults.networkId
+                (C.hashScript (plutusScript aikenPingPongScript))
+                (apmState model)
+                C.NoStakeAddress
+                (C.lovelaceToValue $ apmValue model)
+            )
     void $ balanceAndSubmit mempty Wallet.w1 txBody TrailingChange []
     pure model
 

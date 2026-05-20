@@ -19,6 +19,7 @@ import Convex.MockChain.Defaults qualified as Defaults
 import Convex.MockChain.Utils (mockchainFails, mockchainSucceeds)
 import Convex.MonadLog (MonadLog, MonadLogIgnoreT (runMonadLogIgnoreT), logDebug, logDebugS)
 import Convex.PlutusLedger.V1 (transPubKeyHash, unTransAssetName)
+import Convex.Tasty.HUnit (testCase)
 import Convex.Utils (failOnError)
 import Convex.Wallet (verificationKeyHash)
 import Convex.Wallet qualified as MockWallet
@@ -29,7 +30,6 @@ import PlutusLedgerApi.V1 (CurrencySymbol (..), POSIXTime (..), tokenName)
 import PlutusTx.Builtins qualified as BI
 import PlutusTx.Builtins qualified as PlutusTx
 import Test.Tasty (TestTree, testGroup)
-import Test.Tasty.HUnit (testCase)
 
 attackTests :: TestTree
 attackTests =

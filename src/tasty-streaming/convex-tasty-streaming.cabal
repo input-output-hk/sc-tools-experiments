@@ -38,7 +38,10 @@ common lang
 library
   import:          lang
   exposed-modules:
+    Convex.Tasty.HUnit
+    Convex.Tasty.QuickCheck
     Convex.Tasty.Streaming
+    Convex.Tasty.Streaming.SrcLoc
     Convex.Tasty.Streaming.TMSummary
     Convex.Tasty.Streaming.TreeMap
     Convex.Tasty.Streaming.Types
@@ -47,10 +50,30 @@ library
   build-depends:
     , aeson
     , async
-    , base        >=4.14.0
+    , base              >=4.14.0
     , bytestring
     , containers
+    , directory
+    , filepath
     , stm
     , tagged
-    , tasty       >=1.4
+    , tasty             >=1.4
+    , tasty-hunit
+    , tasty-quickcheck
+    , text
+
+test-suite convex-tasty-streaming-test
+  import:         lang
+  type:           exitcode-stdio-1.0
+  hs-source-dirs: test
+  main-is:        Spec.hs
+  other-modules:  Convex.Tasty.SrcLocSpec
+  build-depends:
+    , aeson
+    , base                    >=4.14.0
+    , containers
+    , convex-tasty-streaming
+    , tasty
+    , tasty-hunit
+    , tasty-quickcheck
     , text

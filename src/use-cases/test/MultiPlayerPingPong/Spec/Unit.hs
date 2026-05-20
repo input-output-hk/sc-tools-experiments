@@ -13,6 +13,7 @@ import Convex.MockChain.CoinSelection (tryBalanceAndSubmit)
 import Convex.MockChain.Defaults qualified as Defaults
 import Convex.MockChain.Utils (mockchainFails, mockchainSucceeds)
 import Convex.PlutusLedger.V1 (transPubKeyHash)
+import Convex.Tasty.HUnit (testCase)
 import Convex.Utils (failOnError)
 import Convex.Wallet (verificationKeyHash)
 import Convex.Wallet qualified as Wallet
@@ -24,7 +25,6 @@ import MultiPlayerPingPong.Validator (
   MultiRedeemer (Hit, Stop),
  )
 import Test.Tasty (TestTree, testGroup)
-import Test.Tasty.HUnit (testCase)
 
 -------------------------------------------------------------------------------
 -- Unit tests for the MultiPlayerPingPong script

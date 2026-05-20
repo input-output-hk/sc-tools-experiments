@@ -20,6 +20,7 @@ import Convex.MockChain (utxoSet)
 import Convex.MockChain.CoinSelection (tryBalanceAndSubmit)
 import Convex.MockChain.Defaults qualified as Defaults
 import Convex.PlutusLedger.V1 (transPubKeyHash)
+import Convex.Tasty.QuickCheck qualified as QC
 import Convex.TestingInterface (TestingInterface (..), ThreatModelsFor (expectedVulnerabilities, threatModels), propRunActions)
 import Convex.ThreatModel.DoubleSatisfaction (doubleSatisfaction)
 import Convex.ThreatModel.LargeValue (largeValueAttackWith)
@@ -40,7 +41,6 @@ import GHC.Generics (Generic)
 import PlutusLedgerApi.V1 (lovelaceValue)
 import Test.QuickCheck.Gen qualified as Gen
 import Test.Tasty (TestTree, testGroup)
-import Test.Tasty.QuickCheck qualified as QC
 
 -------------------------------------------------------------------------------
 -- Property-based tests for the Escrow contract
@@ -366,7 +366,8 @@ refundFundsPBT params curSlot contributor = do
 utxosAt
   :: forall era m
    . (MonadMockchain era m, MonadFail m, C.IsBabbageBasedEra era)
-  => C.ScriptHash -> m [(C.TxIn, C.TxOut C.CtxUTxO era)]
+  => C.ScriptHash
+  -> m [(C.TxIn, C.TxOut C.CtxUTxO era)]
 utxosAt scriptHash = do
   utxos <- utxoSet
   let scriptUtxos =

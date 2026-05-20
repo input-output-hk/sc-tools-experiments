@@ -9,6 +9,7 @@ import Control.Concurrent.Async (forConcurrently_)
 import Control.Concurrent.MVar (MVar, newMVar, withMVar)
 import Control.Concurrent.STM
 import Control.Monad (when)
+import Convex.Tasty.Streaming.SrcLoc (PackageRootOpt (..), callerPackageRoot)
 import Convex.Tasty.Streaming.TMSummary (
   TMRecorder,
   TMStoreOption (..),
@@ -28,6 +29,7 @@ import Data.Proxy (Proxy (..))
 import Data.Tagged (Tagged (..))
 import Data.Text qualified as Text
 import Data.Typeable (Typeable)
+import GHC.Stack (HasCallStack, withFrozenCallStack)
 import System.IO (BufferMode (..), hFlush, hSetBuffering, stdout)
 import Test.Tasty (TestTree, defaultMainWithIngredients, localOption)
 import Test.Tasty.Ingredients (Ingredient (..))
@@ -124,6 +126,7 @@ streamingJsonReporter = TestReporter
   , Option (Proxy :: Proxy TestMapRef)
   , Option (Proxy :: Proxy StreamingEnabledRef)
   , Option (Proxy :: Proxy OutputLockRef)
+  , Option (Proxy :: Proxy PackageRootOpt)
   ]
   $ \opts tree -> do
     let StreamingJson enabled = lookupOption opts
@@ -161,9 +164,15 @@ streamingJsonReporter = TestReporter
           Just ref -> writeIORef ref testMap
           Nothing -> pure ()
 
+        -- Read the package root from the option set (populated by
+        -- 'defaultMainStreaming' from the caller's 'HasCallStack'). Emitted
+        -- once on SuiteStarted so consumers can resolve package-relative
+        -- 'srcLoc.file' paths to absolute filesystem locations.
+        let PackageRootOpt mPkgRoot = lookupOption opts
+
         -- Emit suite_started with full test list
         let testInfos = map snd $ IntMap.toAscList testMap
-        emit $ SuiteStarted testInfos
+        emit $ SuiteStarted mPkgRoot testInfos
 
         -- Track results for final summary
         resultsVar <- newTVarIO ([] :: [(Int, Result)])
@@ -295,16 +304,19 @@ Activated via @--list-tests-json@.
 -}
 listTestsJsonIngredient :: Ingredient
 listTestsJsonIngredient = TestManager
-  [Option (Proxy :: Proxy ListTestsJson)]
+  [ Option (Proxy :: Proxy ListTestsJson)
+  , Option (Proxy :: Proxy PackageRootOpt)
+  ]
   $ \opts tree -> do
     let ListTestsJson enabled = lookupOption opts
     if not enabled
       then Nothing
       else Just $ do
         hSetBuffering stdout LineBuffering
+        let PackageRootOpt mPkgRoot = lookupOption opts
         testMap <- buildTestMap opts tree
         let testInfos = map snd $ IntMap.toAscList testMap
-        emitEvent $ SuiteStarted testInfos
+        emitEvent $ SuiteStarted mPkgRoot testInfos
         pure True
 
 -- | Default ingredients with streaming reporter added
@@ -318,9 +330,41 @@ threat-model summaries will not appear in the JSON output unless you
 also call
 @'localOption' ('TMStoreOption' (Just store)) . 'localOption' ('storeRecorder' store)@
 on your tree (with a freshly-allocated store from 'newTMStore').
+
+== Package root capture
+
+The @packageRoot@ field emitted on the @SuiteStarted@ event is captured
+from the call site of 'defaultMainStreaming' (typically the user's
+@Main.hs@) via 'HasCallStack'. The mechanism is implemented in
+'Convex.Tasty.Streaming.SrcLoc.callerPackageRoot': read the top of
+'callStack' to obtain both the GHC package identifier of the calling
+module and the file path it was compiled from, then search the workspace
+(starting at the process working directory) for a directory containing
+both a matching @\<pkgname\>.cabal@ file and the relative source file.
+
+This is correct in the common case where the @Main.hs@ entry point and
+the tests it assembles live in the same cabal package. It is __not__
+correct for cross-package test reuse — for example, if @Main.hs@ in
+package /A/ pulls in test trees defined in package /B/'s library, those
+tests will be attributed to package /A/, not /B/. We explicitly accept
+this limitation; addressing it would require per-test source-location
+metadata (e.g. via Template Haskell or CPP at every test definition
+site), which is significantly more invasive.
+
+If the resolution fails (e.g. the test is launched from a working
+directory that does not contain the package, or the package name cannot
+be extracted), @packageRoot@ is omitted from the JSON output (consistent
+with the existing @Maybe@-as-absent-key convention).
 -}
-defaultMainStreaming :: TestTree -> IO ()
+defaultMainStreaming :: (HasCallStack) => TestTree -> IO ()
 defaultMainStreaming tree = do
+  -- Capture the package root from the user's call site BEFORE doing any
+  -- other work. 'withFrozenCallStack' freezes our caller's call stack so
+  -- that inside 'callerPackageRoot' the top frame is the user's Main.hs
+  -- (the call site of 'defaultMainStreaming') rather than this internal
+  -- invocation of 'callerPackageRoot'.
+  mPkgRoot <- withFrozenCallStack callerPackageRoot
+  let pkgRootOpt = PackageRootOpt (fmap Text.pack mPkgRoot)
   store <- newTMStore
   testMapRef <- newIORef IntMap.empty
   enabledRef <- newIORef False -- set to True by the reporter when --streaming-json is active
@@ -352,10 +396,11 @@ defaultMainStreaming tree = do
                       }
           }
   let tree' =
-        localOption (TMStoreOption (Just store)) $
-          localOption (storeRecorder store) $
-            localOption (TestMapRef (Just testMapRef)) $
-              localOption (StreamingEnabledRef (Just enabledRef)) $
-                localOption (OutputLockRef (Just outputLock)) $
-                  localOption traceRec tree
+        localOption pkgRootOpt $
+          localOption (TMStoreOption (Just store)) $
+            localOption (storeRecorder store) $
+              localOption (TestMapRef (Just testMapRef)) $
+                localOption (StreamingEnabledRef (Just enabledRef)) $
+                  localOption (OutputLockRef (Just outputLock)) $
+                    localOption traceRec tree
   defaultMainWithIngredients streamingIngredients tree'

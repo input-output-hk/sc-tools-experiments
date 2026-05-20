@@ -33,6 +33,9 @@
                             ],
                             "type": "string"
                         },
+                        "packageRoot": {
+                            "type": "string"
+                        },
                         "tests": {
                             "items": {
                                 "$ref": "#/$defs/TestInfo"
@@ -298,6 +301,33 @@
                         "type": "string"
                     },
                     "type": "array"
+                },
+                "srcLoc": {
+                    "properties": {
+                        "endCol": {
+                            "type": "integer"
+                        },
+                        "endLine": {
+                            "type": "integer"
+                        },
+                        "file": {
+                            "type": "string"
+                        },
+                        "startCol": {
+                            "type": "integer"
+                        },
+                        "startLine": {
+                            "type": "integer"
+                        }
+                    },
+                    "required": [
+                        "file",
+                        "startLine",
+                        "startCol",
+                        "endLine",
+                        "endCol"
+                    ],
+                    "type": "object"
                 }
             },
             "required": [
@@ -1089,6 +1119,9 @@
                     "enum": [
                         "suite_started"
                     ],
+                    "type": "string"
+                },
+                "packageRoot": {
                     "type": "string"
                 },
                 "tests": {

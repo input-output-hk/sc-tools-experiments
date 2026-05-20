@@ -2,13 +2,14 @@ module Convex.Tasty.Streaming.TreeMap (
   buildTestMap,
 ) where
 
+import Convex.Tasty.Streaming.SrcLoc (SrcLocOpt (..))
 import Convex.Tasty.Streaming.Types (TestInfo (..))
 import Data.IORef
 import Data.IntMap.Strict (IntMap)
 import Data.IntMap.Strict qualified as IntMap
 import Data.Text qualified as Text
 import Test.Tasty (TestTree)
-import Test.Tasty.Options (OptionSet)
+import Test.Tasty.Options (OptionSet, lookupOption)
 import Test.Tasty.Runners (Ap (..), TreeFold (..), foldTestTree, trivialFold)
 
 {- | Build a mapping from StatusMap integer indices to test metadata.
@@ -25,14 +26,16 @@ buildTestMap opts tree = do
 mkFold :: IORef Int -> TreeFold (Ap IO (IntMap TestInfo))
 mkFold counterRef =
   (trivialFold :: TreeFold (Ap IO (IntMap TestInfo)))
-    { foldSingle = \_ name _ -> Ap $ do
+    { foldSingle = \opts name _ -> Ap $ do
         idx <- readIORef counterRef
         modifyIORef' counterRef (+ 1)
-        let info =
+        let SrcLocOpt mLoc = lookupOption opts
+            info =
               TestInfo
                 { tiId = idx
                 , tiName = Text.pack name
                 , tiPath = []
+                , tiSrcLoc = mLoc
                 }
         pure $ IntMap.singleton idx info
     , foldGroup = \_opts groupName children -> Ap $ do

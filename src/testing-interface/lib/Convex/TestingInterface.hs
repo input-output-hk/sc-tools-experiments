@@ -85,6 +85,7 @@ import Convex.MockChain (MockChainState (..), MockchainT, fromLedgerUTxO, initia
 import Convex.MockChain.Defaults qualified as Defaults
 import Convex.MonadLog (MonadLog)
 import Convex.NodeParams (NodeParams (..))
+import Convex.Tasty.Streaming.SrcLoc (withSrcLoc)
 import Convex.Tasty.Streaming.TMSummary (TMRecorder, ThreatModelSummary (..), TraceRecorder (..), tmRecord)
 import Convex.TestingInterface.Trace (
   IterationStatus (..),
@@ -115,6 +116,7 @@ import Data.Set qualified as Set
 import Data.Text qualified as T
 import Data.Word (Word32)
 import GHC.Generics (Generic)
+import GHC.Stack (HasCallStack, withFrozenCallStack)
 import PlutusTx.Coverage (
   CovLoc (..),
   CoverageAnnotation (..),
@@ -307,41 +309,44 @@ defaultRunOptions =
 {- | Main property for testing a testing interface.
 Generates random action sequences and checks that the implementation matches the model.
 -}
-propRunActions :: forall state. (ThreatModelsFor state) => String -> TestTree
-propRunActions name = propRunActionsWithOptions @state name defaultRunOptions
+propRunActions :: forall state. (HasCallStack, ThreatModelsFor state) => String -> TestTree
+propRunActions name =
+  withFrozenCallStack (withSrcLoc (propRunActionsWithOptions @state name defaultRunOptions))
 
 -- | Run testing interface tests with custom options
 propRunActionsWithOptions
   :: forall state
-   . (ThreatModelsFor state)
+   . (HasCallStack, ThreatModelsFor state)
   => String
   -> RunOptions
   -> TestTree
 propRunActionsWithOptions groupName opts =
-  askOption $ \(recorder :: TraceRecorder) ->
-    let tms = threatModels @state
-        evs = expectedVulnerabilities @state
-     in if null tms && null evs
-          then
-            -- No threat models: simple structure (backward compatible)
-            withResource (newIORef (0 :: Int)) (\_ -> pure ()) $ \getPosRef ->
-              withResource (newIORef (0 :: Int)) (\_ -> pure ()) $ \getNegRef ->
-                testGroup
-                  groupName
-                  [ testProperty "Positive tests" (positiveTest @state opts groupName Nothing [] [] recorder getPosRef)
-                  , negativeTestTree recorder getNegRef
-                  ]
-          else
-            -- Has threat models: two-phase approach with IORef
-            withResource (newIORef Map.empty) (\_ -> pure ()) $ \getTmResultsRef ->
-              withResource (newIORef (0 :: Int)) (\_ -> pure ()) $ \getPosRef ->
-                withResource (newIORef (0 :: Int)) (\_ -> pure ()) $ \getNegRef ->
-                  sequentialTestGroup groupName AllFinish $
-                    [ testProperty "Positive tests" (positiveTest @state opts groupName (Just getTmResultsRef) tms evs recorder getPosRef)
-                    , negativeTestTree recorder getNegRef
-                    ]
-                      <> threatModelGroup getTmResultsRef tms
-                      <> expectedVulnGroup getTmResultsRef evs
+  withFrozenCallStack $
+    withSrcLoc $
+      askOption $ \(recorder :: TraceRecorder) ->
+        let tms = threatModels @state
+            evs = expectedVulnerabilities @state
+         in if null tms && null evs
+              then
+                -- No threat models: simple structure (backward compatible)
+                withResource (newIORef (0 :: Int)) (\_ -> pure ()) $ \getPosRef ->
+                  withResource (newIORef (0 :: Int)) (\_ -> pure ()) $ \getNegRef ->
+                    testGroup
+                      groupName
+                      [ testProperty "Positive tests" (positiveTest @state opts groupName Nothing [] [] recorder getPosRef)
+                      , negativeTestTree recorder getNegRef
+                      ]
+              else
+                -- Has threat models: two-phase approach with IORef
+                withResource (newIORef Map.empty) (\_ -> pure ()) $ \getTmResultsRef ->
+                  withResource (newIORef (0 :: Int)) (\_ -> pure ()) $ \getPosRef ->
+                    withResource (newIORef (0 :: Int)) (\_ -> pure ()) $ \getNegRef ->
+                      sequentialTestGroup groupName AllFinish $
+                        [ testProperty "Positive tests" (positiveTest @state opts groupName (Just getTmResultsRef) tms evs recorder getPosRef)
+                        , negativeTestTree recorder getNegRef
+                        ]
+                          <> threatModelGroup getTmResultsRef tms
+                          <> expectedVulnGroup getTmResultsRef evs
  where
   negativeTestTree recorder getNegRef = case disableNegativeTesting opts of
     Nothing -> testProperty "Negative tests" (negativeTest @state opts groupName recorder getNegRef)

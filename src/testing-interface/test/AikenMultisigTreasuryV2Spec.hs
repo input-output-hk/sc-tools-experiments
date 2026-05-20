@@ -95,16 +95,16 @@ import PlutusLedgerApi.V1 qualified as PV1
 import PlutusTx qualified
 import PlutusTx.Builtins qualified as PlutusTx
 
+import Convex.Tasty.HUnit (assertFailure, testCase)
+import Convex.Tasty.QuickCheck (
+  Property,
+  counterexample,
+ )
+import Convex.Tasty.QuickCheck qualified as QC
 import Data.Aeson (ToJSON (..))
 import System.IO.Unsafe (unsafePerformIO)
 import Test.QuickCheck.Monadic (monadicIO, monitor, run)
 import Test.Tasty (TestTree, testGroup)
-import Test.Tasty.HUnit (assertFailure, testCase)
-import Test.Tasty.QuickCheck (
-  Property,
-  counterexample,
- )
-import Test.Tasty.QuickCheck qualified as QC
 
 -- ----------------------------------------------------------------------------
 -- Multisig V2 Datum and Redeemer types (wire-compatible with Aiken)
@@ -601,22 +601,24 @@ propMultisigV2TokenForgeryExploit :: RunOptions -> Property
 propMultisigV2TokenForgeryExploit opts = monadicIO $ do
   let Options{params} = mcOptions opts
 
-  result <- run $ runMockchain0IOWith Wallet.initialUTxOs params $ runExceptT $ do
-    -- Attacker (w3) creates a UTxO at the script with themselves as signed_user
-    let createFakeTxBody = execBuildTx $ createAttackerDatum @C.ConwayEra Defaults.networkId Wallet.w3 20_000_000
-    _ <- tryBalanceAndSubmit mempty Wallet.w3 createFakeTxBody TrailingChange []
+  result <- run $
+    runMockchain0IOWith Wallet.initialUTxOs params $
+      runExceptT $ do
+        -- Attacker (w3) creates a UTxO at the script with themselves as signed_user
+        let createFakeTxBody = execBuildTx $ createAttackerDatum @C.ConwayEra Defaults.networkId Wallet.w3 20_000_000
+        _ <- tryBalanceAndSubmit mempty Wallet.w3 createFakeTxBody TrailingChange []
 
-    -- Capture UTxO before exploit
-    utxoBefore <- fromLedgerUTxO C.shelleyBasedEra <$> getUtxo
+        -- Capture UTxO before exploit
+        utxoBefore <- fromLedgerUTxO C.shelleyBasedEra <$> getUtxo
 
-    -- Attacker drains using forged token
-    msResult <- findMultisigV2Utxos
-    case msResult of
-      [] -> fail "Expected UTxO at script address"
-      ((txIn, value, _) : _) -> do
-        let exploitTxBody = execBuildTx $ createFakeDatumAndUse @C.ConwayEra Defaults.networkId txIn value Wallet.w3
-        exploitTx <- tryBalanceAndSubmit mempty Wallet.w3 exploitTxBody TrailingChange []
-        pure (exploitTx, utxoBefore)
+        -- Attacker drains using forged token
+        msResult <- findMultisigV2Utxos
+        case msResult of
+          [] -> fail "Expected UTxO at script address"
+          ((txIn, value, _) : _) -> do
+            let exploitTxBody = execBuildTx $ createFakeDatumAndUse @C.ConwayEra Defaults.networkId txIn value Wallet.w3
+            exploitTx <- tryBalanceAndSubmit mempty Wallet.w3 exploitTxBody TrailingChange []
+            pure (exploitTx, utxoBefore)
 
   case result of
     (Left err, _) -> do

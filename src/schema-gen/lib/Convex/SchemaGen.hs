@@ -85,6 +85,21 @@ fixRefs v = v
 
 instance ToSchema TestInfo where
   declareNamedSchema _ = do
+    -- srcLoc is an optional object with all-required inner fields.
+    -- When omitted, the test was defined using upstream tasty providers
+    -- (without our Convex.Tasty.HUnit / Convex.Tasty.QuickCheck shims).
+    let srcLocSchema =
+          mempty
+            & type_ ?~ OpenApiObject
+            & properties
+              .~ InsOrdHashMap.fromList
+                [ ("file", Inline $ mempty & type_ ?~ OpenApiString)
+                , ("startLine", Inline $ mempty & type_ ?~ OpenApiInteger)
+                , ("startCol", Inline $ mempty & type_ ?~ OpenApiInteger)
+                , ("endLine", Inline $ mempty & type_ ?~ OpenApiInteger)
+                , ("endCol", Inline $ mempty & type_ ?~ OpenApiInteger)
+                ]
+            & required .~ ["file", "startLine", "startCol", "endLine", "endCol"]
     pure $
       NamedSchema (Just "TestInfo") $
         mempty
@@ -94,6 +109,7 @@ instance ToSchema TestInfo where
               [ ("id", Inline $ mempty & type_ ?~ OpenApiInteger)
               , ("name", Inline $ mempty & type_ ?~ OpenApiString)
               , ("path", Inline $ mempty & type_ ?~ OpenApiArray & items ?~ OpenApiItemsObject (Inline $ mempty & type_ ?~ OpenApiString))
+              , ("srcLoc", Inline srcLocSchema) -- optional: key absent when test definition site is unknown
               ]
           & required .~ ["id", "name", "path"]
 
@@ -141,6 +157,7 @@ instance ToSchema Event where
             & properties
               .~ InsOrdHashMap.fromList
                 [ ("event", Inline $ mempty & type_ ?~ OpenApiString & enum_ ?~ ["suite_started"])
+                , ("packageRoot", Inline $ mempty & type_ ?~ OpenApiString) -- optional: absolute path to cabal package root
                 , ("tests", Inline $ mempty & type_ ?~ OpenApiArray & items ?~ OpenApiItemsObject testInfoRef)
                 ]
             & required .~ ["event", "tests"]
