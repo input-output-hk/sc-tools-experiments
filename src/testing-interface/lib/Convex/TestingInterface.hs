@@ -606,7 +606,6 @@ positiveTestTraced opts groupName mGetTmResultsRef tms evs recorder iterIdx = do
           case threatModelFilter of
             [] -> True -- empty list: run all threat models
             names ->
-              -- fromMaybe "Unnamed" (getThreatModelName tm) `elem` names
               let tmName = fromMaybe "Unnamed" (getThreatModelName tm)
                in any (`isPrefixOf` tmName) names
 
@@ -700,7 +699,6 @@ positiveTestFast opts mGetTmResultsRef tms evs = do
           case threatModelFilter of
             [] -> True -- empty list: run all threat models
             names ->
-              -- fromMaybe "Unnamed" (getThreatModelName tm) `elem` names
               let tmName = fromMaybe "Unnamed" (getThreatModelName tm)
                in any (`isPrefixOf` tmName) names
 
