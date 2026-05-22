@@ -108,7 +108,7 @@ import Data.Aeson.Key qualified as Key
 import Data.ByteString.Lazy.Char8 qualified as LBS
 import Data.Foldable (foldl', for_, traverse_)
 import Data.IORef (IORef, modifyIORef, newIORef, readIORef)
-import Data.List (deleteFirstsBy)
+import Data.List (deleteFirstsBy, isPrefixOf)
 import Data.Map qualified as Map
 import Data.Maybe (fromMaybe)
 
@@ -295,6 +295,11 @@ data RunOptions = RunOptions
   {- ^ If @Just reason@, negative tests are skipped (shown as IGNORED) with the given reason.
   If @Nothing@, negative tests run normally. Default: @Nothing@.
   -}
+  , threatModelFilter :: [String]
+  {- ^ If non-empty, run only threat models whose names start with any value in this list.
+  This filter applies only to 'threatModels' and not to 'expectedVulnerabilities'.
+  If empty, all threat models run. Default: @[]@.
+  -}
   }
 
 defaultRunOptions :: RunOptions
@@ -304,6 +309,7 @@ defaultRunOptions =
     , maxActions = 10
     , mcOptions = defaultOptions
     , disableNegativeTesting = Nothing
+    , threatModelFilter = []
     }
 
 {- | Main property for testing a testing interface.
@@ -578,7 +584,7 @@ positiveTestTraced
   -> Int
   -> PropertyM IO Property
 positiveTestTraced opts groupName mGetTmResultsRef tms evs recorder iterIdx = do
-  let RunOptions{mcOptions = Options{coverageRef, params}} = opts
+  let RunOptions{mcOptions = Options{coverageRef, params}, threatModelFilter} = opts
   result <- runTestingMonadT params $ do
     initialState <- runInitialization @state opts
 
@@ -595,7 +601,24 @@ positiveTestTraced opts groupName mGetTmResultsRef tms evs recorder iterIdx = do
     let isTMFailed (TMFailed _) = True
         isTMFailed _ = False
         alreadyFailed name = any isTMFailed (fromMaybe [] (Map.lookup name existingResults))
-        tmsToRun = filter (not . alreadyFailed . fromMaybe "Unnamed" . getThreatModelName) tms
+
+        matchesThreatModelFilter tm =
+          case threatModelFilter of
+            [] -> True -- empty list: run all threat models
+            names ->
+              let tmName = fromMaybe "Unnamed" (getThreatModelName tm)
+               in any (`isPrefixOf` tmName) names
+
+        -- Only filter threat models (tms) for early-stop and optional name filtering;
+        -- expected vulnerabilities (evs) always run.
+        tmsToRun =
+          filter
+            ( \tm ->
+                let name = fromMaybe "Unnamed" (getThreatModelName tm)
+                 in matchesThreatModelFilter tm && not (alreadyFailed name)
+            )
+            tms
+
         allToRun = tmsToRun <> evs
     tmResultsWithCov <- liftIO $ forM allToRun $ \tm -> do
       let name = fromMaybe "Unnamed" (getThreatModelName tm)
@@ -654,7 +677,7 @@ positiveTestFast
   -> [ThreatModel ()]
   -> PropertyM IO Property
 positiveTestFast opts mGetTmResultsRef tms evs = do
-  let RunOptions{mcOptions = Options{coverageRef, params}} = opts
+  let RunOptions{mcOptions = Options{coverageRef, params}, threatModelFilter} = opts
   result <- runTestingMonadT params $ do
     initialState <- runInitialization @state opts
 
@@ -671,7 +694,24 @@ positiveTestFast opts mGetTmResultsRef tms evs = do
     let isTMFailed (TMFailed _) = True
         isTMFailed _ = False
         alreadyFailed name = any isTMFailed (fromMaybe [] (Map.lookup name existingResults))
-        tmsToRun = filter (not . alreadyFailed . fromMaybe "Unnamed" . getThreatModelName) tms
+
+        matchesThreatModelFilter tm =
+          case threatModelFilter of
+            [] -> True -- empty list: run all threat models
+            names ->
+              let tmName = fromMaybe "Unnamed" (getThreatModelName tm)
+               in any (`isPrefixOf` tmName) names
+
+        -- Only filter threat models (tms) for early-stop and optional name filtering;
+        -- expected vulnerabilities (evs) always run.
+        tmsToRun =
+          filter
+            ( \tm ->
+                let name = fromMaybe "Unnamed" (getThreatModelName tm)
+                 in matchesThreatModelFilter tm && not (alreadyFailed name)
+            )
+            tms
+
         allToRun = tmsToRun <> evs
     tmResultsWithCov <- liftIO $ forM allToRun $ \tm -> do
       let name = fromMaybe "Unnamed" (getThreatModelName tm)

@@ -43,3 +43,25 @@ allThreatModels =
   , unprotectedScriptOutput
   , valueUnderpaymentAttack
   ]
+
+allThreatModelsNames :: [String]
+allThreatModelsNames =
+  [ "Datum List Bloat Attack"
+  , "Datum Byte Bloat Attack"
+  , "Double Satisfaction"
+  , "Duplicate List Entry Attack"
+  , "Input Duplication"
+  , "Invalid Datum Index Attack"
+  , "Large Data Attack"
+  , "Large Value Attack"
+  , "Missing Output Datum Attack"
+  , "Mutual Exclusion Attack"
+  , "Negative Integer Attack"
+  , "Output Datum Hash Missing Attack"
+  , "Redeemer Asset Substitution"
+  , "Self-Reference Injection"
+  , "Signatory Removal"
+  , "Time Bound Manipulation"
+  , "Unprotected Script Output"
+  , "Value Underpayment Attack"
+  ]

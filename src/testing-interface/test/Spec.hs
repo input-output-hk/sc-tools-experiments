@@ -3,18 +3,24 @@
 import Cardano.Api qualified as C
 import Convex.MockChain.Utils (mockchainFails)
 import Convex.Tasty.HUnit (testCase)
-import Convex.Tasty.Streaming (defaultMainStreaming)
+import Convex.Tasty.Streaming (streamingIngredients)
 import Convex.TestingInterface (
   CoverageConfig (..),
   Options,
-  RunOptions (mcOptions),
+  RunOptions (mcOptions, threatModelFilter),
   mockchainSucceedsWithOptions,
   modifyTransactionLimits,
   withCoverage,
   writeCoverageReport,
  )
+import Convex.TestingInterface.Options (
+  ThreatModelNameFilter (..),
+  listThreatModelsIngredient,
+  listThreatModelsJsonIngredient,
+  threatModelNameFilterIngredient,
+ )
 import Convex.Utils (failOnError)
-import Test.Tasty (TestTree, testGroup)
+import Test.Tasty (TestTree, askOption, defaultMainWithIngredients, testGroup)
 
 import AikenBankSpec (aikenBankTests)
 import AikenHelloWorldSpec (aikenHelloWorldTests)
@@ -45,7 +51,11 @@ main = withCoverage config $ \opts0 runOpts0 ->
     opts = modifyTransactionLimits opts0 50_000
     runOpts = runOpts0{mcOptions = opts}
    in
-    defaultMainStreaming (tests opts runOpts)
+    defaultMainWithIngredients
+      (listThreatModelsIngredient : listThreatModelsJsonIngredient : threatModelNameFilterIngredient : streamingIngredients)
+      ( askOption $ \(ThreatModelNameFilter tmNameFilter) ->
+          tests opts runOpts{threatModelFilter = tmNameFilter}
+      )
  where
   config =
     CoverageConfig

@@ -152,6 +152,34 @@ For custom options (verbosity, max actions, etc.):
 propRunActionsWithOptions @MyContractState "testing interface" myRunOptions
 ```
 
+In this repository test suite, you can filter which threat models run from the CLI:
+
+**Step 1: Discover available threat models:**
+
+```bash
+cabal test convex-testing-interface-test --test-options='--list-threat-models'
+```
+
+This prints all available threat model names (one per line), which you can then copy/paste.
+
+**Step 2: Run one or more threat models:**
+
+```bash
+# Single threat model
+cabal test convex-testing-interface-test --test-options='--threat-model-name "Input Duplication" -p lending'
+
+# Multiple threat models (comma-separated)
+cabal test convex-testing-interface-test --test-options='--threat-model-name "Input Duplication, Unprotected Script Output" -p lending'
+```
+
+Notes:
+
+- Matching is prefix-based and case-sensitive.
+- For multiple threat models, use comma-separated values: `--threat-model-name "TM1, TM2, TM3"`
+- This filter applies only to `threatModels` and does not affect `expectedVulnerabilities`.
+- Threat model execution still happens during `Positive tests`, so this option narrows execution but does not decouple it from the positive-test phase.
+- Empty filter (no `--threat-model-name` option) runs all threat models (default behavior).
+
 ## Architecture
 
 ### Core Types
