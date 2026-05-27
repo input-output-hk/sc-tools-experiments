@@ -36,11 +36,14 @@ module Convex.Tasty.Streaming.SrcLoc (
   PackageRootOpt (..),
   callerPackageRoot,
   findPackageRootFromFile,
+  SrcLocRanges (..),
+  groupRanges,
+  ungroupRanges,
 ) where
 
 import Control.Exception (IOException, catch)
 import Data.Aeson (FromJSON (..), ToJSON (..), object, withObject, (.:), (.=))
-import Data.List (isSuffixOf)
+import Data.List (groupBy, isSuffixOf, zip4)
 import Data.Tagged (Tagged (..))
 import Data.Text (Text)
 import Data.Text qualified as Text
@@ -398,3 +401,53 @@ findPackageByName startDir pkgName relFile = go searchDepth startDir
   shouldSkip "dist" = True
   shouldSkip "node_modules" = True
   shouldSkip _ = False
+
+-- | Many ranges in one file, for more efficient JSON serialization
+data SrcLocRanges = SrcLocRanges
+  { slrsFile :: !Text
+  , slrsStartLines :: [Int]
+  , slrsStartCols :: [Int]
+  , slrsEndLines :: [Int]
+  , slrsEndCols :: [Int]
+  }
+  deriving (Eq, Show, Generic)
+
+instance ToJSON SrcLocRanges where
+  toJSON SrcLocRanges{..} =
+    object
+      [ "file" .= slrsFile
+      , "startLines" .= slrsStartLines
+      , "startCols" .= slrsStartCols
+      , "endLines" .= slrsEndLines
+      , "endCols" .= slrsEndCols
+      ]
+
+instance FromJSON SrcLocRanges where
+  parseJSON = withObject "SrcLocRanges" $ \o ->
+    SrcLocRanges
+      <$> o .: "file"
+      <*> o .: "startLines"
+      <*> o .: "startCols"
+      <*> o .: "endLines"
+      <*> o .: "endCols"
+
+groupRanges :: [SrcLocRange] -> [SrcLocRanges]
+groupRanges = map toRanges . groupBy (\a b -> slrFile a == slrFile b)
+ where
+  toRanges :: [SrcLocRange] -> SrcLocRanges
+  toRanges rs =
+    SrcLocRanges
+      { slrsFile = slrFile (rs !! 0)
+      , slrsStartLines = map slrStartLine rs
+      , slrsStartCols = map slrStartCol rs
+      , slrsEndLines = map slrEndLine rs
+      , slrsEndCols = map slrEndCol rs
+      }
+
+ungroupRanges :: [SrcLocRanges] -> [SrcLocRange]
+ungroupRanges = concatMap go
+ where
+  go SrcLocRanges{..} =
+    [ SrcLocRange slrsFile sl sc el ec
+    | (sl, sc, el, ec) <- zip4 slrsStartLines slrsStartCols slrsEndLines slrsEndCols
+    ]

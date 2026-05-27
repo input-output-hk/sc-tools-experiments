@@ -1279,7 +1279,10 @@ withCoverage CoverageConfig{coverageIndices, coverageReport = reportAction} k = 
       covData <- readIORef ref
       let combinedIdx = mconcat coverageIndices
           report = CoverageReport combinedIdx covData
-      reportAction report
+      -- Don't do anything if there's no coverage data.
+      -- Then maybe no tests ran (f.e. with --list-tests-json),
+      -- or the coverage has been handled differently (f.e. with --streaming-json).
+      unless (covData == mempty) $ reportAction report
       throwIO e
 
 -- | Options for running the testing monad.

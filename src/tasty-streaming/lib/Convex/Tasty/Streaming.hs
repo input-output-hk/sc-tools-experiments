@@ -244,6 +244,8 @@ streamingJsonReporter = TestReporter
               , edDuration = resultTime result
               , edDescription = Text.pack (resultDescription result)
               , edThreatModel = mSummary
+              , edCovered = []
+              , edUncovered = []
               }
 
         -- Emit suite_done summary

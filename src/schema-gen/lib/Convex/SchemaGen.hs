@@ -20,6 +20,7 @@ import Data.Text (Text)
 import Data.Text qualified as Text
 
 -- Types from convex-tasty-streaming
+import Convex.Tasty.Streaming.SrcLoc (SrcLocRanges (..))
 import Convex.Tasty.Streaming.TMSummary (ThreatModelSummary (..))
 import Convex.Tasty.Streaming.Types (Event (..), FailureInfo (..), TestInfo (..), TestOutcome (..))
 
@@ -144,12 +145,29 @@ instance ToSchema ThreatModelSummary where
               ]
           & required .~ ["name", "tested", "total", "passed", "failed", "skipped", "errors"]
 
+instance ToSchema SrcLocRanges where
+  declareNamedSchema _ = do
+    pure $
+      NamedSchema (Just "SrcLocRanges") $
+        mempty
+          & type_ ?~ OpenApiObject
+          & properties
+            .~ InsOrdHashMap.fromList
+              [ ("file", Inline $ mempty & type_ ?~ OpenApiString)
+              , ("startLines", Inline $ mempty & type_ ?~ OpenApiArray & items ?~ OpenApiItemsObject (Inline $ mempty & type_ ?~ OpenApiString))
+              , ("startCols", Inline $ mempty & type_ ?~ OpenApiArray & items ?~ OpenApiItemsObject (Inline $ mempty & type_ ?~ OpenApiString))
+              , ("endLines", Inline $ mempty & type_ ?~ OpenApiArray & items ?~ OpenApiItemsObject (Inline $ mempty & type_ ?~ OpenApiString))
+              , ("endCols", Inline $ mempty & type_ ?~ OpenApiArray & items ?~ OpenApiItemsObject (Inline $ mempty & type_ ?~ OpenApiString))
+              ]
+          & required .~ ["file", "startLines", "startCols", "endLines", "endCols"]
+
 instance ToSchema Event where
   declareNamedSchema _ = do
     testInfoRef <- declareSchemaRef (Proxy @TestInfo)
     failureInfoRef <- declareSchemaRef (Proxy @FailureInfo)
     threatModelSummaryRef <- declareSchemaRef (Proxy @ThreatModelSummary)
     iterationTraceRef <- declareSchemaRef (Proxy @IterationTrace)
+    srcLocRanges <- declareSchemaRef (Proxy @SrcLocRanges)
 
     let suiteStarted =
           mempty
@@ -198,8 +216,10 @@ instance ToSchema Event where
                 , ("success", Inline $ mempty & type_ ?~ OpenApiBoolean)
                 , ("failure", failureInfoRef) -- optional, absent when success=true
                 , ("threat_model", threatModelSummaryRef) -- optional, absent when not applicable
+                , ("covered", srcLocRanges)
+                , ("uncovered", srcLocRanges)
                 ]
-            & required .~ ["event", "id", "duration", "description", "success"]
+            & required .~ ["event", "id", "duration", "description", "success", "covered", "uncovered"]
 
     -- TestTrace: trace is Value (pre-serialized IterationTrace)
     let testTrace =

@@ -96,6 +96,9 @@
                 },
                 {
                     "properties": {
+                        "covered": {
+                            "$ref": "#/$defs/SrcLocRanges"
+                        },
                         "description": {
                             "type": "string"
                         },
@@ -120,6 +123,9 @@
                         },
                         "threat_model": {
                             "$ref": "#/$defs/ThreatModelSummary"
+                        },
+                        "uncovered": {
+                            "$ref": "#/$defs/SrcLocRanges"
                         }
                     },
                     "required": [
@@ -127,7 +133,9 @@
                         "id",
                         "duration",
                         "description",
-                        "success"
+                        "success",
+                        "covered",
+                        "uncovered"
                     ],
                     "type": "object"
                 },
@@ -285,6 +293,45 @@
                 "status",
                 "transitions",
                 "threatModels"
+            ],
+            "type": "object"
+        },
+        "SrcLocRanges": {
+            "properties": {
+                "endCols": {
+                    "items": {
+                        "type": "string"
+                    },
+                    "type": "array"
+                },
+                "endLines": {
+                    "items": {
+                        "type": "string"
+                    },
+                    "type": "array"
+                },
+                "file": {
+                    "type": "string"
+                },
+                "startCols": {
+                    "items": {
+                        "type": "string"
+                    },
+                    "type": "array"
+                },
+                "startLines": {
+                    "items": {
+                        "type": "string"
+                    },
+                    "type": "array"
+                }
+            },
+            "required": [
+                "file",
+                "startLines",
+                "startCols",
+                "endLines",
+                "endCols"
             ],
             "type": "object"
         },
@@ -1184,6 +1231,9 @@
         },
         {
             "properties": {
+                "covered": {
+                    "$ref": "#/$defs/SrcLocRanges"
+                },
                 "description": {
                     "type": "string"
                 },
@@ -1208,6 +1258,9 @@
                 },
                 "threat_model": {
                     "$ref": "#/$defs/ThreatModelSummary"
+                },
+                "uncovered": {
+                    "$ref": "#/$defs/SrcLocRanges"
                 }
             },
             "required": [
@@ -1215,7 +1268,9 @@
                 "id",
                 "duration",
                 "description",
-                "success"
+                "success",
+                "covered",
+                "uncovered"
             ],
             "type": "object"
         },

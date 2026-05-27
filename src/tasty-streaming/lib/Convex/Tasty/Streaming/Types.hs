@@ -5,7 +5,7 @@ module Convex.Tasty.Streaming.Types (
   FailureInfo (..),
 ) where
 
-import Convex.Tasty.Streaming.SrcLoc (SrcLocRange)
+import Convex.Tasty.Streaming.SrcLoc (SrcLocRange, groupRanges, ungroupRanges)
 import Convex.Tasty.Streaming.TMSummary (ThreatModelSummary)
 import Data.Aeson (FromJSON (..), ToJSON (..), Value, object, withObject, (.:), (.:?), (.=))
 import Data.Aeson.Types (Pair)
@@ -92,6 +92,8 @@ data Event
       , edDuration :: !Double
       , edDescription :: !Text
       , edThreatModel :: !(Maybe ThreatModelSummary)
+      , edCovered :: ![SrcLocRange]
+      , edUncovered :: ![SrcLocRange]
       }
   | TestTrace
       { ettTestId :: !Int
@@ -124,12 +126,14 @@ instance ToJSON Event where
       , "message" .= msg
       , "percent" .= pct
       ]
-  toJSON (TestDone i outcome dur desc mTm) =
+  toJSON (TestDone i outcome dur desc mTm cov uncov) =
     object $
       [ "event" .= ("test_done" :: Text)
       , "id" .= i
       , "duration" .= dur
       , "description" .= desc
+      , "covered" .= groupRanges cov
+      , "uncovered" .= groupRanges uncov
       ]
         <> outcomeFields outcome
         <> threatModelFields mTm
@@ -181,7 +185,9 @@ instance FromJSON Event where
             then pure TestSuccess
             else TestFailure <$> o .: "failure"
         mTm <- o .:? "threat_model"
-        pure (TestDone eid outcome dur desc mTm)
+        cov <- ungroupRanges <$> o .: "covered"
+        uncov <- ungroupRanges <$> o .: "uncovered"
+        pure (TestDone eid outcome dur desc mTm cov uncov)
       "test_trace" ->
         TestTrace
           <$> o .: "id"
