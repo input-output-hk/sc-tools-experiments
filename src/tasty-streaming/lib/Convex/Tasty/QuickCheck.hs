@@ -24,7 +24,6 @@ module Convex.Tasty.QuickCheck (
 import Convex.Tasty.Streaming.QCStats (QCStatsRecorder (..), recordQCStatsFromState)
 import Convex.Tasty.Streaming.SrcLoc (SrcLocOpt (..), withSrcLoc)
 import GHC.Stack (HasCallStack, withFrozenCallStack)
-import Test.QuickCheck (property)
 import Test.QuickCheck.Property qualified as QCP
 import Test.Tasty (TestName, TestTree, askOption)
 import Test.Tasty.QuickCheck hiding (testProperty)
