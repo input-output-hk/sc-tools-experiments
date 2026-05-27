@@ -41,6 +41,7 @@ library
     Convex.Tasty.HUnit
     Convex.Tasty.QuickCheck
     Convex.Tasty.Streaming
+    Convex.Tasty.Streaming.QCStats
     Convex.Tasty.Streaming.SrcLoc
     Convex.Tasty.Streaming.TMSummary
     Convex.Tasty.Streaming.TreeMap
@@ -55,6 +56,7 @@ library
     , containers
     , directory
     , filepath
+    , QuickCheck
     , stm
     , tagged
     , tasty             >=1.4

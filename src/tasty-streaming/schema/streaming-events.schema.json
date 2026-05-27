@@ -115,6 +115,9 @@
                         "id": {
                             "type": "integer"
                         },
+                        "monitoring_stats": {
+                            "$ref": "#/$defs/MonitoringStats"
+                        },
                         "success": {
                             "type": "boolean"
                         },
@@ -285,6 +288,118 @@
                 "status",
                 "transitions",
                 "threatModels"
+            ],
+            "type": "object"
+        },
+        "MonitoringClassStat": {
+            "properties": {
+                "count": {
+                    "type": "integer"
+                },
+                "name": {
+                    "type": "string"
+                },
+                "percent": {
+                    "format": "double",
+                    "type": "number"
+                }
+            },
+            "required": [
+                "name",
+                "count",
+                "percent"
+            ],
+            "type": "object"
+        },
+        "MonitoringLabelStat": {
+            "properties": {
+                "count": {
+                    "type": "integer"
+                },
+                "labels": {
+                    "items": {
+                        "type": "string"
+                    },
+                    "type": "array"
+                },
+                "percent": {
+                    "format": "double",
+                    "type": "number"
+                }
+            },
+            "required": [
+                "labels",
+                "count",
+                "percent"
+            ],
+            "type": "object"
+        },
+        "MonitoringStats": {
+            "properties": {
+                "classes": {
+                    "items": {
+                        "$ref": "#/$defs/MonitoringClassStat"
+                    },
+                    "type": "array"
+                },
+                "labels": {
+                    "items": {
+                        "$ref": "#/$defs/MonitoringLabelStat"
+                    },
+                    "type": "array"
+                },
+                "numDiscarded": {
+                    "type": "integer"
+                },
+                "numTests": {
+                    "type": "integer"
+                },
+                "tables": {
+                    "items": {
+                        "$ref": "#/$defs/MonitoringTableStat"
+                    },
+                    "type": "array"
+                }
+            },
+            "required": [
+                "numTests",
+                "numDiscarded",
+                "labels",
+                "classes",
+                "tables"
+            ],
+            "type": "object"
+        },
+        "MonitoringTableEntry": {
+            "properties": {
+                "count": {
+                    "type": "integer"
+                },
+                "value": {
+                    "type": "string"
+                }
+            },
+            "required": [
+                "value",
+                "count"
+            ],
+            "type": "object"
+        },
+        "MonitoringTableStat": {
+            "properties": {
+                "entries": {
+                    "items": {
+                        "$ref": "#/$defs/MonitoringTableEntry"
+                    },
+                    "type": "array"
+                },
+                "name": {
+                    "type": "string"
+                }
+            },
+            "required": [
+                "name",
+                "entries"
             ],
             "type": "object"
         },
@@ -1202,6 +1317,9 @@
                 },
                 "id": {
                     "type": "integer"
+                },
+                "monitoring_stats": {
+                    "$ref": "#/$defs/MonitoringStats"
                 },
                 "success": {
                     "type": "boolean"

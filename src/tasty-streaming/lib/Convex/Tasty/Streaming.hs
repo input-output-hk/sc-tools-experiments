@@ -9,6 +9,13 @@ import Control.Concurrent.Async (forConcurrently_)
 import Control.Concurrent.MVar (MVar, newMVar, withMVar)
 import Control.Concurrent.STM
 import Control.Monad (when)
+import Convex.Tasty.Streaming.QCStats (
+  QCStatsRecorder,
+  QCStatsStoreOption (..),
+  lookupQCStatsBySrcLoc,
+  newQCStatsStore,
+  storeQCStatsRecorder,
+ )
 import Convex.Tasty.Streaming.SrcLoc (PackageRootOpt (..), callerPackageRoot)
 import Convex.Tasty.Streaming.TMSummary (
   TMRecorder,
@@ -120,6 +127,8 @@ streamingJsonReporter :: Ingredient
 streamingJsonReporter = TestReporter
   [ Option (Proxy :: Proxy StreamingJson)
   , Option (Proxy :: Proxy NoTrace)
+  , Option (Proxy :: Proxy QCStatsStoreOption)
+  , Option (Proxy :: Proxy QCStatsRecorder)
   , Option (Proxy :: Proxy TMStoreOption)
   , Option (Proxy :: Proxy TMRecorder)
   , Option (Proxy :: Proxy TraceRecorder)
@@ -134,6 +143,7 @@ streamingJsonReporter = TestReporter
       then Nothing
       else Just $ \statusMap -> do
         let TMStoreOption mStore = lookupOption opts
+            QCStatsStoreOption mQCStatsStore = lookupOption opts
             TestMapRef mTestMapRef = lookupOption opts
             StreamingEnabledRef mEnabledRef = lookupOption opts
 
@@ -227,6 +237,9 @@ streamingJsonReporter = TestReporter
           mSummary <- case mStore of
             Just store -> lookupThreatModelSummary store key
             Nothing -> pure Nothing
+          mMonitoring <- case (mQCStatsStore, testInfo >>= tiSrcLoc) of
+            (Just store, Just loc) -> lookupQCStatsBySrcLoc store loc
+            _ -> pure Nothing
 
           -- Emit test_done
           let outcome = case resultOutcome result of
@@ -244,6 +257,7 @@ streamingJsonReporter = TestReporter
               , edDuration = resultTime result
               , edDescription = Text.pack (resultDescription result)
               , edThreatModel = mSummary
+              , edMonitoringStats = mMonitoring
               }
 
         -- Emit suite_done summary
@@ -366,6 +380,7 @@ defaultMainStreaming tree = do
   mPkgRoot <- withFrozenCallStack callerPackageRoot
   let pkgRootOpt = PackageRootOpt (fmap Text.pack mPkgRoot)
   store <- newTMStore
+  qcStatsStore <- newQCStatsStore
   testMapRef <- newIORef IntMap.empty
   enabledRef <- newIORef False -- set to True by the reporter when --streaming-json is active
   -- Create a single shared output lock used by both the streaming reporter
@@ -397,10 +412,12 @@ defaultMainStreaming tree = do
           }
   let tree' =
         localOption pkgRootOpt $
-          localOption (TMStoreOption (Just store)) $
-            localOption (storeRecorder store) $
-              localOption (TestMapRef (Just testMapRef)) $
-                localOption (StreamingEnabledRef (Just enabledRef)) $
-                  localOption (OutputLockRef (Just outputLock)) $
-                    localOption traceRec tree
+          localOption (QCStatsStoreOption (Just qcStatsStore)) $
+            localOption (storeQCStatsRecorder qcStatsStore) $
+              localOption (TMStoreOption (Just store)) $
+                localOption (storeRecorder store) $
+                  localOption (TestMapRef (Just testMapRef)) $
+                    localOption (StreamingEnabledRef (Just enabledRef)) $
+                      localOption (OutputLockRef (Just outputLock)) $
+                        localOption traceRec tree
   defaultMainWithIngredients streamingIngredients tree'

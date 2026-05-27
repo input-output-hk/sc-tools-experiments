@@ -65,13 +65,13 @@ module Convex.TestingInterface (
 
 import Control.Monad (forM, unless, when)
 import Control.Monad.IO.Class (MonadIO, liftIO)
+import Convex.Tasty.QuickCheck (testProperty)
 import Test.HUnit (Assertion)
 import Test.QuickCheck (Arbitrary (..), Gen, Property, counterexample, discard, elements, frequency, oneof, property)
 import Test.QuickCheck.Monadic (PropertyM, monadicIO, monitor, pick, run)
 import Test.Tasty (DependencyType (..), TestTree, askOption, sequentialTestGroup, testGroup, withResource)
 import Test.Tasty.ExpectedFailure (ignoreTestBecause)
 import Test.Tasty.HUnit (assertFailure, testCaseSteps)
-import Test.Tasty.QuickCheck (testProperty)
 
 import Cardano.Api qualified as C
 import Cardano.Ledger.Core qualified as L

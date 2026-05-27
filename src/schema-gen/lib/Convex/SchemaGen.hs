@@ -21,7 +21,17 @@ import Data.Text qualified as Text
 
 -- Types from convex-tasty-streaming
 import Convex.Tasty.Streaming.TMSummary (ThreatModelSummary (..))
-import Convex.Tasty.Streaming.Types (Event (..), FailureInfo (..), TestInfo (..), TestOutcome (..))
+import Convex.Tasty.Streaming.Types (
+  Event (..),
+  FailureInfo (..),
+  MonitoringClassStat (..),
+  MonitoringLabelStat (..),
+  MonitoringStats (..),
+  MonitoringTableEntry (..),
+  MonitoringTableStat (..),
+  TestInfo (..),
+  TestOutcome (..),
+ )
 
 -- Types from convex-testing-interface
 import Convex.TestingInterface.Trace (
@@ -144,11 +154,86 @@ instance ToSchema ThreatModelSummary where
               ]
           & required .~ ["name", "tested", "total", "passed", "failed", "skipped", "errors"]
 
+instance ToSchema MonitoringLabelStat where
+  declareNamedSchema _ =
+    pure $
+      NamedSchema (Just "MonitoringLabelStat") $
+        mempty
+          & type_ ?~ OpenApiObject
+          & properties
+            .~ InsOrdHashMap.fromList
+              [ ("labels", Inline $ mempty & type_ ?~ OpenApiArray & items ?~ OpenApiItemsObject (Inline $ mempty & type_ ?~ OpenApiString))
+              , ("count", Inline $ mempty & type_ ?~ OpenApiInteger)
+              , ("percent", Inline $ mempty & type_ ?~ OpenApiNumber & format ?~ "double")
+              ]
+          & required .~ ["labels", "count", "percent"]
+
+instance ToSchema MonitoringClassStat where
+  declareNamedSchema _ =
+    pure $
+      NamedSchema (Just "MonitoringClassStat") $
+        mempty
+          & type_ ?~ OpenApiObject
+          & properties
+            .~ InsOrdHashMap.fromList
+              [ ("name", Inline $ mempty & type_ ?~ OpenApiString)
+              , ("count", Inline $ mempty & type_ ?~ OpenApiInteger)
+              , ("percent", Inline $ mempty & type_ ?~ OpenApiNumber & format ?~ "double")
+              ]
+          & required .~ ["name", "count", "percent"]
+
+instance ToSchema MonitoringTableEntry where
+  declareNamedSchema _ =
+    pure $
+      NamedSchema (Just "MonitoringTableEntry") $
+        mempty
+          & type_ ?~ OpenApiObject
+          & properties
+            .~ InsOrdHashMap.fromList
+              [ ("value", Inline $ mempty & type_ ?~ OpenApiString)
+              , ("count", Inline $ mempty & type_ ?~ OpenApiInteger)
+              ]
+          & required .~ ["value", "count"]
+
+instance ToSchema MonitoringTableStat where
+  declareNamedSchema _ = do
+    entryRef <- declareSchemaRef (Proxy @MonitoringTableEntry)
+    pure $
+      NamedSchema (Just "MonitoringTableStat") $
+        mempty
+          & type_ ?~ OpenApiObject
+          & properties
+            .~ InsOrdHashMap.fromList
+              [ ("name", Inline $ mempty & type_ ?~ OpenApiString)
+              , ("entries", Inline $ mempty & type_ ?~ OpenApiArray & items ?~ OpenApiItemsObject entryRef)
+              ]
+          & required .~ ["name", "entries"]
+
+instance ToSchema MonitoringStats where
+  declareNamedSchema _ = do
+    labelRef <- declareSchemaRef (Proxy @MonitoringLabelStat)
+    classRef <- declareSchemaRef (Proxy @MonitoringClassStat)
+    tableRef <- declareSchemaRef (Proxy @MonitoringTableStat)
+    pure $
+      NamedSchema (Just "MonitoringStats") $
+        mempty
+          & type_ ?~ OpenApiObject
+          & properties
+            .~ InsOrdHashMap.fromList
+              [ ("numTests", Inline $ mempty & type_ ?~ OpenApiInteger)
+              , ("numDiscarded", Inline $ mempty & type_ ?~ OpenApiInteger)
+              , ("labels", Inline $ mempty & type_ ?~ OpenApiArray & items ?~ OpenApiItemsObject labelRef)
+              , ("classes", Inline $ mempty & type_ ?~ OpenApiArray & items ?~ OpenApiItemsObject classRef)
+              , ("tables", Inline $ mempty & type_ ?~ OpenApiArray & items ?~ OpenApiItemsObject tableRef)
+              ]
+          & required .~ ["numTests", "numDiscarded", "labels", "classes", "tables"]
+
 instance ToSchema Event where
   declareNamedSchema _ = do
     testInfoRef <- declareSchemaRef (Proxy @TestInfo)
     failureInfoRef <- declareSchemaRef (Proxy @FailureInfo)
     threatModelSummaryRef <- declareSchemaRef (Proxy @ThreatModelSummary)
+    monitoringStatsRef <- declareSchemaRef (Proxy @MonitoringStats)
     iterationTraceRef <- declareSchemaRef (Proxy @IterationTrace)
 
     let suiteStarted =
@@ -198,6 +283,7 @@ instance ToSchema Event where
                 , ("success", Inline $ mempty & type_ ?~ OpenApiBoolean)
                 , ("failure", failureInfoRef) -- optional, absent when success=true
                 , ("threat_model", threatModelSummaryRef) -- optional, absent when not applicable
+                , ("monitoring_stats", monitoringStatsRef) -- optional, absent when quickcheck wrapper is not used
                 ]
             & required .~ ["event", "id", "duration", "description", "success"]
 
