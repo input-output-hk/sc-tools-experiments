@@ -96,9 +96,6 @@
                 },
                 {
                     "properties": {
-                        "covered": {
-                            "$ref": "#/$defs/SrcLocRanges"
-                        },
                         "description": {
                             "type": "string"
                         },
@@ -134,7 +131,6 @@
                         "duration",
                         "description",
                         "success",
-                        "covered",
                         "uncovered"
                     ],
                     "type": "object"
@@ -143,6 +139,9 @@
                     "properties": {
                         "category": {
                             "type": "string"
+                        },
+                        "covered": {
+                            "$ref": "#/$defs/SrcLocRanges"
                         },
                         "event": {
                             "enum": [
@@ -161,6 +160,7 @@
                         "event",
                         "id",
                         "category",
+                        "covered",
                         "trace"
                     ],
                     "type": "object"
@@ -1231,9 +1231,6 @@
         },
         {
             "properties": {
-                "covered": {
-                    "$ref": "#/$defs/SrcLocRanges"
-                },
                 "description": {
                     "type": "string"
                 },
@@ -1269,7 +1266,6 @@
                 "duration",
                 "description",
                 "success",
-                "covered",
                 "uncovered"
             ],
             "type": "object"
@@ -1278,6 +1274,9 @@
             "properties": {
                 "category": {
                     "type": "string"
+                },
+                "covered": {
+                    "$ref": "#/$defs/SrcLocRanges"
                 },
                 "event": {
                     "enum": [
@@ -1296,6 +1295,7 @@
                 "event",
                 "id",
                 "category",
+                "covered",
                 "trace"
             ],
             "type": "object"

@@ -12,6 +12,7 @@ module Convex.Tasty.Streaming.TMSummary (
   lookupThreatModelSummary,
 ) where
 
+import Convex.Tasty.Streaming.SrcLoc (SrcLocRange)
 import Data.Aeson (FromJSON (..), ToJSON (..), Value, object, withObject, (.:), (.=))
 import Data.IORef (IORef, atomicModifyIORef', newIORef, readIORef)
 import Data.Map.Strict (Map)
@@ -114,12 +115,12 @@ streaming reporter has parsed @--no-trace@ and written the shared 'IORef'.
 data TraceRecorder = TraceRecorder
   { trEnabled :: IO Bool
   -- ^ Whether test bodies should collect detailed traces.
-  , recordIteration :: String -> String -> Value -> IO ()
+  , recordIteration :: String -> String -> [SrcLocRange] -> Value -> IO ()
   -- ^ Emit a single iteration trace event.
   }
 
 instance IsOption TraceRecorder where
-  defaultValue = TraceRecorder (pure False) (\_ _ _ -> pure ())
+  defaultValue = TraceRecorder (pure False) (\_ _ _ _ -> pure ())
   parseValue = const Nothing
   optionName = Tagged "trace-recorder"
   optionHelp = Tagged "internal: iteration trace recorder"

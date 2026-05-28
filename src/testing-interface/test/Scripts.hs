@@ -69,7 +69,7 @@ pingPongValidatorScript :: C.PlutusScript C.PlutusScriptV3
 pingPongValidatorScript = compiledCodeToScript pingPongValidatorCompiled
 
 pingPongCovIdx :: CoverageIndex
-pingPongCovIdx = getCovIdx $$(PlutusTx.compile [||PingPong.validator||])
+pingPongCovIdx = getCovIdx pingPongValidatorCompiled
 
 -- | Vulnerable PingPong validator (for threat model demonstration)
 vulnerablePingPongCompiled :: CompiledCode (BuiltinData -> BuiltinUnit)

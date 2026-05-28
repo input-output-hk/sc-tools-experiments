@@ -216,10 +216,9 @@ instance ToSchema Event where
                 , ("success", Inline $ mempty & type_ ?~ OpenApiBoolean)
                 , ("failure", failureInfoRef) -- optional, absent when success=true
                 , ("threat_model", threatModelSummaryRef) -- optional, absent when not applicable
-                , ("covered", srcLocRanges)
                 , ("uncovered", srcLocRanges)
                 ]
-            & required .~ ["event", "id", "duration", "description", "success", "covered", "uncovered"]
+            & required .~ ["event", "id", "duration", "description", "success", "uncovered"]
 
     -- TestTrace: trace is Value (pre-serialized IterationTrace)
     let testTrace =
@@ -230,9 +229,10 @@ instance ToSchema Event where
                 [ ("event", Inline $ mempty & type_ ?~ OpenApiString & enum_ ?~ ["test_trace"])
                 , ("id", Inline $ mempty & type_ ?~ OpenApiInteger)
                 , ("category", Inline $ mempty & type_ ?~ OpenApiString)
+                , ("covered", srcLocRanges)
                 , ("trace", iterationTraceRef) -- pre-serialized but matches IterationTrace schema
                 ]
-            & required .~ ["event", "id", "category", "trace"]
+            & required .~ ["event", "id", "category", "covered", "trace"]
 
     let suiteDone =
           mempty

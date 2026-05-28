@@ -92,12 +92,12 @@ data Event
       , edDuration :: !Double
       , edDescription :: !Text
       , edThreatModel :: !(Maybe ThreatModelSummary)
-      , edCovered :: ![SrcLocRange]
       , edUncovered :: ![SrcLocRange]
       }
   | TestTrace
       { ettTestId :: !Int
       , ettCategory :: !Text
+      , ettCovered :: ![SrcLocRange]
       , ettTrace :: !Value -- pre-serialized IterationTrace JSON
       }
   | SuiteDone
@@ -126,13 +126,12 @@ instance ToJSON Event where
       , "message" .= msg
       , "percent" .= pct
       ]
-  toJSON (TestDone i outcome dur desc mTm cov uncov) =
+  toJSON (TestDone i outcome dur desc mTm uncov) =
     object $
       [ "event" .= ("test_done" :: Text)
       , "id" .= i
       , "duration" .= dur
       , "description" .= desc
-      , "covered" .= groupRanges cov
       , "uncovered" .= groupRanges uncov
       ]
         <> outcomeFields outcome
@@ -145,12 +144,13 @@ instance ToJSON Event where
       ]
     threatModelFields :: Maybe ThreatModelSummary -> [Pair]
     threatModelFields = maybe [] (\s -> ["threat_model" .= s])
-  toJSON (TestTrace i cat trace) =
+  toJSON (TestTrace i cat cov trace) =
     object
       [ "event" .= ("test_trace" :: Text)
       , "id" .= i
       , "category" .= cat
       , "trace" .= trace
+      , "covered" .= groupRanges cov
       ]
   toJSON (SuiteDone p f dur) =
     object
@@ -185,13 +185,13 @@ instance FromJSON Event where
             then pure TestSuccess
             else TestFailure <$> o .: "failure"
         mTm <- o .:? "threat_model"
-        cov <- ungroupRanges <$> o .: "covered"
         uncov <- ungroupRanges <$> o .: "uncovered"
-        pure (TestDone eid outcome dur desc mTm cov uncov)
+        pure (TestDone eid outcome dur desc mTm uncov)
       "test_trace" ->
         TestTrace
           <$> o .: "id"
           <*> o .: "category"
+          <*> (ungroupRanges <$> o .: "covered")
           <*> o .: "trace"
       "suite_done" ->
         SuiteDone

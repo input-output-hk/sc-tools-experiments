@@ -85,7 +85,7 @@ import Convex.MockChain (MockChainState (..), MockchainT, fromLedgerUTxO, initia
 import Convex.MockChain.Defaults qualified as Defaults
 import Convex.MonadLog (MonadLog)
 import Convex.NodeParams (NodeParams (..))
-import Convex.Tasty.Streaming.SrcLoc (withSrcLoc)
+import Convex.Tasty.Streaming.SrcLoc (SrcLocRange (..), withSrcLoc)
 import Convex.Tasty.Streaming.TMSummary (TMRecorder, ThreatModelSummary (..), TraceRecorder (..), tmRecord)
 import Convex.TestingInterface.Trace (
   IterationStatus (..),
@@ -110,7 +110,7 @@ import Data.Foldable (foldl', for_, traverse_)
 import Data.IORef (IORef, modifyIORef, newIORef, readIORef)
 import Data.List (deleteFirstsBy)
 import Data.Map qualified as Map
-import Data.Maybe (fromMaybe)
+import Data.Maybe (catMaybes, fromMaybe)
 
 import Data.Set qualified as Set
 import Data.Text qualified as T
@@ -120,7 +120,7 @@ import GHC.Stack (HasCallStack, withFrozenCallStack)
 import PlutusTx.Coverage (
   CovLoc (..),
   CoverageAnnotation (..),
-  CoverageData,
+  CoverageData (..),
   CoverageIndex,
   CoverageReport (..),
   Metadata (..),
@@ -421,7 +421,7 @@ negativeTestTraced opts groupName recorder iterIdx = do
               , itTransitions = []
               , itThreatModels = []
               }
-      run $ recordIteration recorder groupName "negative" (toJSON trace)
+      run $ recordIteration recorder groupName "negative" [] (toJSON trace)
       pure (property False)
     Right ((badAction, finalState), transitions) -> do
       let monadAction = runExceptT $ unTestingMonadT $ perform finalState badAction
@@ -449,7 +449,7 @@ negativeTestTraced opts groupName recorder iterIdx = do
                   , itTransitions = transitions <> [badTransition (TransitionFailure (T.pack (show ex)))]
                   , itThreatModels = []
                   }
-          run $ recordIteration recorder groupName "negative" (toJSON trace)
+          run $ recordIteration recorder groupName "negative" [] (toJSON trace)
           discard
         Left ex -> do
           let trace =
@@ -459,13 +459,14 @@ negativeTestTraced opts groupName recorder iterIdx = do
                   , itTransitions = transitions <> [badTransition (TransitionFailure (T.pack (show ex)))]
                   , itThreatModels = []
                   }
-          run $ recordIteration recorder groupName "negative" (toJSON trace)
+          run $ recordIteration recorder groupName "negative" [] (toJSON trace)
           pure (property True)
         Right result ->
           case result of
-            (Left err, MockChainState{mcsCoverageData = covData}) -> do
+            (Left err, MockChainState{mcsCoverageData}) -> do
+              let covData = mcsCoverageData <> coverageFromBalanceTxError err
               -- Good: the invalid action failed via BalanceTxError (validator rejection)
-              for_ coverageRef $ \ref -> liftIO $ modifyIORef ref (<> (covData <> coverageFromBalanceTxError err))
+              for_ coverageRef $ \ref -> liftIO $ modifyIORef ref (<> covData)
               let trace =
                     IterationTrace
                       { itIndex = iterIdx
@@ -473,7 +474,7 @@ negativeTestTraced opts groupName recorder iterIdx = do
                       , itTransitions = transitions <> [badTransition (TransitionFailure (formatBalanceTxError err))]
                       , itThreatModels = []
                       }
-              run $ recordIteration recorder groupName "negative" (toJSON trace)
+              run $ recordIteration recorder groupName "negative" (covDataToSrcLocRanges covData) (toJSON trace)
               pure (property True)
             (Right _, MockChainState{mcsCoverageData = covData}) -> do
               -- Bad: the invalid action succeeded — contract is too permissive
@@ -486,7 +487,7 @@ negativeTestTraced opts groupName recorder iterIdx = do
                       , itTransitions = transitions <> [badTransition (TransitionSuccess T.empty)]
                       , itThreatModels = []
                       }
-              run $ recordIteration recorder groupName "negative" (toJSON trace)
+              run $ recordIteration recorder groupName "negative" (covDataToSrcLocRanges covData) (toJSON trace)
               pure (property False)
 
 -- | Fast path for negative tests: runs 'runActions' (no tracing overhead).
@@ -610,8 +611,9 @@ positiveTestTraced opts groupName mGetTmResultsRef tms evs recorder iterIdx = do
     pure (finalState, transitions, tmResults, tmTracedResults, tmCoverage)
 
   case result of
-    (Left err, MockChainState{mcsCoverageData = covData}) -> do
-      for_ coverageRef $ \ref -> liftIO $ modifyIORef ref (<> (covData <> coverageFromBalanceTxError err))
+    (Left err, MockChainState{mcsCoverageData}) -> do
+      let covData = mcsCoverageData <> coverageFromBalanceTxError err
+      for_ coverageRef $ \ref -> liftIO $ modifyIORef ref (<> covData)
       let trace =
             IterationTrace
               { itIndex = iterIdx
@@ -619,11 +621,12 @@ positiveTestTraced opts groupName mGetTmResultsRef tms evs recorder iterIdx = do
               , itTransitions = []
               , itThreatModels = []
               }
-      run $ recordIteration recorder groupName "positive" (toJSON trace)
+      run $ recordIteration recorder groupName "positive" (covDataToSrcLocRanges covData) (toJSON trace)
       pure (property False)
-    (Right (finalState, transitions, tmResults, tmTracedResults, tmCoverage), MockChainState{mcsCoverageData = covData}) -> do
+    (Right (finalState, transitions, tmResults, tmTracedResults, tmCoverage), MockChainState{mcsCoverageData}) -> do
+      let covData = mcsCoverageData <> tmCoverage
       monitor (counterexample $ "Final state: " ++ show finalState)
-      traverse_ (\ref -> liftIO $ modifyIORef ref (<> covData <> tmCoverage)) coverageRef
+      traverse_ (\ref -> liftIO $ modifyIORef ref (<> covData)) coverageRef
       case mGetTmResultsRef of
         Just getTmResultsRef -> run $ do
           tmRef <- getTmResultsRef
@@ -641,7 +644,7 @@ positiveTestTraced opts groupName mGetTmResultsRef tms evs recorder iterIdx = do
               , itTransitions = transitions
               , itThreatModels = tmTraces
               }
-      run $ recordIteration recorder groupName "positive" (toJSON trace)
+      run $ recordIteration recorder groupName "positive" (covDataToSrcLocRanges covData) (toJSON trace)
       pure (property True)
 
 -- | Fast path: runs 'runActions' (no UTxO snapshots, no tx summaries, no JSON).
@@ -1087,6 +1090,12 @@ runInitialization opts = do
     fail "Blockchain state does not match model state after initialization"
 
   pure initialState
+
+covDataToSrcLocRanges :: CoverageData -> [SrcLocRange]
+covDataToSrcLocRanges (CoverageData anns) = catMaybes (map toSrcLocRange $ Set.toList anns)
+ where
+  toSrcLocRange (CoverLocation (CovLoc f sl el sc ec)) = Just (SrcLocRange (T.pack f) sl sc el ec)
+  toSrcLocRange (CoverBool _ _) = Nothing
 
 {- | Configuration for coverage collection and reporting.
 

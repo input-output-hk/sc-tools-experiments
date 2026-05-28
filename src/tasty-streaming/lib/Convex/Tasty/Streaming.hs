@@ -244,7 +244,6 @@ streamingJsonReporter = TestReporter
               , edDuration = resultTime result
               , edDescription = Text.pack (resultDescription result)
               , edThreatModel = mSummary
-              , edCovered = []
               , edUncovered = []
               }
 
@@ -384,7 +383,7 @@ defaultMainStreaming tree = do
   let traceRec =
         TraceRecorder
           { trEnabled = readIORef enabledRef
-          , recordIteration = \group category iterationJson -> do
+          , recordIteration = \group category covered iterationJson -> do
               enabled <- readIORef enabledRef
               when enabled $ do
                 testMap <- readIORef testMapRef
@@ -395,6 +394,7 @@ defaultMainStreaming tree = do
                       { ettTestId = testId
                       , ettCategory = Text.pack category
                       , ettTrace = iterationJson
+                      , ettCovered = covered
                       }
           }
   let tree' =
