@@ -143,7 +143,7 @@ blockchain queries, and IO.
 ### Minimal Example
 
 Here is a sketch showing the pattern. For a complete working example, see
-[PingPongSpec.hs](src/testing-interface/test/PingPongSpec.hs).
+[SampleSpec.hs](src/testing-interface/test/SampleSpec.hs).
 
 ```haskell
 -- Your model: tracks what the on-chain counter should be
@@ -252,8 +252,8 @@ See [src/tasty-streaming/README.md](src/tasty-streaming/README.md) for integrati
 
 Scripts compiled with Template Haskell work directly. Coverage tracking is
 available through the `withCoverage` helper and `getCovIdx` from `PlutusTx`. See
-[PingPongCoverageSpec.hs](src/testing-interface/test/PingPongCoverageSpec.hs)
-for a complete coverage example.
+[BountySpec.hs](src/testing-interface/test/BountySpec.hs) for a complete
+example of Plinth-based testing with threat models.
 
 ### Using Aiken Contracts
 
@@ -278,8 +278,8 @@ loadCounterValidator = do
 
 The validator name follows the pattern `module_name.validator_name.purpose`
 from your Aiken source. See
-[AikenPingPongSpec.hs](src/testing-interface/test/AikenPingPongSpec.hs) for a
-complete working example.
+[AikenHelloWorldSpec.hs](src/testing-interface/test/AikenHelloWorldSpec.hs) for
+a complete working example.
 
 ### Key Imports
 
@@ -451,8 +451,6 @@ vulnerability classes. All examples are in `src/testing-interface/test/`.
 | Example                  | Description                                                                                                   | Key Pattern                                            |
 | ------------------------ | ------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------ |
 | **SampleSpec**           | Minimal lock-and-spend with a validator checking boolean flags.                                               | Basic script interaction                               |
-| **PingPongSpec**         | State machine (Pinged/Ponged/Stopped) with full TestingInterface, 4 threat models, secure and vulnerable versions. | State machines, threat model integration               |
-| **PingPongCoverageSpec** | Coverage-driven testing targeting edge cases and defensive code paths.                                        | Testing unreachable branches, coverage tracking        |
 | **BountySpec**           | Bounty contract with double satisfaction vulnerability. Tests both vulnerable and secure versions.             | Standalone threat model testing with `runThreatModelM` |
 
 ### Aiken Examples
@@ -463,7 +461,6 @@ validators in `aiken-contracts-example/validators/`.
 | Example                       | Description                                                                                            | Key Pattern                                                |
 | ----------------------------- | ------------------------------------------------------------------------------------------------------ | ---------------------------------------------------------- |
 | **AikenSpec**                 | Simple "check answer" validator (datum + redeemer == 43).                                              | Basic blueprint loading                                    |
-| **AikenPingPongSpec**         | Aiken version of the PingPong state machine.                                                           | Identical testing pattern across languages                 |
 | **AikenBankSpec**             | Two-validator bank + account with 4 progressive vulnerability levels.                                  | Multi-validator systems, parameterized scripts             |
 | **AikenVestingSpec**          | Time-locked vesting, vulnerable to time bound manipulation.                                            | Time-based vulnerabilities, `expectedVulnerabilities`      |
 | **AikenSellNftSpec**          | NFT marketplace where a single payment can satisfy multiple listings.                                  | Double satisfaction, `expectedVulnerabilities`              |

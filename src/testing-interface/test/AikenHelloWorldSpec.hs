@@ -336,7 +336,7 @@ instance TestingInterface HelloWorldModel where
         , hwTxIn = Nothing
         }
 
-  -- Generate actions following PingPong pattern:
+  -- Generate actions following the standard pattern:
   -- - LockFunds: TIGHT (only when not locked) - creates fresh UTxO, always succeeds on-chain
   -- - UnlockCorrect: BROAD (generate even when not locked for negative testing) - spends UTxO
   arbitraryAction model

@@ -130,7 +130,6 @@ test-suite convex-testing-interface-test
     AikenMultisigTreasurySpec
     AikenMultisigTreasuryV2Spec
     AikenMultisigTreasuryV3Spec
-    AikenPingPongSpec
     AikenPurchaseOfferSpec
     AikenSellNftSpec
     AikenSpec
@@ -139,14 +138,10 @@ test-suite convex-testing-interface-test
     AikenVestingSpec
     BountySpec
     Paths_convex_testing_interface
-    PingPongCoverageSpec
-    PingPongSpec
     SampleSpec
     Scripts
     Scripts.Bounty
     Scripts.Bounty.Vulnerable.DoubleSatisfaction
-    Scripts.PingPong
-    Scripts.PingPong.Vulnerable
     Scripts.Sample
 
   autogen-modules: Paths_convex_testing_interface

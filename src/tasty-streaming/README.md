@@ -65,7 +65,7 @@ cabal test convex-testing-interface-test --test-options="--list-tests-json"
 Combine with Tasty's `-p` pattern flag to filter:
 
 ```bash
-cabal test convex-testing-interface-test --test-options="--list-tests-json -p 'ping-pong'"
+cabal test convex-testing-interface-test --test-options="--list-tests-json -p 'hello-world'"
 ```
 
 ### Stream test results
@@ -79,7 +79,7 @@ cabal test convex-testing-interface-test --test-options="--streaming-json"
 Combine with pattern filtering:
 
 ```bash
-cabal test convex-testing-interface-test --test-options="--streaming-json -p 'ping-pong'"
+cabal test convex-testing-interface-test --test-options="--streaming-json -p 'hello-world'"
 ```
 
 ## NDJSON Event Schema
@@ -211,7 +211,7 @@ cabal test convex-testing-interface-test \
 
 ```bash
 cabal test convex-testing-interface-test \
-  --test-options="--list-tests-json -p 'ping-pong'" 2>/dev/null \
+  --test-options="--list-tests-json -p 'hello-world'" 2>/dev/null \
   | jq -R 'fromjson? // empty | .tests[] | {id, name, path}'
 ```
 

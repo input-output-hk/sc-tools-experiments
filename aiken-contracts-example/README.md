@@ -16,28 +16,6 @@ Checks that `datum + redeemer == 43`.
 Example: locking with datum `10` and spending with redeemer `33` succeeds
 because `10 + 33 = 43`.
 
-### 2. `validators/ping_pong.ak` — Secure stateful PingPong validator
-
-A state machine that transitions between `Pinged`, `Ponged`, and `Stopped`.
-
-- **Datum:** `Option<State>` where `State { Pinged, Ponged, Stopped }`
-- **Redeemer:** `Action` where `Action { Ping, Pong, Stop }`
-- **Blueprint key:** `ping_pong.ping_pong.spend`
-
-Valid transitions:
-- `Pinged` + `Pong` → `Ponged`
-- `Ponged` + `Ping` → `Pinged`
-- `Pinged` or `Ponged` + `Stop` → `Stopped`
-
-Security checks (matching the Haskell secure version):
-1. Continuation output must go to the **same script address** (prevents output redirect attack)
-2. Output **value must equal input value** (prevents large value attack)
-3. Aiken's `expect` rejects unknown constructors (prevents large data attack)
-
-Wire compatibility: The Aiken types encode identically to the Haskell types
-(`Constr 0/1/2 []`), so the Haskell test suite reuses `PingPongState` and
-`PingPongRedeemer` directly.
-
 ## Prerequisites
 
 [Aiken](https://aiken-lang.org/installation-instructions) v1.1.x or later.
@@ -95,4 +73,3 @@ the exact same functions used for PlutusTx/Plinth scripts.
 
 Test modules:
 - `test/AikenSpec.hs` — check_answer unit tests (4 tests)
-- `test/AikenPingPongSpec.hs` — ping_pong unit tests (9), TestingInterface property test, threat model tests (579 lines)

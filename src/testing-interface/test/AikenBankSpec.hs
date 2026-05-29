@@ -918,7 +918,7 @@ instance TestingInterface BankModel where
         , bmAccountOwner = ownerBytes
         }
 
-  -- Generate actions following PingPong pattern:
+  -- Generate actions following the standard pattern:
   -- - Init actions: TIGHT (only when not initialized) - creates fresh UTxOs
   -- - Non-init actions: BROAD (generate invalid variants for negative testing)
   arbitraryAction _model =

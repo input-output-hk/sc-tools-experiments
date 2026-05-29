@@ -23,7 +23,6 @@ import AikenLendingSpec (aikenLendingTests)
 import AikenMultisigTreasurySpec (aikenMultisigTreasuryTests)
 import AikenMultisigTreasuryV2Spec (aikenMultisigTreasuryV2Tests)
 import AikenMultisigTreasuryV3Spec (aikenMultisigTreasuryV3Tests)
-import AikenPingPongSpec (aikenPingPongTests)
 import AikenPurchaseOfferSpec (aikenPurchaseOfferTests)
 import AikenSellNftSpec (aikenSellNftTests)
 import AikenSpec (aikenTests)
@@ -31,16 +30,13 @@ import AikenTipJarSpec (aikenTipJarTests)
 import AikenTipJarV2Spec (aikenTipJarV2Tests)
 import AikenVestingSpec (aikenVestingTests)
 import BountySpec (bountyTests)
-import PingPongCoverageSpec (pingPongCoverageTests)
-import PingPongSpec (pingPongTests)
 import SampleSpec (sampleScriptTest)
-import Scripts (pingPongCovIdx)
 import Scripts qualified
 
 main :: IO ()
 main = withCoverage config $ \opts0 runOpts0 ->
   let
-    -- Use 50000 byte limit because secure PingPong paths with datum-hash
+    -- Use 50000 byte limit because secure paths with datum-hash
     -- spends is large
     opts = modifyTransactionLimits opts0 50_000
     runOpts = runOpts0{mcOptions = opts}
@@ -49,7 +45,7 @@ main = withCoverage config $ \opts0 runOpts0 ->
  where
   config =
     CoverageConfig
-      { coverageIndices = [pingPongCovIdx]
+      { coverageIndices = []
       , coverageReport = writeCoverageReport "coverage-report.ignore.txt"
       }
 
@@ -67,9 +63,7 @@ tests opts runOpts =
                 -- Test tree fails
                 (\_ -> pure ())
             )
-        , pingPongTests opts runOpts
         , bountyTests runOpts
-        , pingPongCoverageTests opts
         ]
     , aikenTests opts
     , aikenBankTests runOpts
@@ -79,7 +73,6 @@ tests opts runOpts =
     , aikenMultisigTreasuryTests runOpts
     , aikenMultisigTreasuryV2Tests runOpts
     , aikenMultisigTreasuryV3Tests runOpts
-    , aikenPingPongTests runOpts
     , aikenPurchaseOfferTests runOpts
     , aikenSellNftTests runOpts
     , aikenTipJarTests runOpts

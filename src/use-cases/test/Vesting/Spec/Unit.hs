@@ -1530,7 +1530,7 @@ valueLockedByAddressMixedOutputs = do
 --   - However, the transaction omits the owner's signature, so the validator
 --     must reject with "OSM".
 --
--- Note: As in the existing ping-pong no-signer tests, the owner wallet is used
+-- Note: As in the no-signer tests, the owner wallet is used
 -- only as the fee payer. Without addRequiredSignature, the validator sees the
 -- owner as absent from txInfoSignatories.
 -------------------------------------------------------------------------------

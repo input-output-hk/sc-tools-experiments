@@ -27,12 +27,12 @@ For example:
 
 @
 case index of
-  0 -> Pinged
-  1 -> Ponged
-  _ -> Stopped   -- catch-all silently accepts ANY other index!
+  0 -> CtorA
+  1 -> CtorB
+  _ -> CtorC   -- catch-all silently accepts ANY other index!
 @
 
-This means @Constr 99 []@ would decode as @Stopped@, bypassing any guard that
+This means @Constr 99 []@ would decode as @CtorC@, bypassing any guard that
 should have rejected it.
 
 == Mitigation ==
@@ -42,10 +42,10 @@ A secure validator should explicitly enumerate all valid indices and call
 
 @
 case index of
-  0 -> Pinged
-  1 -> Ponged
-  2 -> Stopped
-  _ -> P.traceError "PingPongState: invalid index"
+  0 -> CtorA
+  1 -> CtorB
+  2 -> CtorC
+  _ -> P.traceError "MyState: invalid index"
 @
 
 This threat model tests whether a script output with an inline datum still
@@ -63,8 +63,8 @@ import Convex.ThreatModel
 {- | Check for Invalid Datum Index vulnerabilities using constructor index 5.
 
 This is the default configuration, which replaces the constructor index of any
-inline @Constr@ datum on a script output with @5@. Valid PingPong indices are
-0 (Pinged), 1 (Ponged), and 2 (Stopped), so @5@ is safely out-of-range for all
+inline @Constr@ datum on a script output with @5@. Valid MyState indices are
+0 (CtorA), 1 (CtorB), and 2 (CtorC), so @5@ is safely out-of-range for all
 known state machines in this codebase. If the transaction still validates, the
 validator has a permissive datum index check.
 -}
